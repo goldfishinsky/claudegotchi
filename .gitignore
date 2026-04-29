@@ -1,0 +1,10 @@
+.DS_Store
+.superpowers/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
