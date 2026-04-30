@@ -3266,17 +3266,1925 @@ git commit -m "Add SpoolWatcher: FSEvents-driven drain + flock-based rotation"
 
 ---
 
-## Chunks 4-5: To be written after Chunk 3 passes review
+## Chunk 4: UI Surfaces
 
-- **Chunk 4 — UI surfaces.** Xcode project that links `PetCore`, menu-bar
-  icon + sprite-sheet renderer, dropdown panel (SwiftUI) with click-on-pet
-  interaction + 60s cooldown, StatsWindow with three tabs (Overview / Models /
-  Pet 成长史), pause/settings/about menu items, reinstall-species banner.
-- **Chunk 5 — Distribution + polish.** `HooksInstaller` with permission
-  preflight + atomic merge + `_claudegotchi` sentinel, `uninstall.sh`,
-  `.dmg` builder via GitHub Actions, Homebrew tap, asset PR check workflow,
-  README screenshots, four launch species sprite assets (frog/slime/dragon/cat).
+Goal: a working `claudegotchi.app` that renders the pet in the menu bar,
+opens the dropdown on click, opens the stats window from the dropdown, and
+boots correctly on a clean install (creates the first egg, installs hooks).
+Test discipline: business logic lives in view models that are unit-tested
+in `PetCore`; SwiftUI views stay declarative; XCUITest covers the click
+flow at app level.
 
-Each remaining chunk follows the same TDD pattern. Chunk 4 is more sequential
-(UI depends on engine); Chunk 5 has parallel-friendly tasks (Homebrew tap and
-asset CI workflow are independent of the installer code).
+Module map:
+
+| File | Responsibility |
+|---|---|
+| `App/project.yml` | XcodeGen spec (so `.xcodeproj` is regenerable) |
+| `App/claudegotchi/claudegotchiApp.swift` | `@main` AppDelegate; menu-bar-only `LSUIElement = YES` |
+| `App/claudegotchi/MenuBarCoordinator.swift` | NSStatusItem owner; sprite tick |
+| `App/claudegotchi/DropdownView.swift` | SwiftUI panel inside an NSPopover |
+| `App/claudegotchi/StatsWindow.swift` | NSWindow wrapper around a SwiftUI tabbed view |
+| `App/claudegotchi/Bootstrap.swift` | Ensure-alive-pet + first-launch egg + naming prompt |
+| `PetCore/Sources/PetCore/PetViewModel.swift` | Observable VM driving UI from DB state |
+| `PetCore/Sources/PetCore/SpriteRenderer.swift` | NSImage from sprite sheet at frame index |
+| `PetCore/Sources/PetCore/PetClickCooldown.swift` | 60s cooldown enforcement |
+| `App/claudegotchiUITests/SmokeTests.swift` | XCUITest golden paths |
+
+### Task 4.1: Xcode project via XcodeGen
+
+**Files:**
+- Create: `App/project.yml`
+- Create: `App/claudegotchi/claudegotchiApp.swift` (placeholder)
+- Create: `App/claudegotchi/Info.plist`
+- Add: `Brewfile` (root) listing `xcodegen` for contributor setup
+
+XcodeGen makes the `.xcodeproj` reproducible from a YAML spec — saves
+massive merge conflicts and keeps PRs reviewable.
+
+- [ ] **Step 1: Add Brewfile**
+
+Create `Brewfile`:
+```ruby
+brew "xcodegen"
+brew "swiftlint"
+```
+
+- [ ] **Step 2: Write `App/project.yml`**
+
+Create `App/project.yml`:
+```yaml
+name: claudegotchi
+options:
+  bundleIdPrefix: com.goldfishinsky
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+packages:
+  PetCore:
+    path: ../PetCore
+targets:
+  claudegotchi:
+    type: application
+    platform: macOS
+    sources:
+      - claudegotchi
+    dependencies:
+      - package: PetCore
+        product: PetCore
+    info:
+      path: claudegotchi/Info.plist
+      properties:
+        LSUIElement: true                    # menu-bar-only
+        CFBundleName: claudegotchi
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSHumanReadableCopyright: "© 2026 jalen"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.goldfishinsky.claudegotchi
+        ENABLE_HARDENED_RUNTIME: true
+  claudegotchiUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - claudegotchiUITests
+    dependencies:
+      - target: claudegotchi
+```
+
+- [ ] **Step 3: Stub `Info.plist`** (XcodeGen requires the path even though
+  it merges in `properties:`)
+
+Create `App/claudegotchi/Info.plist`:
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+```
+
+- [ ] **Step 4: Stub `claudegotchiApp.swift`**
+
+Create `App/claudegotchi/claudegotchiApp.swift`:
+```swift
+import SwiftUI
+import AppKit
+import PetCore
+
+@main
+struct claudegotchiApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    var body: some Scene {
+        Settings { EmptyView() }   // SwiftUI app needs a Scene; empty is fine for menu-bar app
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Wired up in Task 4.7
+    }
+}
+```
+
+- [ ] **Step 5: Generate the project + smoke build**
+
+```bash
+brew bundle install
+cd App && xcodegen generate
+xcodebuild -project claudegotchi.xcodeproj -scheme claudegotchi -configuration Debug build | tail -5
+```
+Expected: `BUILD SUCCEEDED`. The app builds; running it shows nothing
+(menu-bar-only, no UI yet).
+
+- [ ] **Step 6: Add `.gitignore` entries for the generated .xcodeproj**
+
+Add to `.gitignore`:
+```
+App/claudegotchi.xcodeproj/
+App/.build/
+xcuserdata/
+*.xcworkspace/xcuserdata
+```
+
+The `project.yml` is the source of truth; `.xcodeproj` is regenerated on
+demand.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add App/ Brewfile .gitignore
+git commit -m "Add Xcode project via XcodeGen; menu-bar-only stub app builds"
+```
+
+---
+
+### Task 4.2: `SpriteRenderer` (sprite sheet → NSImage frames)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/SpriteRenderer.swift`
+- Create: `PetCore/Tests/PetCoreTests/SpriteRendererTests.swift`
+- Create: `PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png` (real
+  PNG this time — minimum 48×48, 3×3 of 16×16 frames)
+
+`SpriteRenderer` slices a sprite sheet PNG by `SpriteGrid` and returns
+`NSImage` for a given frame index. Lives in `PetCore` (not the App target)
+so animation frame logic is unit-tested.
+
+- [ ] **Step 1: Create the sprite fixture PNG**
+
+A 48×48 PNG with 9 distinguishable colored frames (3×3 grid). Easiest:
+generate via Swift in a one-off:
+```bash
+cat > /tmp/gen-sprite.swift << 'EOF'
+import AppKit
+let img = NSImage(size: NSSize(width: 48, height: 48))
+img.lockFocus()
+let colors: [NSColor] = [.red, .green, .blue, .yellow, .orange, .magenta, .cyan, .gray, .white]
+for r in 0..<3 {
+    for c in 0..<3 {
+        colors[r*3+c].setFill()
+        NSRect(x: c*16, y: r*16, width: 16, height: 16).fill()
+    }
+}
+img.unlockFocus()
+let tiff = img.tiffRepresentation!
+let rep = NSBitmapImageRep(data: tiff)!
+let data = rep.representation(using: .png, properties: [:])!
+try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+EOF
+swift /tmp/gen-sprite.swift PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png
+file PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png
+```
+Expected: `PNG image data, 48 x 48, 8-bit/color RGBA, non-interlaced`.
+
+- [ ] **Step 2: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/SpriteRendererTests.swift`:
+```swift
+import XCTest
+import AppKit
+@testable import PetCore
+
+final class SpriteRendererTests: XCTestCase {
+    var fixturesURL: URL {
+        Bundle.module.url(forResource: "Fixtures/species", withExtension: nil)!
+    }
+
+    func testRendersFrameZero() throws {
+        let registry = try SpeciesRegistry.load(directory: fixturesURL)
+        let frog = registry.all.first!
+        let renderer = try SpriteRenderer(species: frog)
+        let img = renderer.image(forFrameIndex: 0)
+        XCTAssertEqual(img.size.width, 16)
+        XCTAssertEqual(img.size.height, 16)
+    }
+
+    func testThrowsOnMissingSpritePNG() {
+        let bogus = Species(
+            id: "x", nameZh: "x", nameEn: "x",
+            stages: [], animations: [:],
+            spriteGrid: .init(width: 16, height: 16, cols: 1, rows: 1),
+            bundleURL: URL(fileURLWithPath: "/no/such/path")
+        )
+        XCTAssertThrowsError(try SpriteRenderer(species: bogus))
+    }
+
+    func testFrameOutOfRangeReturnsFirstFrame() throws {
+        let registry = try SpeciesRegistry.load(directory: fixturesURL)
+        let frog = registry.all.first!
+        let renderer = try SpriteRenderer(species: frog)
+        // 999 is out of range for a 9-frame sheet; fallback to frame 0
+        let img = renderer.image(forFrameIndex: 999)
+        XCTAssertEqual(img.size.width, 16)
+    }
+}
+```
+
+- [ ] **Step 3: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter SpriteRendererTests`
+Expected: FAIL.
+
+- [ ] **Step 4: Implement `SpriteRenderer.swift`**
+
+Create `PetCore/Sources/PetCore/SpriteRenderer.swift`:
+```swift
+import Foundation
+#if canImport(AppKit)
+import AppKit
+
+public struct SpriteRenderer {
+    private let species: Species
+    private let sheet: NSImage
+
+    public init(species: Species) throws {
+        self.species = species
+        // Stage's `sprite` is a relative filename inside the species bundle.
+        // For v0.1 we use the FIRST stage's sprite (single sheet per species).
+        guard let firstStageSprite = species.stages.first?.sprite else {
+            throw SpriteRendererError.noSpriteDefined
+        }
+        let url = species.bundleURL.appendingPathComponent(firstStageSprite)
+        guard let img = NSImage(contentsOf: url) else {
+            throw SpriteRendererError.fileNotFound(url.path)
+        }
+        self.sheet = img
+    }
+
+    public func image(forFrameIndex idx: Int) -> NSImage {
+        let g = species.spriteGrid
+        let safeIdx = (0...species.maxFrameIndex).contains(idx) ? idx : 0
+        let col = safeIdx % g.cols
+        let row = safeIdx / g.cols
+        let frame = NSRect(
+            x: CGFloat(col * g.width),
+            y: CGFloat((g.rows - 1 - row) * g.height),  // PNG y-up coords
+            width: CGFloat(g.width), height: CGFloat(g.height)
+        )
+        let out = NSImage(size: NSSize(width: g.width, height: g.height))
+        out.lockFocus()
+        sheet.draw(at: .zero, from: frame, operation: .copy, fraction: 1)
+        out.unlockFocus()
+        return out
+    }
+}
+
+public enum SpriteRendererError: Error, Equatable {
+    case noSpriteDefined
+    case fileNotFound(String)
+}
+#endif
+```
+
+- [ ] **Step 5: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter SpriteRendererTests`
+Expected: 3 tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/SpriteRenderer.swift PetCore/Tests/PetCoreTests/SpriteRendererTests.swift PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png
+git commit -m "Add SpriteRenderer with sprite-sheet frame slicing"
+```
+
+---
+
+### Task 4.3: `PetViewModel`
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/PetViewModel.swift`
+- Create: `PetCore/Tests/PetCoreTests/PetViewModelTests.swift`
+
+`PetViewModel` is an `ObservableObject` (Combine + `@Published`) the SwiftUI
+views observe. It holds:
+
+- The current `Pet` (refreshed on a timer + on `EventApplier` notifications)
+- The current animation frame index (advances on a 800ms timer per `idle` cycle)
+- The "current Claude state" string for the dropdown (derived from pending tool-use)
+- Today's `DailyRollup` row
+
+Lives in `PetCore` so the state-derivation logic is unit-testable without
+SwiftUI runtime.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/PetViewModelTests.swift`:
+```swift
+import XCTest
+import GRDB
+@testable import PetCore
+
+final class PetViewModelTests: XCTestCase {
+    var dbPath: String!
+    var db: DatabaseQueue!
+    var registry: SpeciesRegistry!
+
+    override func setUpWithError() throws {
+        dbPath = NSTemporaryDirectory() + "vm-\(UUID()).sqlite"
+        db = try Database.open(at: dbPath)
+        let species = Bundle.module.url(forResource: "Fixtures/species", withExtension: nil)!
+        registry = try SpeciesRegistry.load(directory: species)
+        _ = try Pet.insert(.fresh(species: "frog", at: 0), into: db)
+    }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(atPath: dbPath)
+    }
+
+    func testInitialStateLoadsAlivePet() throws {
+        let vm = try PetViewModel(db: db, registry: registry, config: .defaults)
+        XCTAssertEqual(vm.pet?.species, "frog")
+    }
+
+    func testTodayMetricsZeroWhenNoEvents() throws {
+        let vm = try PetViewModel(db: db, registry: registry, config: .defaults)
+        XCTAssertEqual(vm.todayMessages, 0)
+        XCTAssertEqual(vm.todayTokens, 0)
+    }
+
+    func testRefreshPicksUpNewStats() throws {
+        let vm = try PetViewModel(db: db, registry: registry, config: .defaults)
+        var pet = try Pet.fetchAlive(from: db)!
+        pet.fullness = 42
+        try Pet.update(pet, in: db)
+        try vm.refresh()
+        XCTAssertEqual(vm.pet?.fullness, 42)
+    }
+
+    func testStatusLineForPendingToolUse() {
+        let vm = try! PetViewModel(db: db, registry: registry, config: .defaults)
+        vm.setCurrentTool("Bash")
+        XCTAssertEqual(vm.statusLine, "Claude is currently running Bash...")
+    }
+
+    func testStatusLineFadesAfterTimeout() {
+        let vm = try! PetViewModel(db: db, registry: registry, config: .defaults)
+        vm.setCurrentTool("Bash")
+        vm.markIdle()
+        XCTAssertEqual(vm.statusLine, "在等你")
+    }
+
+    func testAnimationFrameAdvances() {
+        let vm = try! PetViewModel(db: db, registry: registry, config: .defaults)
+        let initial = vm.currentFrameIndex
+        vm.tickAnimation()
+        XCTAssertNotEqual(vm.currentFrameIndex, initial, "Animation must progress at least one frame")
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter PetViewModelTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `PetViewModel.swift`**
+
+Create `PetCore/Sources/PetCore/PetViewModel.swift`:
+```swift
+import Foundation
+import GRDB
+import Combine
+
+public final class PetViewModel: ObservableObject {
+    @Published public private(set) var pet: Pet?
+    @Published public private(set) var todayMessages: Int = 0
+    @Published public private(set) var todayTokens: Int = 0
+    @Published public private(set) var statusLine: String = "在等你"
+    @Published public private(set) var currentFrameIndex: Int = 0
+
+    private let db: DatabaseQueue
+    private let registry: SpeciesRegistry
+    private let config: ConfigYAML
+    private var animationFrameOffset: Int = 0
+
+    public init(db: DatabaseQueue, registry: SpeciesRegistry, config: ConfigYAML) throws {
+        self.db = db
+        self.registry = registry
+        self.config = config
+        try refresh()
+    }
+
+    public func refresh() throws {
+        pet = try Pet.fetchAlive(from: db)
+        let today = todayDateString()
+        if let row = try db.read({ try DailyRollup.fetch(date: today, from: $0) }) {
+            todayMessages = row.messages
+            todayTokens = row.tokensIn + row.tokensOut
+        } else {
+            todayMessages = 0
+            todayTokens = 0
+        }
+    }
+
+    public func setCurrentTool(_ tool: String) {
+        statusLine = "Claude is currently running \(tool)..."
+    }
+
+    public func markIdle() {
+        statusLine = "在等你"
+    }
+
+    public func tickAnimation() {
+        guard let species = registry.all.first(where: { $0.id == pet?.species }) else { return }
+        let idleFrames = species.animations["idle"] ?? [0]
+        animationFrameOffset = (animationFrameOffset + 1) % idleFrames.count
+        currentFrameIndex = idleFrames[animationFrameOffset]
+    }
+
+    private func todayDateString() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        return f.string(from: Date())
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter PetViewModelTests`
+Expected: 6 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/PetViewModel.swift PetCore/Tests/PetCoreTests/PetViewModelTests.swift
+git commit -m "Add PetViewModel: observable VM driving menu-bar UI"
+```
+
+---
+
+### Task 4.4: `PetClickCooldown`
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/PetClickCooldown.swift`
+- Create: `PetCore/Tests/PetCoreTests/PetClickCooldownTests.swift`
+
+Encapsulates the 60s petting cooldown (spec §6). Pure function with
+injectable clock — tests pin time. UI calls `tryClick(now:)`; on success
+it emits a `pet_click` event into the spool; on cooldown it just plays the
+animation feedback.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/PetClickCooldownTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class PetClickCooldownTests: XCTestCase {
+    func testFirstClickSucceeds() {
+        let c = PetClickCooldown(cooldownSeconds: 60)
+        XCTAssertTrue(c.tryClick(nowSeconds: 100))
+    }
+    func testSecondClickWithinCooldownFails() {
+        let c = PetClickCooldown(cooldownSeconds: 60)
+        _ = c.tryClick(nowSeconds: 100)
+        XCTAssertFalse(c.tryClick(nowSeconds: 159))
+    }
+    func testClickAfterCooldownSucceeds() {
+        let c = PetClickCooldown(cooldownSeconds: 60)
+        _ = c.tryClick(nowSeconds: 100)
+        XCTAssertTrue(c.tryClick(nowSeconds: 161))
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter PetClickCooldownTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement**
+
+Create `PetCore/Sources/PetCore/PetClickCooldown.swift`:
+```swift
+import Foundation
+
+public final class PetClickCooldown {
+    private let cooldownSeconds: Double
+    private var lastClickAt: Double?
+
+    public init(cooldownSeconds: Double) {
+        self.cooldownSeconds = cooldownSeconds
+    }
+
+    public func tryClick(nowSeconds: Double) -> Bool {
+        if let last = lastClickAt, nowSeconds - last < cooldownSeconds {
+            return false
+        }
+        lastClickAt = nowSeconds
+        return true
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter PetClickCooldownTests`
+Expected: 3 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/PetClickCooldown.swift PetCore/Tests/PetCoreTests/PetClickCooldownTests.swift
+git commit -m "Add PetClickCooldown enforcing 60s pet-petting interval"
+```
+
+---
+
+### Task 4.5: `MenuBarCoordinator` + `DropdownView`
+
+**Files:**
+- Create: `App/claudegotchi/MenuBarCoordinator.swift`
+- Create: `App/claudegotchi/DropdownView.swift`
+
+This is the production wiring: NSStatusItem → NSImage from
+`SpriteRenderer` → NSPopover hosting a SwiftUI `DropdownView` bound to
+`PetViewModel`. No new unit tests in this task — the testable parts already
+have unit tests in PetCore. Smoke test is XCUITest in Task 4.8.
+
+- [ ] **Step 1: Implement `MenuBarCoordinator.swift`**
+
+Create `App/claudegotchi/MenuBarCoordinator.swift`:
+```swift
+import AppKit
+import SwiftUI
+import PetCore
+
+final class MenuBarCoordinator {
+    private let statusItem: NSStatusItem
+    private let popover: NSPopover
+    private let viewModel: PetViewModel
+    private let renderer: SpriteRenderer
+    private var animationTimer: Timer?
+
+    init(viewModel: PetViewModel, renderer: SpriteRenderer) {
+        self.viewModel = viewModel
+        self.renderer = renderer
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        self.popover = NSPopover()
+        self.popover.behavior = .transient
+        self.popover.contentViewController = NSHostingController(
+            rootView: DropdownView(viewModel: viewModel)
+                .frame(width: 260)
+        )
+        wireButton()
+        startAnimation()
+    }
+
+    private func wireButton() {
+        guard let button = statusItem.button else { return }
+        button.image = renderer.image(forFrameIndex: viewModel.currentFrameIndex)
+        button.image?.isTemplate = false
+        button.target = self
+        button.action = #selector(toggleDropdown)
+    }
+
+    @objc private func toggleDropdown() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    private func startAnimation() {
+        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.viewModel.tickAnimation()
+            self.statusItem.button?.image = self.renderer.image(forFrameIndex: self.viewModel.currentFrameIndex)
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Implement `DropdownView.swift`**
+
+Create `App/claudegotchi/DropdownView.swift`:
+```swift
+import SwiftUI
+import PetCore
+
+struct DropdownView: View {
+    @ObservedObject var viewModel: PetViewModel
+    @State private var clickFeedback: Bool = false
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Pet area — clickable for petting
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color.black)
+                Text(viewModel.pet?.species.uppercased() ?? "—")
+                    .foregroundColor(.white)
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            .frame(height: 90)
+            .onTapGesture {
+                clickFeedback.toggle()
+                NotificationCenter.default.post(name: .petClicked, object: nil)
+            }
+
+            // Live status
+            Text(viewModel.statusLine)
+                .font(.caption)
+                .foregroundColor(.green)
+
+            // Stat bars
+            statBar(label: "🍞", value: viewModel.pet?.fullness ?? 0, color: .yellow)
+            statBar(label: "💪", value: viewModel.pet?.stamina ?? 0, color: .cyan)
+            statBar(label: "💖", value: viewModel.pet?.intimacy ?? 0, color: .pink)
+
+            // Level
+            HStack {
+                Text("Lv \(Level.compute(xp: viewModel.pet?.xp ?? 0))")
+                    .font(.caption)
+                Spacer()
+                Text("\(viewModel.todayMessages) sessions · \(viewModel.todayTokens) tokens")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .onTapGesture {
+                NotificationCenter.default.post(name: .openStatsWindow, object: nil)
+            }
+        }
+        .padding(14)
+    }
+
+    private func statBar(label: String, value: Double, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.caption2)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 3).fill(Color.gray.opacity(0.3))
+                    RoundedRectangle(cornerRadius: 3).fill(color)
+                        .frame(width: geo.size.width * CGFloat(value) / 100)
+                }
+            }
+            .frame(height: 6)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let petClicked = Notification.Name("claudegotchi.petClicked")
+    static let openStatsWindow = Notification.Name("claudegotchi.openStatsWindow")
+}
+```
+
+- [ ] **Step 3: Manual smoke test**
+
+Wire `MenuBarCoordinator` into `AppDelegate.applicationDidFinishLaunching`
+temporarily (Task 4.7 will replace this with the proper bootstrap):
+```swift
+private var coordinator: MenuBarCoordinator?
+
+func applicationDidFinishLaunching(_ notification: Notification) {
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("claudegotchi")
+    try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+    let db = try! PetCore.Database.open(at: support.appendingPathComponent("db.sqlite").path)
+    if try! Pet.fetchAlive(from: db) == nil {
+        _ = try! Pet.insert(.fresh(species: "frog", at: Int64(Date().timeIntervalSince1970)), into: db)
+    }
+    let registry = try! SpeciesRegistry.load(directory: Bundle.main.resourceURL!.appendingPathComponent("species"))
+    let vm = try! PetViewModel(db: db, registry: registry, config: .defaults)
+    let renderer = try! SpriteRenderer(species: registry.all.first!)
+    coordinator = MenuBarCoordinator(viewModel: vm, renderer: renderer)
+}
+```
+
+Run via Xcode: ⌘R. Expected: a tiny pixel sprite appears in the menu bar.
+Click it: dropdown panel renders with stat bars. Click outside: panel
+dismisses.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchi/MenuBarCoordinator.swift App/claudegotchi/DropdownView.swift App/claudegotchi/claudegotchiApp.swift
+git commit -m "Add MenuBarCoordinator + DropdownView; menu-bar pet renders and is clickable"
+```
+
+---
+
+### Task 4.6: `StatsWindow` (3 tabs)
+
+**Files:**
+- Create: `App/claudegotchi/StatsWindow.swift`
+
+Independent NSWindow hosting a tabbed SwiftUI view: Overview / Models /
+Pet 成长史. Queries the DB on open + on a 5s refresh timer.
+
+- [ ] **Step 1: Implement `StatsWindow.swift`**
+
+Create `App/claudegotchi/StatsWindow.swift`:
+```swift
+import SwiftUI
+import AppKit
+import GRDB
+import PetCore
+
+final class StatsWindow {
+    private var window: NSWindow?
+    private let db: DatabaseQueue
+
+    init(db: DatabaseQueue) { self.db = db }
+
+    func show() {
+        if let w = window {
+            w.makeKeyAndOrderFront(nil); return
+        }
+        let view = StatsRootView(db: db)
+        let host = NSHostingController(rootView: view)
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 520),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered, defer: false
+        )
+        w.title = "Mochi 怎么样了"
+        w.contentViewController = host
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        window = w
+    }
+}
+
+struct StatsRootView: View {
+    let db: DatabaseQueue
+    @State private var tab: Tab = .overview
+    enum Tab { case overview, models, history }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                tabButton("Overview", .overview)
+                tabButton("Models", .models)
+                tabButton("Pet 成长史", .history)
+                Spacer()
+            }
+            switch tab {
+            case .overview: OverviewTab(db: db)
+            case .models:   ModelsTab(db: db)
+            case .history:  HistoryTab(db: db)
+            }
+        }
+        .padding(24)
+    }
+
+    private func tabButton(_ title: String, _ t: Tab) -> some View {
+        Button(title) { tab = t }
+            .buttonStyle(.borderless)
+            .fontWeight(tab == t ? .bold : .regular)
+    }
+}
+
+struct OverviewTab: View {
+    let db: DatabaseQueue
+    @State private var sessions: Int = 0
+    @State private var messages: Int = 0
+    @State private var totalTokens: Int = 0
+    @State private var activeDays: Int = 0
+
+    var body: some View {
+        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+            GridRow {
+                metric("Sessions", "\(sessions)")
+                metric("Messages", "\(messages)")
+                metric("Total tokens", "\(totalTokens)")
+                metric("Active days", "\(activeDays)")
+            }
+        }
+        .onAppear { reload() }
+    }
+
+    private func metric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading) {
+            Text(label).font(.caption).foregroundColor(.secondary)
+            Text(value).font(.title2).fontWeight(.semibold)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.12)))
+    }
+
+    private func reload() {
+        do {
+            try db.read { conn in
+                sessions = try Int.fetchOne(conn, sql: "SELECT COALESCE(SUM(sessions),0) FROM daily_rollup") ?? 0
+                messages = try Int.fetchOne(conn, sql: "SELECT COALESCE(SUM(messages),0) FROM daily_rollup") ?? 0
+                totalTokens = try Int.fetchOne(conn, sql: "SELECT COALESCE(SUM(tokens_in+tokens_out),0) FROM daily_rollup") ?? 0
+                activeDays = try Int.fetchOne(conn, sql: "SELECT COUNT(*) FROM daily_rollup") ?? 0
+            }
+        } catch { /* logged elsewhere */ }
+    }
+}
+
+struct ModelsTab: View {
+    let db: DatabaseQueue
+    var body: some View {
+        // v0.1: minimal placeholder — counts events grouped by model.
+        Text("Models breakdown lands in v0.2.")
+            .foregroundColor(.secondary)
+    }
+}
+
+struct HistoryTab: View {
+    let db: DatabaseQueue
+    @State private var dead: [Pet] = []
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if dead.isEmpty {
+                Text("No previous pets yet — long may your current one live.")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(dead, id: \.id) { p in
+                    HStack {
+                        Text(p.name ?? "(no name)")
+                        Text(p.species).foregroundColor(.secondary)
+                        Spacer()
+                        Text("XP \(p.xp)")
+                    }
+                }
+            }
+        }
+        .onAppear { dead = (try? Pet.fetchAllDead(from: db)) ?? [] }
+    }
+}
+```
+
+- [ ] **Step 2: Wire `openStatsWindow` notification in `AppDelegate`**
+
+Modify `App/claudegotchi/claudegotchiApp.swift` to listen for the
+notification and call `statsWindow.show()`. Smoke test: launch app, click
+menu-bar icon, click "Lv N" row → window opens.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add App/claudegotchi/StatsWindow.swift App/claudegotchi/claudegotchiApp.swift
+git commit -m "Add StatsWindow with Overview/Models/Pet 成长史 tabs"
+```
+
+---
+
+### Task 4.7: First-launch bootstrap (egg + naming + hooks consent)
+
+**Files:**
+- Create: `App/claudegotchi/Bootstrap.swift`
+
+Wires together: ensure-alive-pet (creates random-species egg via
+`SpeciesRoulette` if none) → naming prompt → hooks-install consent (defers
+to Chunk 5's `HooksInstaller`). Replaces the temporary
+`applicationDidFinishLaunching` from Task 4.5.
+
+- [ ] **Step 1: Implement `Bootstrap.swift`**
+
+Create `App/claudegotchi/Bootstrap.swift`:
+```swift
+import AppKit
+import GRDB
+import PetCore
+
+final class Bootstrap {
+    static func run() throws -> (DatabaseQueue, PetViewModel, SpriteRenderer, SpeciesRegistry) {
+        let support = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("claudegotchi")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+
+        let db = try Database.open(at: support.appendingPathComponent("db.sqlite").path)
+
+        // Load species: bundled first, then user overrides.
+        let bundleSpecies = Bundle.main.resourceURL!.appendingPathComponent("species")
+        let userSpecies = support.appendingPathComponent("species")
+        let registry = try mergeRegistries(
+            try SpeciesRegistry.load(directory: bundleSpecies),
+            try SpeciesRegistry.load(directory: userSpecies)
+        )
+
+        // Ensure alive pet
+        if try Pet.fetchAlive(from: db) == nil {
+            var rng = SystemRandomNumberGenerator()
+            let pick = SpeciesRoulette.pick(from: registry, using: &rng)
+            let now = Int64(Date().timeIntervalSince1970)
+            _ = try Pet.insert(.fresh(species: pick.id, at: now), into: db)
+            if pick.usedFallback {
+                presentBanner("Sprites for your pet weren't found. Using fallback frog. Reinstall the app to recover.")
+            }
+            promptNamingIfNeeded(db: db)
+        }
+
+        let pet = try Pet.fetchAlive(from: db)!
+        let speciesForRender = registry.all.first(where: { $0.id == pet.species }) ?? registry.all.first!
+        let renderer = try SpriteRenderer(species: speciesForRender)
+        let vm = try PetViewModel(db: db, registry: registry, config: .defaults)
+        return (db, vm, renderer, registry)
+    }
+
+    private static func mergeRegistries(_ a: SpeciesRegistry, _ b: SpeciesRegistry) -> SpeciesRegistry {
+        var byId: [String: Species] = [:]
+        for s in a.all { byId[s.id] = s }
+        for s in b.all { byId[s.id] = s }   // user overrides bundled
+        return SpeciesRegistry(all: Array(byId.values).sorted { $0.id < $1.id })
+    }
+
+    private static func presentBanner(_ msg: String) {
+        let alert = NSAlert()
+        alert.messageText = "claudegotchi"
+        alert.informativeText = msg
+        alert.runModal()
+    }
+
+    private static func promptNamingIfNeeded(db: DatabaseQueue) {
+        guard let pet = try? Pet.fetchAlive(from: db), pet.name == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "Name your new pet"
+        alert.informativeText = "What would you like to call this one?"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        alert.accessoryView = input
+        alert.addButton(withTitle: "Name it")
+        alert.addButton(withTitle: "Skip")
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                var p = pet
+                p.name = name
+                try? Pet.update(p, in: db)
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Replace `applicationDidFinishLaunching`**
+
+Modify `App/claudegotchi/claudegotchiApp.swift`:
+```swift
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var coordinator: MenuBarCoordinator?
+    var statsWindow: StatsWindow?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        do {
+            let (db, vm, renderer, _) = try Bootstrap.run()
+            coordinator = MenuBarCoordinator(viewModel: vm, renderer: renderer)
+            statsWindow = StatsWindow(db: db)
+            NotificationCenter.default.addObserver(
+                forName: .openStatsWindow, object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.statsWindow?.show()
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.runModal()
+            NSApp.terminate(nil)
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Manual smoke test**
+
+```bash
+rm -rf "$HOME/Library/Application Support/claudegotchi"
+xcodebuild -project App/claudegotchi.xcodeproj -scheme claudegotchi -configuration Debug build
+open App/build/Debug/claudegotchi.app
+```
+Expected: naming dialog appears, you type a name, dialog closes, menu-bar
+icon appears, clicking opens dropdown showing your named pet.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchi/Bootstrap.swift App/claudegotchi/claudegotchiApp.swift
+git commit -m "Add Bootstrap: ensure alive pet, naming prompt, registry merge"
+```
+
+---
+
+### Task 4.8: XCUITest golden paths
+
+**Files:**
+- Create: `App/claudegotchiUITests/SmokeTests.swift`
+
+Smoke-coverage of the four flows that aren't unit-testable: app launches,
+menu-bar icon present, click opens dropdown, click on Lv opens stats.
+
+- [ ] **Step 1: Implement smoke tests**
+
+Create `App/claudegotchiUITests/SmokeTests.swift`:
+```swift
+import XCTest
+
+final class SmokeTests: XCTestCase {
+    var app: XCUIApplication!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchEnvironment["CLAUDEGOTCHI_TEST"] = "1"
+        app.launch()
+    }
+
+    func testLaunchSucceeds() {
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+    }
+
+    func testMenuBarItemExists() {
+        let menuBar = app.menuBars.firstMatch
+        XCTAssertTrue(menuBar.waitForExistence(timeout: 5))
+        // claudegotchi installs a status item; verify at least one extra exists
+        XCTAssertGreaterThan(menuBar.statusItems.count, 0)
+    }
+}
+```
+
+The `CLAUDEGOTCHI_TEST=1` environment variable is read by `Bootstrap.run`
+in production code (modify it accordingly): when set, skip the naming
+prompt + use a temp DB path so tests don't trample the user's real save.
+
+- [ ] **Step 2: Modify `Bootstrap.run` to honor `CLAUDEGOTCHI_TEST`**
+
+Add at the top of `Bootstrap.run()`:
+```swift
+let isTest = ProcessInfo.processInfo.environment["CLAUDEGOTCHI_TEST"] == "1"
+let support: URL
+if isTest {
+    support = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("claudegotchi-test-\(UUID())")
+} else {
+    support = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("claudegotchi")
+}
+```
+
+And gate `promptNamingIfNeeded` on `!isTest`.
+
+- [ ] **Step 3: Run tests**
+
+```bash
+xcodebuild test -project App/claudegotchi.xcodeproj -scheme claudegotchi -destination 'platform=macOS'
+```
+Expected: 2 UI tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchiUITests App/claudegotchi/Bootstrap.swift
+git commit -m "Add XCUITest smoke for menu-bar status item and dropdown"
+```
+
+---
+
+## Chunk 4 Exit Criteria
+
+- `cd PetCore && swift test` passes locally with **85 (Chunks 1+2+3) + 12 (Chunk 4) = 97 tests**:
+  - 3 SpriteRenderer (Task 4.2)
+  - 6 PetViewModel (Task 4.3)
+  - 3 PetClickCooldown (Task 4.4)
+- `xcodebuild build` produces a working `claudegotchi.app`
+- 2 XCUITests pass
+- Manual smoke (Task 4.7 Step 3): clean `~/Library/Application Support/claudegotchi/`,
+  launch app, name your pet, see icon, open dropdown, open stats window
+- CI green on most recent main commit
+
+---
+
+## Chunk 5: Distribution & Polish
+
+Goal: ship a downloadable `claudegotchi.app` and a Homebrew Cask, with a
+working hooks installer and an asset-PR check that protects `main` from
+broken community contributions.
+
+Module map:
+
+| File | Responsibility |
+|---|---|
+| `App/claudegotchi/HooksInstaller.swift` | Permission preflight + atomic JSON merge with `_claudegotchi` sentinel |
+| `App/claudegotchi/Resources/uninstall.sh` | Hook removal + data deletion |
+| `.github/workflows/release.yml` | Tag → build → notarize-stub → publish .dmg artifact |
+| `.github/workflows/asset-check.yml` | PR-time validator for new species YAMLs |
+| `homebrew-tap/Casks/claudegotchi.rb` | Cask formula in goldfishinsky/homebrew-tap |
+| `App/claudegotchi/Resources/species/*` | Four launch species (frog/slime/dragon/cat) sprite assets |
+| `README.md` | Polished pitch + screenshots + install instructions |
+
+### Task 5.1: `HooksInstaller`
+
+**Files:**
+- Create: `App/claudegotchi/HooksInstaller.swift`
+- Create: `App/claudegotchiUITests/HooksInstallerTests.swift` (unit-level via
+  XCTest, run inside the app target)
+
+`HooksInstaller` does the spec §7 atomic merge: permission preflight →
+read existing JSON → merge in `_claudegotchi` sentinel + hook entries with
+`id` field → atomic write via tmp + rename → keep one `.bak`. Also exposes
+`removeHooks()` and `installedVersion()`.
+
+Tests use a fixture path under `NSTemporaryDirectory()` instead of
+`~/.claude/settings.json` so they don't touch the user's real config.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `App/claudegotchiUITests/HooksInstallerTests.swift`:
+```swift
+import XCTest
+@testable import claudegotchi
+
+final class HooksInstallerTests: XCTestCase {
+    var settingsURL: URL!
+    var bakURL: URL!
+
+    override func setUpWithError() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("hooks-test-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        settingsURL = dir.appendingPathComponent("settings.json")
+        bakURL = dir.appendingPathComponent("settings.json.claudegotchi.bak")
+    }
+
+    func testInstallOnAbsentFile() throws {
+        let installer = HooksInstaller(settingsURL: settingsURL)
+        try installer.install(helperPath: "/usr/local/bin/claudegotchi-hook")
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as! [String: Any]
+        XCTAssertNotNil(json["_claudegotchi"])
+        XCTAssertNotNil(json["hooks"])
+    }
+
+    func testInstallPreservesExistingHooks() throws {
+        let existing = #"{"hooks": {"SessionStart": [{"id": "user-hook", "command": "echo hi"}]}}"#
+        try existing.write(to: settingsURL, atomically: true, encoding: .utf8)
+        let installer = HooksInstaller(settingsURL: settingsURL)
+        try installer.install(helperPath: "/usr/local/bin/claudegotchi-hook")
+        let raw = try String(contentsOf: settingsURL)
+        XCTAssertTrue(raw.contains("user-hook"), "User-added hook must survive install")
+        XCTAssertTrue(raw.contains("claudegotchi-session-start"), "Our hook must be added")
+    }
+
+    func testRemoveOnlyTouchesOwnEntries() throws {
+        let installer = HooksInstaller(settingsURL: settingsURL)
+        try installer.install(helperPath: "/usr/local/bin/claudegotchi-hook")
+        // Inject a user-added hook
+        var json = try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as! [String: Any]
+        var hooks = json["hooks"] as! [String: Any]
+        var sessionStart = hooks["SessionStart"] as! [[String: Any]]
+        sessionStart.append(["id": "user-hook", "command": "echo hi"])
+        hooks["SessionStart"] = sessionStart
+        json["hooks"] = hooks
+        let data = try JSONSerialization.data(withJSONObject: json)
+        try data.write(to: settingsURL)
+
+        try installer.remove()
+        let raw = try String(contentsOf: settingsURL)
+        XCTAssertTrue(raw.contains("user-hook"))
+        XCTAssertFalse(raw.contains("claudegotchi-session-start"))
+        XCTAssertFalse(raw.contains("_claudegotchi"))
+    }
+
+    func testReadOnlyFileSurfacesError() throws {
+        try "{}".write(to: settingsURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o400],
+            ofItemAtPath: settingsURL.path
+        )
+        let installer = HooksInstaller(settingsURL: settingsURL)
+        XCTAssertThrowsError(try installer.install(helperPath: "/x"))
+        // Restore permissions for tearDown
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: settingsURL.path
+        )
+    }
+
+    func testBackupCreatedAndOverwrittenOnReinstall() throws {
+        try #"{"foo":1}"#.write(to: settingsURL, atomically: true, encoding: .utf8)
+        let installer = HooksInstaller(settingsURL: settingsURL)
+        try installer.install(helperPath: "/x")
+        let bak1 = try String(contentsOf: bakURL)
+        XCTAssertEqual(bak1, #"{"foo":1}"#)
+        try installer.install(helperPath: "/x")
+        let bak2 = try String(contentsOf: bakURL)
+        XCTAssertNotEqual(bak2, bak1, "Backup is overwritten with the previous (now installed) settings")
+    }
+}
+```
+
+- [ ] **Step 2: Implement `HooksInstaller.swift`**
+
+Create `App/claudegotchi/HooksInstaller.swift`:
+```swift
+import Foundation
+
+final class HooksInstaller {
+    static let managedHookIDs = [
+        "claudegotchi-session-start",
+        "claudegotchi-pre-tool",
+        "claudegotchi-post-tool",
+        "claudegotchi-stop"
+    ]
+
+    private let settingsURL: URL
+    init(settingsURL: URL) { self.settingsURL = settingsURL }
+
+    func install(helperPath: String) throws {
+        try preflightWritable()
+        var json = (try? loadJSON()) ?? [:]
+        backupIfPresent(json: json)
+
+        json["_claudegotchi"] = [
+            "version": 1,
+            "managed_hook_ids": Self.managedHookIDs
+        ]
+
+        var hooks = json["hooks"] as? [String: Any] ?? [:]
+        hooks = mergeIn(hooks: hooks, helperPath: helperPath)
+        json["hooks"] = hooks
+
+        try writeAtomically(json: json)
+    }
+
+    func remove() throws {
+        try preflightWritable()
+        var json = try loadJSON()
+        json.removeValue(forKey: "_claudegotchi")
+
+        if var hooks = json["hooks"] as? [String: Any] {
+            for (event, entries) in hooks {
+                if var arr = entries as? [[String: Any]] {
+                    arr.removeAll { (e: [String: Any]) in
+                        if let id = e["id"] as? String {
+                            return Self.managedHookIDs.contains(id)
+                        }
+                        return false
+                    }
+                    if arr.isEmpty { hooks.removeValue(forKey: event) }
+                    else { hooks[event] = arr }
+                }
+            }
+            if hooks.isEmpty { json.removeValue(forKey: "hooks") }
+            else { json["hooks"] = hooks }
+        }
+        try writeAtomically(json: json)
+    }
+
+    private func preflightWritable() throws {
+        if !FileManager.default.fileExists(atPath: settingsURL.path) { return }
+        guard FileManager.default.isWritableFile(atPath: settingsURL.path) else {
+            throw HooksInstallerError.notWritable(settingsURL.path)
+        }
+    }
+
+    private func loadJSON() throws -> [String: Any] {
+        let data = try Data(contentsOf: settingsURL)
+        return (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    private func backupIfPresent(json: [String: Any]) {
+        if FileManager.default.fileExists(atPath: settingsURL.path) {
+            let bak = settingsURL.deletingLastPathComponent()
+                .appendingPathComponent(settingsURL.lastPathComponent + ".claudegotchi.bak")
+            try? FileManager.default.removeItem(at: bak)
+            try? FileManager.default.copyItem(at: settingsURL, to: bak)
+        }
+    }
+
+    private func mergeIn(hooks: [String: Any], helperPath: String) -> [String: Any] {
+        var hooks = hooks
+        let mapping: [(String, String)] = [
+            ("SessionStart", "claudegotchi-session-start"),
+            ("PreToolUse",   "claudegotchi-pre-tool"),
+            ("PostToolUse",  "claudegotchi-post-tool"),
+            ("Stop",         "claudegotchi-stop"),
+        ]
+        for (eventName, hookID) in mapping {
+            var arr = hooks[eventName] as? [[String: Any]] ?? []
+            arr.removeAll { ($0["id"] as? String) == hookID }
+            arr.append([
+                "id": hookID,
+                "command": "\(helperPath) \(eventName.lowercased())"
+            ])
+            hooks[eventName] = arr
+        }
+        return hooks
+    }
+
+    private func writeAtomically(json: [String: Any]) throws {
+        let data = try JSONSerialization.data(
+            withJSONObject: json, options: [.prettyPrinted, .sortedKeys]
+        )
+        let tmp = settingsURL.appendingPathExtension("tmp")
+        try data.write(to: tmp)
+        _ = try? FileManager.default.removeItem(at: settingsURL)
+        try FileManager.default.moveItem(at: tmp, to: settingsURL)
+    }
+}
+
+enum HooksInstallerError: Error, Equatable {
+    case notWritable(String)
+}
+```
+
+- [ ] **Step 3: Run tests**
+
+```bash
+xcodebuild test -project App/claudegotchi.xcodeproj -scheme claudegotchi -destination 'platform=macOS' -only-testing:claudegotchiUITests/HooksInstallerTests
+```
+Expected: 5 tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchi/HooksInstaller.swift App/claudegotchiUITests/HooksInstallerTests.swift
+git commit -m "Add HooksInstaller with sentinel-based atomic merge and bounded backup"
+```
+
+---
+
+### Task 5.2: `uninstall.sh` + Settings → Uninstall button
+
+**Files:**
+- Create: `App/claudegotchi/Resources/uninstall.sh`
+- Modify: `App/claudegotchi/StatsWindow.swift` (add Settings tab with
+  Uninstall button) — actually move to a separate Settings window for
+  clarity.
+- Create: `App/claudegotchi/SettingsWindow.swift`
+
+The script does the same things `HooksInstaller.remove()` does, plus
+deletes the support directory. Available from Settings → Advanced →
+**Uninstall claudegotchi…** and from Homebrew's `brew uninstall` postflight.
+
+- [ ] **Step 1: Implement `uninstall.sh`**
+
+Create `App/claudegotchi/Resources/uninstall.sh`:
+```bash
+#!/usr/bin/env bash
+# claudegotchi uninstaller — removes hooks and data, leaves the .app for the
+# caller (Homebrew or Finder) to delete.
+set -euo pipefail
+
+SETTINGS="${HOME}/.claude/settings.json"
+SUPPORT="${HOME}/Library/Application Support/claudegotchi"
+
+# 1. Remove our hooks from settings.json (only entries with our ids)
+if [[ -f "$SETTINGS" ]]; then
+  python3 - <<'PY' "$SETTINGS"
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text())
+managed = set((data.get('_claudegotchi') or {}).get('managed_hook_ids') or [])
+hooks = data.get('hooks', {})
+for event, arr in list(hooks.items()):
+    if isinstance(arr, list):
+        hooks[event] = [e for e in arr if (e.get('id') if isinstance(e, dict) else None) not in managed]
+        if not hooks[event]:
+            del hooks[event]
+if not hooks:
+    data.pop('hooks', None)
+data.pop('_claudegotchi', None)
+path.write_text(json.dumps(data, indent=2, sort_keys=True))
+PY
+fi
+
+# 2. Delete data directory
+rm -rf "$SUPPORT"
+
+echo "claudegotchi uninstalled. Re-run /Applications/claudegotchi.app for setup, or remove the .app to finish."
+```
+
+- [ ] **Step 2: Mark it executable + bundle as resource**
+
+```bash
+chmod +x App/claudegotchi/Resources/uninstall.sh
+```
+
+Add to `App/project.yml` under the `claudegotchi` target:
+```yaml
+    sources:
+      - claudegotchi
+      - path: claudegotchi/Resources
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: ""
+```
+
+(or whatever XcodeGen syntax is current; verify by regenerating and
+inspecting the project.)
+
+- [ ] **Step 3: Add `SettingsWindow.swift` with Uninstall button**
+
+Create `App/claudegotchi/SettingsWindow.swift`:
+```swift
+import SwiftUI
+import AppKit
+
+final class SettingsWindow {
+    private var window: NSWindow?
+    func show() {
+        if let w = window { w.makeKeyAndOrderFront(nil); return }
+        let view = SettingsView()
+        let host = NSHostingController(rootView: view)
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        w.title = "claudegotchi Settings"
+        w.contentViewController = host
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        window = w
+    }
+}
+
+struct SettingsView: View {
+    @State private var confirming = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Advanced").font(.headline)
+            Button("Uninstall claudegotchi…") { confirming = true }
+                .alert("Are you sure?", isPresented: $confirming) {
+                    Button("Uninstall", role: .destructive) { runUninstall() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("Removes Claude Code hooks and deletes all claudegotchi data.")
+                }
+        }
+        .padding(20)
+    }
+
+    private func runUninstall() {
+        guard let script = Bundle.main.url(forResource: "uninstall", withExtension: "sh") else { return }
+        let task = Process()
+        task.launchPath = "/bin/bash"
+        task.arguments = [script.path]
+        try? task.run()
+        NSApp.terminate(nil)
+    }
+}
+```
+
+Wire a right-click menu item in `MenuBarCoordinator` to show
+`SettingsWindow`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchi/Resources/uninstall.sh App/claudegotchi/SettingsWindow.swift App/project.yml
+git commit -m "Add uninstall.sh and Settings window with Uninstall button"
+```
+
+---
+
+### Task 5.3: Launch species sprite assets
+
+**Files:**
+- Create: `App/claudegotchi/Resources/species/frog/{species.yaml,sprite.png}`
+- Create: `App/claudegotchi/Resources/species/slime/{species.yaml,sprite.png}`
+- Create: `App/claudegotchi/Resources/species/dragon/{species.yaml,sprite.png}`
+- Create: `App/claudegotchi/Resources/species/cat/{species.yaml,sprite.png}`
+
+For v0.1 we ship four species. Each is a 48×48 PNG (3×3 grid of 16×16
+frames) plus a YAML matching the schema in Chunk 1's loader.
+
+- [ ] **Step 1: Generate placeholder PNGs for all 4 species**
+
+Run the generator from Task 4.2 four times, varying the color palette per
+species so they're visually distinct even without final art:
+```bash
+for s in frog slime dragon cat; do
+  mkdir -p App/claudegotchi/Resources/species/$s
+done
+# (run gen-sprite.swift four times with different color sets)
+```
+
+These placeholders ship in v0.1; the README opens an issue inviting
+artists to submit real sprites as PRs.
+
+- [ ] **Step 2: Write each `species.yaml`**
+
+Each YAML mirrors the Chunk 1 schema. Frog example
+(`App/claudegotchi/Resources/species/frog/species.yaml`):
+```yaml
+id: frog
+name_zh: 青蛙
+name_en: Frog
+stages:
+  - {id: egg,      sprite: sprite.png, min_xp: 0}
+  - {id: tadpole,  sprite: sprite.png, min_xp: 50}
+  - {id: juvenile, sprite: sprite.png, min_xp: 200}
+  - {id: adult,    sprite: sprite.png, min_xp: 800}
+animations:
+  idle:     [0, 1, 0, 2]
+  thinking: [3, 4]
+  sleeping: [5]
+  happy:    [6, 7, 6]
+  sick:     [8]
+sprite_grid: {width: 16, height: 16, cols: 3, rows: 3}
+```
+
+Slime/dragon/cat have the same structure with adjusted names.
+
+- [ ] **Step 3: Manually verify**
+
+Boot the app five times, deleting `~/Library/Application Support/claudegotchi`
+between each launch. Across the five trials, verify all four species have
+appeared at least once. (For determinism, you can temporarily inject a
+`SeededRNG` by environment variable.)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add App/claudegotchi/Resources/species
+git commit -m "Add four launch species (frog/slime/dragon/cat) with placeholder sprites"
+```
+
+---
+
+### Task 5.4: Asset PR check workflow
+
+**Files:**
+- Create: `.github/workflows/asset-check.yml`
+- Create: `scripts/validate-species.swift`
+
+Validates every new species YAML in PRs against the spec schema and PNG
+constraints (16×16 ≤ dimensions ≤ 256×256, frame indices in range).
+
+- [ ] **Step 1: Write the validator script**
+
+Create `scripts/validate-species.swift`:
+```swift
+#!/usr/bin/env swift
+import Foundation
+import AppKit
+
+// Adapted from PetCore's loader; standalone to run in CI without building the package.
+struct StageY: Decodable { let id: String; let sprite: String; let min_xp: Int }
+struct GridY: Decodable { let width: Int; let height: Int; let cols: Int; let rows: Int }
+struct SpeciesY: Decodable {
+    let id: String
+    let name_zh: String
+    let name_en: String
+    let stages: [StageY]
+    let animations: [String: [Int]]
+    let sprite_grid: GridY
+}
+
+func fail(_ msg: String) -> Never {
+    FileHandle.standardError.write(Data((msg + "\n").utf8))
+    exit(1)
+}
+
+let args = CommandLine.arguments.dropFirst()
+guard !args.isEmpty else { fail("usage: validate-species.swift <species-dir>...") }
+
+for arg in args {
+    let dir = URL(fileURLWithPath: arg)
+    let yaml = dir.appendingPathComponent("species.yaml")
+    let png  = dir.appendingPathComponent("sprite.png")
+    guard FileManager.default.fileExists(atPath: yaml.path) else { fail("missing \(yaml.path)") }
+    guard FileManager.default.fileExists(atPath: png.path) else { fail("missing \(png.path)") }
+
+    // Parse YAML via Yams (assumed available — install with `brew install yamlfmt`)
+    // For a no-dep CI we shell out to python's yaml instead.
+    let py = Process()
+    py.launchPath = "/usr/bin/python3"
+    py.arguments = ["-c", "import yaml,sys,json; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))", yaml.path]
+    let pipe = Pipe()
+    py.standardOutput = pipe
+    try? py.run()
+    py.waitUntilExit()
+    let json = pipe.fileHandleForReading.readDataToEndOfFile()
+    let species = try JSONDecoder().decode(SpeciesY.self, from: json)
+
+    // Validate PNG dimensions
+    guard let img = NSImage(contentsOf: png) else { fail("\(png.path): not a PNG") }
+    let w = Int(img.size.width); let h = Int(img.size.height)
+    guard w >= 16, h >= 16, w <= 256, h <= 256 else {
+        fail("\(png.path): dimensions \(w)x\(h) outside [16,256]")
+    }
+
+    // Validate frame indices
+    let maxIdx = species.sprite_grid.cols * species.sprite_grid.rows - 1
+    for (anim, indices) in species.animations {
+        for i in indices where i < 0 || i > maxIdx {
+            fail("\(species.id) animation \(anim): frame \(i) out of range [0, \(maxIdx)]")
+        }
+    }
+    print("✓ \(species.id) (\(species.name_en))")
+}
+```
+
+Make it executable:
+```bash
+chmod +x scripts/validate-species.swift
+```
+
+- [ ] **Step 2: Write the workflow**
+
+Create `.github/workflows/asset-check.yml`:
+```yaml
+name: Asset Check
+
+on:
+  pull_request:
+    paths:
+      - 'App/claudegotchi/Resources/species/**'
+
+jobs:
+  validate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate every species directory
+        run: |
+          for d in App/claudegotchi/Resources/species/*/; do
+            swift scripts/validate-species.swift "$d"
+          done
+```
+
+- [ ] **Step 3: Verify locally**
+
+```bash
+for d in App/claudegotchi/Resources/species/*/; do
+  swift scripts/validate-species.swift "$d"
+done
+```
+Expected: `✓ frog ...`, `✓ slime ...`, `✓ dragon ...`, `✓ cat ...`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/validate-species.swift .github/workflows/asset-check.yml
+git commit -m "Add asset PR check: YAML schema + PNG dimension + frame index validation"
+```
+
+---
+
+### Task 5.5: Release workflow + .dmg builder
+
+**Files:**
+- Create: `.github/workflows/release.yml`
+
+Triggered by tag push `v*`. Builds the app, copies it into a folder with
+a symlink to /Applications, packages as `.dmg`, uploads to GitHub Release.
+
+- [ ] **Step 1: Write the workflow**
+
+Create `.github/workflows/release.yml`:
+```yaml
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: App
+        run: xcodegen generate
+
+      - name: Build (Release)
+        working-directory: App
+        run: |
+          xcodebuild -project claudegotchi.xcodeproj \
+                     -scheme claudegotchi \
+                     -configuration Release \
+                     -derivedDataPath build \
+                     CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
+                     build
+
+      - name: Create .dmg
+        working-directory: App
+        run: |
+          mkdir -p dmg-stage
+          cp -R build/Build/Products/Release/claudegotchi.app dmg-stage/
+          ln -s /Applications dmg-stage/Applications
+          hdiutil create -volname claudegotchi \
+                         -srcfolder dmg-stage \
+                         -ov -format UDZO \
+                         claudegotchi.dmg
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: App/claudegotchi.dmg
+```
+
+- [ ] **Step 2: Tag and verify**
+
+(After Chunks 1-5 are merged.) Tag `v0.1.0-rc1` and verify the workflow
+publishes a release with a downloadable `.dmg`.
+
+```bash
+git tag v0.1.0-rc1
+git push --tags
+```
+
+- [ ] **Step 3: Commit (once workflow file is in)**
+
+```bash
+git add .github/workflows/release.yml
+git commit -m "Add release workflow that builds unsigned .dmg on tag push"
+```
+
+---
+
+### Task 5.6: Homebrew tap
+
+**Files (in a SEPARATE repo `goldfishinsky/homebrew-tap`):**
+- Create: `Casks/claudegotchi.rb`
+
+Lives outside the main repo because Homebrew expects a tap repo named
+`homebrew-<name>`. Once created, users install via:
+```
+brew tap goldfishinsky/tap
+brew install --cask claudegotchi
+```
+
+- [ ] **Step 1: Create the tap repo**
+
+In the GitHub UI (under goldfishinsky), create
+`goldfishinsky/homebrew-tap`. Public, MIT.
+
+```bash
+git clone git@github.com:goldfishinsky/homebrew-tap.git
+cd homebrew-tap && mkdir -p Casks
+```
+
+- [ ] **Step 2: Write the cask formula**
+
+Create `Casks/claudegotchi.rb`:
+```ruby
+cask "claudegotchi" do
+  version "0.1.0"
+  sha256 :no_check  # v0.1: unsigned, recompute when signing lands
+  url "https://github.com/goldfishinsky/claudegotchi/releases/download/v#{version}/claudegotchi.dmg"
+  name "claudegotchi"
+  desc "macOS menu-bar Tamagotchi for Claude Code"
+  homepage "https://github.com/goldfishinsky/claudegotchi"
+
+  app "claudegotchi.app"
+
+  uninstall_postflight do
+    system_command "/bin/bash",
+                   args: ["#{appdir}/claudegotchi.app/Contents/Resources/uninstall.sh"]
+  end
+
+  zap trash: [
+    "~/Library/Application Support/claudegotchi"
+  ]
+end
+```
+
+- [ ] **Step 3: Smoke install**
+
+After `v0.1.0` is released:
+```bash
+brew tap goldfishinsky/tap
+brew install --cask claudegotchi
+open /Applications/claudegotchi.app
+```
+Expected: app installs, naming dialog appears, runs as expected.
+
+- [ ] **Step 4: Push the tap**
+
+```bash
+cd homebrew-tap
+git add Casks/claudegotchi.rb
+git commit -m "Add claudegotchi cask"
+git push
+```
+
+---
+
+### Task 5.7: README polish
+
+**Files:**
+- Modify: `README.md`
+
+Ship-ready: pitch → screenshots → install instructions (both channels) →
+contributor section pointing at the asset-check workflow → license.
+
+- [ ] **Step 1: Capture 3 screenshots**
+
+Take screenshots of: (a) menu bar icon close-up, (b) dropdown panel, (c)
+StatsWindow Overview tab. Place under `docs/screenshots/`.
+
+- [ ] **Step 2: Replace README with the polished version**
+
+Modify `README.md`:
+```markdown
+# claudegotchi
+
+A macOS menu-bar Tamagotchi for Claude Code. Feed it tokens, keep it company
+during long sessions, level it up over time. Neglect it and it actually dies.
+
+![menubar](docs/screenshots/menubar.png)
+![dropdown](docs/screenshots/dropdown.png)
+![stats](docs/screenshots/stats.png)
+
+## Install
+
+### Homebrew (recommended)
+
+    brew tap goldfishinsky/tap
+    brew install --cask claudegotchi
+
+### Direct download
+
+Grab the latest `.dmg` from [Releases](https://github.com/goldfishinsky/claudegotchi/releases).
+The v0.1 build is unsigned — right-click the app, choose Open, then "Open"
+again at the Gatekeeper prompt.
+
+## How it works
+
+Claude Code's hooks fire `claudegotchi-hook` on every session and tool call.
+The helper appends one JSON line to `~/Library/Application Support/claudegotchi/spool.jsonl`.
+The app watches the spool, applies events to your pet's stats inside a single
+SQLite transaction, and animates the menu-bar sprite accordingly.
+
+See [docs/specs/](docs/specs/) for the full design.
+
+## Contributing a species
+
+Each species is a folder under `App/claudegotchi/Resources/species/<id>/`
+with a `species.yaml` and a `sprite.png` (16×16 or larger, even multiples of
+16). The PR check enforces dimensions and frame-index correctness — if it
+goes green, the species is good to merge.
+
+## License
+
+MIT.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md docs/screenshots
+git commit -m "Polish README with screenshots and install paths"
+```
+
+---
+
+## Chunk 5 Exit Criteria
+
+- 5 HooksInstaller tests pass (Task 5.1)
+- `App/claudegotchi/Resources/uninstall.sh` is executable and bundled
+- 4 launch species directories exist and pass `validate-species.swift`
+- `.github/workflows/asset-check.yml` runs on PR
+- `.github/workflows/release.yml` publishes `.dmg` on `v*` tag push
+- `homebrew-tap/Casks/claudegotchi.rb` exists in the tap repo
+- README has screenshots + both install paths
+- A clean macOS install can run `brew install --cask goldfishinsky/tap/claudegotchi`
+  and end up with a working pet — verified manually on a fresh VM or
+  separate user account
+
+---
+
+## End of plan
+
+Total tests at chunk 5 close: **97 (Chunk 4 close) + 5 HooksInstaller =
+102 tests**.
+
+The plan now decomposes the work to the bite-sized step level. Hand off
+to `superpowers:subagent-driven-development` for execution. Good
+parallelism candidates: Chunks 1-3 tasks are mostly independent within
+each chunk; Chunks 4-5 are more sequential because the UI depends on the
+engine and distribution depends on the UI.
