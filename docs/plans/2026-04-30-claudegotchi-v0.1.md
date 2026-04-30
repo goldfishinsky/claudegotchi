@@ -634,6 +634,13 @@ public struct ConfigYAML: Codable, Equatable {
     public let thresholds: Thresholds
     public let spool: Spool
 
+    enum CodingKeys: String, CodingKey {
+        case decay
+        case eventCosts = "event_costs"
+        case thresholds
+        case spool
+    }
+
     public struct Decay: Codable, Equatable {
         public let fullnessPerSecond: Double
         public let intimacyPerSecond: Double
