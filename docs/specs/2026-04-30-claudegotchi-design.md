@@ -151,7 +151,11 @@ CREATE TABLE pet (
 --     warning. This loses up to 4 days of history but never crashes the app.
 
 -- Hard invariant: at most one alive pet at any time.
-CREATE UNIQUE INDEX idx_one_alive ON pet(death_at) WHERE death_at IS NULL;
+-- SQLite treats NULLs as distinct in UNIQUE constraints, so indexing the
+-- raw `death_at` column does NOT collide alive rows. We index the boolean
+-- expression instead — every alive row maps to the constant value 1, so
+-- the second alive insert collides as intended.
+CREATE UNIQUE INDEX idx_one_alive ON pet((death_at IS NULL)) WHERE death_at IS NULL;
 
 -- Append-only event stream.
 -- helper_event_id is assigned by claudegotchi-hook (ULID) and is the

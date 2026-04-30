@@ -273,9 +273,14 @@ public enum Database {
                   death_window_state TEXT NOT NULL DEFAULT '[]'
                 );
                 """)
+            // SQLite treats NULLs as distinct in UNIQUE constraints, so
+            // indexing `death_at` directly would NOT collide alive rows. We
+            // index the boolean expression `(death_at IS NULL)` instead —
+            // every alive row maps to the constant 1, so a second alive
+            // insert collides as intended.
             try db.execute(sql: """
                 CREATE UNIQUE INDEX idx_one_alive
-                ON pet(death_at) WHERE death_at IS NULL;
+                ON pet((death_at IS NULL)) WHERE death_at IS NULL;
                 """)
             try db.execute(sql: """
                 CREATE TABLE event (
