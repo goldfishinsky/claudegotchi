@@ -1,0 +1,19 @@
+id: frog
+name_zh: 青蛙
+name_en: Frog
+stages:
+  - {id: egg,      sprite: sprite.png, min_xp: 0}
+  - {id: tadpole,  sprite: sprite.png, min_xp: 50}
+  - {id: juvenile, sprite: sprite.png, min_xp: 200}
+  - {id: adult,    sprite: sprite.png, min_xp: 800}
+animations:
+  idle:     [0, 1, 0, 2]
+  thinking: [3, 4]
+  sleeping: [5]
+  happy:    [6, 7, 6]
+  sick:     [8]
+sprite_grid:
+  width: 16
+  height: 16
+  cols: 3
+  rows: 3

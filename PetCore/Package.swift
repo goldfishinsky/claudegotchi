@@ -21,7 +21,8 @@ let package = Package(
         ),
         .testTarget(
             name: "PetCoreTests",
-            dependencies: ["PetCore"]
+            dependencies: ["PetCore"],
+            resources: [.copy("Fixtures")]
         ),
     ]
 )
