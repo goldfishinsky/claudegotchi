@@ -1781,13 +1781,1457 @@ git commit -m "Add SpeciesRoulette with uniform pick + zero-species fallback"
 
 ---
 
-## Chunks 3-5: To be written after Chunk 2 passes review
+## Chunk 3: Event Pipeline
 
-- **Chunk 3 — Event pipeline.** Event JSON schema (Codable), `EventApplier` (event → stat changes), single-transaction `SpoolWatcher` with FSEvents, pre-tool-use timeout state, spool rotation with `flock`, the `claudegotchi-hook` CLI binary (Swift executable target), helper end-to-end test.
-- **Chunk 4 — UI surfaces.** Xcode project that links `PetCore`, menu-bar icon + sprite-sheet renderer, dropdown panel (SwiftUI) with click-on-pet interaction, StatsWindow with three tabs, pause/settings/about menu items.
-- **Chunk 5 — Distribution + polish.** `HooksInstaller` + permission preflight + atomic merge + `_claudegotchi` sentinel, `uninstall.sh`, `.dmg` builder via GitHub Actions, Homebrew tap, asset PR check workflow, README screenshots, four launch species sprite assets (frog/slime/dragon/cat).
+Goal: end-to-end event flow from `claudegotchi-hook` CLI → spool file →
+`SpoolReader` → `ApplyTransaction` → `EventApplier` → DB state. Honors all
+spec §4 contracts: single SQLite transaction per event, idempotent replay
+via `helper_event_id` UNIQUE + watermark, pre-tool-use 5-min timeout, pause
+that updates rollup but skips applier, spool rotation with `flock` + atomic
+rename, hibernation transitions encoded as synthetic events.
 
-Each chunk follows the same TDD pattern as Chunks 1-2. Chunks 2 and 3 are
-well-suited to subagent-driven-development with parallel dispatch (most tasks
-in each chunk touch different files); Chunks 4 and 5 are more sequential
-because UI depends on engine and distribution depends on UI.
+Module map (under `PetCore/Sources/PetCore/`):
+
+| File | Responsibility |
+|---|---|
+| `Event.swift` | `Event` Codable struct (helper-app JSON contract) + parser |
+| `SpoolReader.swift` | File → lines; in-memory byte offset; rotation-aware |
+| `ApplyTransaction.swift` | Single SQLite transaction: insert event + upsert rollup + (if !paused) apply + advance watermark |
+| `EventApplier.swift` | Event-type → stat-delta logic + pending tool-use tracker |
+| `DailyRollup.swift` | rollup table DAO (upsert by date) |
+| `SpoolWatcher.swift` | FSEvents shim that calls SpoolReader → ApplyTransaction; also owns rotation |
+
+The CLI binary lives outside `PetCore`:
+
+| File | Responsibility |
+|---|---|
+| `App/HookHelper/main.swift` | Argument parsing → ULID → spool append → exit 0 |
+| `App/HookHelper/HookSpool.swift` | Single-line atomic appender (also unit-tested) |
+
+### Task 3.1: `Event` JSON schema + parser
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/Event.swift`
+- Create: `PetCore/Tests/PetCoreTests/EventTests.swift`
+
+`Event` is the JSON contract between the hook helper and the app. It's a
+`Codable` struct that round-trips to the spec §4 schema. Unknown future fields
+are accepted (forward-compatible) by storing extras in `extra` as raw JSON.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/EventTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class EventTests: XCTestCase {
+    func testRoundTrip() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"01HK6Y0000000000000000000A","ts":1714500000123,"type":"post_tool_use","session_id":"abc","tool":"Bash","tokens_in":100,"tokens_out":200,"model":"claude-opus-4-7"}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.schemaVersion, 1)
+        XCTAssertEqual(e.eventId, "01HK6Y0000000000000000000A")
+        XCTAssertEqual(e.ts, 1_714_500_000_123)
+        XCTAssertEqual(e.type, .postToolUse)
+        XCTAssertEqual(e.sessionId, "abc")
+        XCTAssertEqual(e.tool, "Bash")
+        XCTAssertEqual(e.tokensIn, 100)
+        XCTAssertEqual(e.tokensOut, 200)
+        XCTAssertEqual(e.model, "claude-opus-4-7")
+    }
+
+    func testTokensTotalSumsBothFields() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"post_tool_use","tokens_in":300,"tokens_out":700}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.tokensTotal, 1000)
+    }
+
+    func testTokensTotalDefaultsToZero() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"session_start"}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.tokensTotal, 0)
+    }
+
+    func testRejectsUnknownType() {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"who_knows"}
+        """#
+        XCTAssertThrowsError(try Event.parse(json))
+    }
+
+    func testRejectsMissingRequiredField() {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","type":"session_start"}
+        """#
+        XCTAssertThrowsError(try Event.parse(json))  // ts missing
+    }
+
+    func testForwardCompatibleExtraFields() throws {
+        // Future helper versions may add fields; current parser must not throw.
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"session_start","future_field":42}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.eventId, "a")
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter EventTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `Event.swift`**
+
+Create `PetCore/Sources/PetCore/Event.swift`:
+```swift
+import Foundation
+
+public struct Event: Codable, Equatable {
+    public let schemaVersion: Int
+    public let eventId: String
+    public let ts: Int64                    // unix epoch ms
+    public let type: EventType
+    public let sessionId: String?
+    public let tool: String?
+    public let tokensIn: Int?
+    public let tokensOut: Int?
+    public let model: String?
+
+    public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
+
+    public enum EventType: String, Codable {
+        case sessionStart = "session_start"
+        case preToolUse = "pre_tool_use"
+        case postToolUse = "post_tool_use"
+        case stop
+        case notification
+        case hibernateStart = "hibernate_start"   // synthetic
+        case hibernateEnd = "hibernate_end"       // synthetic
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case eventId = "event_id"
+        case ts, type
+        case sessionId = "session_id"
+        case tool
+        case tokensIn = "tokens_in"
+        case tokensOut = "tokens_out"
+        case model
+    }
+
+    public static func parse(_ json: String) throws -> Event {
+        guard let data = json.data(using: .utf8) else {
+            throw EventError.invalidUTF8
+        }
+        return try JSONDecoder().decode(Event.self, from: data)
+    }
+
+    public func encodeJSON() throws -> String {
+        let data = try JSONEncoder().encode(self)
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+public enum EventError: Error, Equatable {
+    case invalidUTF8
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter EventTests`
+Expected: 6 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/Event.swift PetCore/Tests/PetCoreTests/EventTests.swift
+git commit -m "Add Event Codable schema with tokensTotal helper and forward-compat parsing"
+```
+
+---
+
+### Task 3.2: `SpoolReader` (file → lines, byte offset)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/SpoolReader.swift`
+- Create: `PetCore/Tests/PetCoreTests/SpoolReaderTests.swift`
+
+`SpoolReader` is a pure-Foundation file reader that exposes a single method:
+`readNewLines() -> [String]`. It tracks byte offset in memory; on launch the
+offset starts at 0. After reading, the offset advances. Lines are split by
+`\n`, partial last line (no trailing `\n`) is kept for the next call.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/SpoolReaderTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class SpoolReaderTests: XCTestCase {
+    var url: URL!
+
+    override func setUpWithError() throws {
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("spool-\(UUID()).jsonl")
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func append(_ s: String) throws {
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        let h = try FileHandle(forWritingTo: url)
+        try h.seekToEnd()
+        try h.write(contentsOf: Data(s.utf8))
+        try h.close()
+    }
+
+    func testReadsCompleteLines() throws {
+        try append("line1\nline2\nline3\n")
+        let r = SpoolReader(url: url)
+        XCTAssertEqual(try r.readNewLines(), ["line1", "line2", "line3"])
+    }
+
+    func testHoldsBackPartialLine() throws {
+        try append("complete\npartial-no-newline")
+        let r = SpoolReader(url: url)
+        XCTAssertEqual(try r.readNewLines(), ["complete"])
+        // After the partial completes, it should be returned
+        try append("-completed-now\n")
+        XCTAssertEqual(try r.readNewLines(), ["partial-no-newline-completed-now"])
+    }
+
+    func testAdvancesOffsetAcrossCalls() throws {
+        let r = SpoolReader(url: url)
+        try append("a\n")
+        XCTAssertEqual(try r.readNewLines(), ["a"])
+        try append("b\nc\n")
+        XCTAssertEqual(try r.readNewLines(), ["b", "c"])
+        XCTAssertEqual(try r.readNewLines(), [])  // nothing new
+    }
+
+    func testMissingFileReturnsEmpty() throws {
+        let r = SpoolReader(url: url)
+        XCTAssertEqual(try r.readNewLines(), [])
+    }
+
+    func testOffsetResetOnRotation() throws {
+        let r = SpoolReader(url: url)
+        try append("a\nb\n")
+        XCTAssertEqual(try r.readNewLines(), ["a", "b"])
+        // Simulate rotation: file truncated and rewritten with smaller content
+        try FileManager.default.removeItem(at: url)
+        try append("c\n")
+        // Reader detects file got smaller and resets offset to 0
+        XCTAssertEqual(try r.readNewLines(), ["c"])
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter SpoolReaderTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `SpoolReader.swift`**
+
+Create `PetCore/Sources/PetCore/SpoolReader.swift`:
+```swift
+import Foundation
+
+public final class SpoolReader {
+    private let url: URL
+    private var offset: UInt64 = 0
+    private var partial = ""
+
+    public init(url: URL) {
+        self.url = url
+    }
+
+    /// Reads all complete lines (terminated by \n) appended since the last
+    /// call. A partial last line (no trailing newline) is buffered in memory
+    /// and returned when its newline arrives.
+    public func readNewLines() throws -> [String] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs[.size] as? UInt64) ?? 0
+
+        // Detect rotation: file shrank → reset to start of new file
+        if size < offset {
+            offset = 0
+            partial = ""
+        }
+
+        guard size > offset else { return [] }
+
+        let h = try FileHandle(forReadingFrom: url)
+        defer { try? h.close() }
+        try h.seek(toOffset: offset)
+        let chunk = h.readDataToEndOfFile()
+        offset = size
+
+        let combined = partial + (String(data: chunk, encoding: .utf8) ?? "")
+        var lines = combined.components(separatedBy: "\n")
+        partial = lines.removeLast()  // last element is "" if data ended with \n
+        return lines.filter { !$0.isEmpty }
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter SpoolReaderTests`
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/SpoolReader.swift PetCore/Tests/PetCoreTests/SpoolReaderTests.swift
+git commit -m "Add SpoolReader with byte-offset tracking and rotation-aware reset"
+```
+
+---
+
+### Task 3.3: `DailyRollup` DAO
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/DailyRollup.swift`
+- Create: `PetCore/Tests/PetCoreTests/DailyRollupTests.swift`
+
+Tiny DAO over the `daily_rollup` table. Exposes `upsert(eventDate:type:tokensIn:tokensOut:tool:in:)` which
+increments the day's counters by 1 (or by tokens), creating the row if missing.
+Used by `ApplyTransaction` (Task 3.4) inside the same SQLite transaction.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/DailyRollupTests.swift`:
+```swift
+import XCTest
+import GRDB
+@testable import PetCore
+
+final class DailyRollupTests: XCTestCase {
+    var db: DatabaseQueue!
+    var dbPath: String!
+
+    override func setUpWithError() throws {
+        dbPath = NSTemporaryDirectory() + "rollup-\(UUID()).sqlite"
+        db = try Database.open(at: dbPath)
+    }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(atPath: dbPath)
+    }
+
+    func testFreshDateInserts() throws {
+        try db.write { conn in
+            try DailyRollup.upsert(
+                eventDate: "2026-04-30", type: .sessionStart,
+                tokensIn: 0, tokensOut: 0, tool: nil, in: conn
+            )
+        }
+        let row = try db.read { try DailyRollup.fetch(date: "2026-04-30", from: $0) }
+        XCTAssertEqual(row?.sessions, 1)
+        XCTAssertEqual(row?.messages, 0)
+    }
+
+    func testPostToolUseAccumulatesTokensAndCount() throws {
+        try db.write { conn in
+            try DailyRollup.upsert(
+                eventDate: "2026-04-30", type: .postToolUse,
+                tokensIn: 100, tokensOut: 200, tool: "Bash", in: conn
+            )
+            try DailyRollup.upsert(
+                eventDate: "2026-04-30", type: .postToolUse,
+                tokensIn: 50, tokensOut: 75, tool: "Read", in: conn
+            )
+        }
+        let row = try db.read { try DailyRollup.fetch(date: "2026-04-30", from: $0) }!
+        XCTAssertEqual(row.toolsUsed, 2)
+        XCTAssertEqual(row.tokensIn, 150)
+        XCTAssertEqual(row.tokensOut, 275)
+        XCTAssertEqual(row.messages, 2)
+    }
+
+    func testMixedTypesIncrementCorrectColumns() throws {
+        try db.write { conn in
+            try DailyRollup.upsert(eventDate: "2026-04-30", type: .sessionStart, tokensIn: 0, tokensOut: 0, tool: nil, in: conn)
+            try DailyRollup.upsert(eventDate: "2026-04-30", type: .stop, tokensIn: 0, tokensOut: 0, tool: nil, in: conn)
+        }
+        let row = try db.read { try DailyRollup.fetch(date: "2026-04-30", from: $0) }!
+        XCTAssertEqual(row.sessions, 1)
+        XCTAssertEqual(row.messages, 0)
+    }
+
+    func testDifferentDatesAreSeparateRows() throws {
+        try db.write { conn in
+            try DailyRollup.upsert(eventDate: "2026-04-29", type: .sessionStart, tokensIn: 0, tokensOut: 0, tool: nil, in: conn)
+            try DailyRollup.upsert(eventDate: "2026-04-30", type: .sessionStart, tokensIn: 0, tokensOut: 0, tool: nil, in: conn)
+        }
+        let yesterday = try db.read { try DailyRollup.fetch(date: "2026-04-29", from: $0) }!
+        let today = try db.read { try DailyRollup.fetch(date: "2026-04-30", from: $0) }!
+        XCTAssertEqual(yesterday.sessions, 1)
+        XCTAssertEqual(today.sessions, 1)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter DailyRollupTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `DailyRollup.swift`**
+
+Create `PetCore/Sources/PetCore/DailyRollup.swift`:
+```swift
+import Foundation
+import GRDB
+
+public struct DailyRollup: Equatable {
+    public let date: String
+    public let sessions: Int
+    public let messages: Int
+    public let tokensIn: Int
+    public let tokensOut: Int
+    public let toolsUsed: Int
+
+    public static func upsert(
+        eventDate: String,
+        type: Event.EventType,
+        tokensIn: Int,
+        tokensOut: Int,
+        tool: String?,
+        in conn: GRDB.Database
+    ) throws {
+        // Ensure the row exists
+        try conn.execute(sql: """
+            INSERT INTO daily_rollup (date, sessions, messages, tokens_in, tokens_out, tools_used)
+            VALUES (?, 0, 0, 0, 0, 0)
+            ON CONFLICT(date) DO NOTHING
+            """, arguments: [eventDate])
+
+        // Per-type column updates
+        switch type {
+        case .sessionStart:
+            try conn.execute(sql: "UPDATE daily_rollup SET sessions = sessions + 1 WHERE date = ?", arguments: [eventDate])
+        case .postToolUse:
+            try conn.execute(sql: """
+                UPDATE daily_rollup
+                SET messages = messages + 1,
+                    tools_used = tools_used + 1,
+                    tokens_in = tokens_in + ?,
+                    tokens_out = tokens_out + ?
+                WHERE date = ?
+                """, arguments: [tokensIn, tokensOut, eventDate])
+        default:
+            break  // pre_tool_use, stop, notification, hibernate_*: no rollup change
+        }
+    }
+
+    public static func fetch(date: String, from conn: GRDB.Database) throws -> DailyRollup? {
+        let row = try Row.fetchOne(conn, sql: "SELECT * FROM daily_rollup WHERE date = ?", arguments: [date])
+        guard let r = row else { return nil }
+        return DailyRollup(
+            date: r["date"], sessions: r["sessions"], messages: r["messages"],
+            tokensIn: r["tokens_in"], tokensOut: r["tokens_out"], toolsUsed: r["tools_used"]
+        )
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter DailyRollupTests`
+Expected: 4 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/DailyRollup.swift PetCore/Tests/PetCoreTests/DailyRollupTests.swift
+git commit -m "Add DailyRollup DAO with upsert keyed by event date"
+```
+
+---
+
+### Task 3.4: `EventApplier` (event → stat changes, pending tool-use tracker)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/EventApplier.swift`
+- Create: `PetCore/Tests/PetCoreTests/EventApplierTests.swift`
+
+`EventApplier` is the pure function that maps `Event` + current `Pet` →
+new `Pet` (and side-effects on the pending tool-use tracker). It does NOT
+touch the database — `ApplyTransaction` (Task 3.5) wires the persistence.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/EventApplierTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class EventApplierTests: XCTestCase {
+    var applier: EventApplier!
+    let cfg = ConfigYAML.defaults
+
+    override func setUp() {
+        applier = EventApplier(config: cfg)
+    }
+
+    private func evt(_ type: Event.EventType, sessionId: String? = nil, tool: String? = nil,
+                     tokensIn: Int? = nil, tokensOut: Int? = nil, ts: Int64 = 0) -> Event {
+        Event(
+            schemaVersion: 1, eventId: UUID().uuidString, ts: ts, type: type,
+            sessionId: sessionId, tool: tool, tokensIn: tokensIn, tokensOut: tokensOut, model: nil
+        )
+    }
+
+    func testPostToolUseIncreasesFullnessAndXP() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        let next = applier.apply(event: evt(.postToolUse, tokensIn: 1000, tokensOut: 1000), to: pet)
+        // tokens_total = 2000 → fullness += min(2000/2000, 5) = 1
+        // xp += 2000/200 = 10
+        XCTAssertEqual(next.fullness, pet.fullness + 1, accuracy: 1e-9)
+        XCTAssertEqual(next.xp, 10)
+    }
+
+    func testPostToolUseFullnessCappedAt5() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        let next = applier.apply(event: evt(.postToolUse, tokensIn: 100_000, tokensOut: 100_000), to: pet)
+        XCTAssertEqual(next.fullness, min(100, pet.fullness + 5), accuracy: 1e-9)
+    }
+
+    func testPostToolUseFullnessClampsTo100() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 99
+        let next = applier.apply(event: evt(.postToolUse, tokensIn: 5000, tokensOut: 5000), to: pet)
+        XCTAssertEqual(next.fullness, 100)
+    }
+
+    func testPreToolUseDrainsStamina() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 50
+        let next = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: 0), to: pet)
+        XCTAssertEqual(next.stamina, 49.5, accuracy: 1e-9)
+    }
+
+    func testStopAddsIntimacy() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 10
+        let next = applier.apply(event: evt(.stop), to: pet)
+        XCTAssertEqual(next.intimacy, 10.5, accuracy: 1e-9)
+    }
+
+    func testSessionStartClearsHibernation() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.hibernationSince = 100
+        let next = applier.apply(event: evt(.sessionStart, ts: 1_000_000), to: pet)
+        XCTAssertNil(next.hibernationSince)
+    }
+
+    func testPreToolUsePendingResolvedByPostToolUse() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: 0), to: pet)
+        XCTAssertEqual(applier.pendingCount, 1)
+        pet = applier.apply(event: evt(.postToolUse, sessionId: "s1", tool: "Bash", tokensIn: 1000, tokensOut: 0, ts: 1000), to: pet)
+        XCTAssertEqual(applier.pendingCount, 0)
+    }
+
+    func testPendingTimeoutDropsAfter5Min() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: 0), to: pet)
+        XCTAssertEqual(applier.pendingCount, 1)
+        // Drive the timeout — caller passes "now" via tickPendingTimeouts
+        applier.tickPendingTimeouts(nowMs: 5 * 60 * 1000 + 1)
+        XCTAssertEqual(applier.pendingCount, 0)
+    }
+
+    func testSustainedSessionDoublesPreToolCost() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 50
+        // session_start at 0
+        pet = applier.apply(event: evt(.sessionStart, sessionId: "s1", ts: 0), to: pet)
+        // pre_tool_use at 31 min (1860s = 1860000 ms)
+        pet = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: 1_860_000), to: pet)
+        XCTAssertEqual(pet.stamina, 49, accuracy: 1e-9)  // -1.0 instead of -0.5
+    }
+
+    func testHibernateStartSetsField() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        let next = applier.apply(event: evt(.hibernateStart, ts: 5000), to: pet)
+        XCTAssertEqual(next.hibernationSince, 5000)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter EventApplierTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `EventApplier.swift`**
+
+Create `PetCore/Sources/PetCore/EventApplier.swift`:
+```swift
+import Foundation
+
+public final class EventApplier {
+    public struct PendingPreUse {
+        public let eventId: String
+        public let sessionId: String
+        public let tool: String
+        public let startedMs: Int64
+    }
+
+    private struct SessionStart {
+        let startedMs: Int64
+    }
+
+    private let config: ConfigYAML
+    private var pending: [String: PendingPreUse] = [:]   // key = sessionId+tool
+    private var sessionStarts: [String: SessionStart] = [:]  // key = sessionId
+
+    public init(config: ConfigYAML) { self.config = config }
+
+    public var pendingCount: Int { pending.count }
+
+    public func apply(event: Event, to pet: Pet) -> Pet {
+        var p = pet
+
+        switch event.type {
+        case .sessionStart:
+            if let sid = event.sessionId {
+                sessionStarts[sid] = SessionStart(startedMs: event.ts)
+            }
+            if p.hibernationSince != nil {
+                p.hibernationSince = nil
+            }
+
+        case .preToolUse:
+            guard let sid = event.sessionId, let tool = event.tool else { return p }
+            let cost = isSustained(sessionId: sid, eventMs: event.ts)
+                ? config.eventCosts.preToolUseStaminaSustained
+                : config.eventCosts.preToolUseStamina
+            p.stamina = clamp(p.stamina - cost)
+            pending[sid + "\u{1}" + tool] = PendingPreUse(
+                eventId: event.eventId, sessionId: sid, tool: tool, startedMs: event.ts
+            )
+
+        case .postToolUse:
+            if let sid = event.sessionId, let tool = event.tool {
+                pending.removeValue(forKey: sid + "\u{1}" + tool)
+            }
+            let total = Double(event.tokensTotal)
+            let fullnessBump = min(total / 2000.0 * config.eventCosts.postToolUseFullnessPer2kTokens, 5.0)
+            p.fullness = clamp(p.fullness + fullnessBump)
+            let xpGain = Int64((total / 200.0 * config.eventCosts.postToolUseXpPer200Tokens).rounded(.down))
+            p.xp += xpGain
+
+        case .stop:
+            p.intimacy = clamp(p.intimacy + config.eventCosts.stopIntimacy)
+
+        case .notification:
+            break  // no stat effect in v0.1
+
+        case .hibernateStart:
+            p.hibernationSince = event.ts
+
+        case .hibernateEnd:
+            p.hibernationSince = nil
+        }
+        return p
+    }
+
+    /// Drops pending entries whose pre_tool_use is older than the timeout.
+    /// Returns the dropped pending entries so the caller (UI layer) can
+    /// transition the animation back to idle.
+    @discardableResult
+    public func tickPendingTimeouts(nowMs: Int64) -> [PendingPreUse] {
+        let timeoutMs = Int64(config.thresholds.preToolUseTimeoutSeconds * 1000)
+        let cutoff = nowMs - timeoutMs
+        let expired = pending.values.filter { $0.startedMs <= cutoff }
+        for p in expired {
+            pending.removeValue(forKey: p.sessionId + "\u{1}" + p.tool)
+        }
+        return Array(expired)
+    }
+
+    private func isSustained(sessionId: String, eventMs: Int64) -> Bool {
+        guard let start = sessionStarts[sessionId] else { return false }
+        let elapsedMs = eventMs - start.startedMs
+        return elapsedMs >= Int64(config.thresholds.sustainedSessionSeconds * 1000)
+    }
+
+    private func clamp(_ v: Double) -> Double { min(100, max(0, v)) }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter EventApplierTests`
+Expected: 10 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/EventApplier.swift PetCore/Tests/PetCoreTests/EventApplierTests.swift
+git commit -m "Add EventApplier with pending tool-use tracker and 5-min timeout"
+```
+
+---
+
+### Task 3.5: `ApplyTransaction` (single-SQLite-transaction wrapper)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/ApplyTransaction.swift`
+- Create: `PetCore/Tests/PetCoreTests/ApplyTransactionTests.swift`
+
+This is the spec §4 atomic primitive. One JSON line in → one transaction
+that either commits all four steps or none:
+
+1. INSERT INTO event (... helper_event_id ...) — fails silently on UNIQUE
+2. UPSERT daily_rollup
+3. If `!paused`: apply event to pet (via `EventApplier`) and persist pet row
+4. UPDATE pet.last_applied_event_id = event.id
+
+Because `helper_event_id` is UNIQUE, replays of the same line are idempotent.
+Because the watermark advances inside the same transaction, a crash before
+commit is recovered by replaying from the (unchanged) watermark.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/ApplyTransactionTests.swift`:
+```swift
+import XCTest
+import GRDB
+@testable import PetCore
+
+final class ApplyTransactionTests: XCTestCase {
+    var dbPath: String!
+    var db: DatabaseQueue!
+    var pet: Pet!
+
+    override func setUpWithError() throws {
+        dbPath = NSTemporaryDirectory() + "atx-\(UUID()).sqlite"
+        db = try Database.open(at: dbPath)
+        pet = try Pet.insert(.fresh(species: "frog", at: 0), into: db)
+    }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(atPath: dbPath)
+    }
+
+    private func eventJSON(eventId: String, type: String = "post_tool_use",
+                           tokensIn: Int = 100, tokensOut: Int = 100, ts: Int64 = 1714500000123) -> String {
+        #"""
+        {"schema_version":1,"event_id":"\#(eventId)","ts":\#(ts),"type":"\#(type)","session_id":"s","tool":"Bash","tokens_in":\#(tokensIn),"tokens_out":\#(tokensOut)}
+        """#
+    }
+
+    func testFreshLineCommitsAllFourSteps() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))
+
+        // Event row inserted
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1)
+        // daily_rollup row exists
+        let date = try db.read { try String.fetchOne($0, sql: "SELECT date FROM daily_rollup") }
+        XCTAssertNotNil(date)
+        // Pet stats updated (xp += 200/200 = 1; well, tokens_total=200, xp += 1)
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, 1)
+        // Watermark advanced
+        XCTAssertGreaterThan(p.lastAppliedEventId, 0)
+    }
+
+    func testDuplicateHelperEventIdNoOp() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let line = eventJSON(eventId: "01H0000000000000000000000A")
+        try atx.process(jsonLine: line)
+        try atx.process(jsonLine: line)  // same helper_event_id
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1, "Duplicate helper_event_id must be silently ignored")
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, 1, "Stat must not be applied twice")
+    }
+
+    func testPausedSkipsEventApplierButWritesEventAndRollup() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: true)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1)
+        let date = try db.read { try String.fetchOne($0, sql: "SELECT date FROM daily_rollup") }
+        XCTAssertNotNil(date)
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, 0, "Paused → applier did NOT run; xp unchanged")
+        XCTAssertGreaterThan(p.lastAppliedEventId, 0, "Watermark advances even when paused")
+    }
+
+    func testWatermarkAdvancesMonotonically() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A", ts: 1000))
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000B", ts: 2000))
+        let p = try Pet.fetchAlive(from: db)!
+        let ids = try db.read { try Int64.fetchAll($0, sql: "SELECT id FROM event ORDER BY id") }
+        XCTAssertEqual(p.lastAppliedEventId, ids.last!)
+    }
+
+    func testMalformedJSONRejected() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        XCTAssertThrowsError(try atx.process(jsonLine: "not-json"))
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 0)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter ApplyTransactionTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `ApplyTransaction.swift`**
+
+Create `PetCore/Sources/PetCore/ApplyTransaction.swift`:
+```swift
+import Foundation
+import GRDB
+
+public final class ApplyTransaction {
+    private let db: DatabaseQueue
+    private let applier: EventApplier
+    private let paused: Bool
+
+    public init(db: DatabaseQueue, applier: EventApplier, paused: Bool) {
+        self.db = db
+        self.applier = applier
+        self.paused = paused
+    }
+
+    public func process(jsonLine: String) throws {
+        let event = try Event.parse(jsonLine)
+
+        try db.write { conn in
+            // 1. INSERT event row. UNIQUE(helper_event_id) → duplicates fail.
+            do {
+                try conn.execute(sql: """
+                    INSERT INTO event (helper_event_id, ts, type, pet_id, payload)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, arguments: [
+                    event.eventId,
+                    event.ts,
+                    event.type.rawValue,
+                    try aliveOrThrow(in: conn).id!,
+                    jsonLine
+                ])
+            } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
+                // Duplicate helper_event_id — silent skip, transaction will commit
+                // with no effect since we return before the other steps.
+                return
+            }
+
+            // 2. UPSERT daily_rollup
+            let date = localDate(fromUnixMs: event.ts)
+            try DailyRollup.upsert(
+                eventDate: date, type: event.type,
+                tokensIn: event.tokensIn ?? 0,
+                tokensOut: event.tokensOut ?? 0,
+                tool: event.tool, in: conn
+            )
+
+            // 3. If !paused, apply event to pet
+            var pet = try aliveOrThrow(in: conn)
+            if !paused {
+                pet = applier.apply(event: event, to: pet)
+                try pet.update(conn)
+            }
+
+            // 4. Advance watermark (regardless of pause)
+            let eventDbId = try Int64.fetchOne(conn, sql: "SELECT MAX(id) FROM event")!
+            try conn.execute(
+                sql: "UPDATE pet SET last_applied_event_id = ? WHERE id = ?",
+                arguments: [eventDbId, pet.id!]
+            )
+        }
+    }
+
+    private func aliveOrThrow(in conn: GRDB.Database) throws -> Pet {
+        guard let p = try Pet.filter(Column("death_at") == nil).fetchOne(conn) else {
+            throw ApplyTransactionError.noAlivePet
+        }
+        return p
+    }
+
+    private func localDate(fromUnixMs ts: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(ts) / 1000.0)
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        return f.string(from: date)
+    }
+}
+
+public enum ApplyTransactionError: Error {
+    case noAlivePet
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter ApplyTransactionTests`
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/ApplyTransaction.swift PetCore/Tests/PetCoreTests/ApplyTransactionTests.swift
+git commit -m "Add ApplyTransaction: single-SQLite-transaction event commit with idempotent replay"
+```
+
+---
+
+### Task 3.6: `claudegotchi-hook` CLI binary
+
+**Files:**
+- Create: `App/HookHelper/main.swift`
+- Create: `App/HookHelper/HookSpool.swift`
+- Modify: `PetCore/Package.swift` (add `claudegotchi-hook` as a SwiftPM executable target so it can be tested)
+
+The CLI is the simplest possible thing: read CLI args, build an `Event`,
+write one line to the spool, exit 0. It links `PetCore` for `Event` and
+`ULID` only.
+
+We house it inside the SwiftPM package (rather than the Xcode project) so
+its tests can run with `swift test`. The Xcode project (Chunk 4) will pick
+up the same source files via a symlink or shared target reference.
+
+- [ ] **Step 1: Update `Package.swift` to add the executable target**
+
+Modify `PetCore/Package.swift`:
+```swift
+// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+    name: "PetCore",
+    platforms: [.macOS(.v13)],
+    products: [
+        .library(name: "PetCore", targets: ["PetCore"]),
+        .executable(name: "claudegotchi-hook", targets: ["HookHelper"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "6.24.0"),
+        .package(url: "https://github.com/jpsim/Yams.git", from: "5.0.6"),
+    ],
+    targets: [
+        .target(
+            name: "PetCore",
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift"),
+                "Yams",
+            ]
+        ),
+        .executableTarget(
+            name: "HookHelper",
+            dependencies: ["PetCore"],
+            path: "Sources/HookHelper"
+        ),
+        .testTarget(
+            name: "PetCoreTests",
+            dependencies: ["PetCore"],
+            resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "HookHelperTests",
+            dependencies: ["HookHelper", "PetCore"],
+            path: "Tests/HookHelperTests"
+        ),
+    ]
+)
+```
+
+Move the `App/HookHelper/` files to `PetCore/Sources/HookHelper/` so the
+SwiftPM `path:` directive finds them. (The Xcode project in Chunk 4 will
+add file references to the same on-disk paths.)
+
+```bash
+mkdir -p PetCore/Sources/HookHelper PetCore/Tests/HookHelperTests
+```
+
+- [ ] **Step 2: Implement `HookSpool.swift`**
+
+Create `PetCore/Sources/HookHelper/HookSpool.swift`:
+```swift
+import Foundation
+
+public enum HookSpool {
+    /// Appends one line + '\n' to the spool file using O_APPEND | O_CREAT
+    /// with mode 0600. Each call is atomic on macOS for writes ≤ PIPE_BUF
+    /// (4096 bytes) — far larger than any event line.
+    /// Throws if the parent directory cannot be created or the write fails.
+    public static func append(_ line: String, to url: URL) throws {
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else {
+            throw HookSpoolError.openFailed(errno: errno)
+        }
+        defer { close(fd) }
+
+        var data = Data(line.utf8)
+        data.append(0x0A)  // '\n'
+        let written = data.withUnsafeBytes { ptr in
+            Darwin.write(fd, ptr.baseAddress, data.count)
+        }
+        guard written == data.count else {
+            throw HookSpoolError.writeFailed(errno: errno)
+        }
+        // fsync is a best-effort durability nudge; failure is non-fatal.
+        _ = fsync(fd)
+    }
+}
+
+public enum HookSpoolError: Error, Equatable {
+    case openFailed(errno: Int32)
+    case writeFailed(errno: Int32)
+}
+```
+
+- [ ] **Step 3: Write the failing test for `HookSpool`**
+
+Create `PetCore/Tests/HookHelperTests/HookSpoolTests.swift`:
+```swift
+import XCTest
+@testable import HookHelper
+
+final class HookSpoolTests: XCTestCase {
+    var url: URL!
+    override func setUpWithError() throws {
+        url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("spool-\(UUID()).jsonl")
+    }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func testAppendCreatesFileAndWritesLine() throws {
+        try HookSpool.append("line-1", to: url)
+        let content = try String(contentsOf: url)
+        XCTAssertEqual(content, "line-1\n")
+    }
+
+    func testAppendAccumulates() throws {
+        try HookSpool.append("a", to: url)
+        try HookSpool.append("b", to: url)
+        try HookSpool.append("c", to: url)
+        let content = try String(contentsOf: url)
+        XCTAssertEqual(content, "a\nb\nc\n")
+    }
+
+    func testParentDirectoryCreated() throws {
+        let nested = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("nested-\(UUID())/level1/level2/spool.jsonl")
+        defer { try? FileManager.default.removeItem(at: nested.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()) }
+        try HookSpool.append("x", to: nested)
+        XCTAssertEqual(try String(contentsOf: nested), "x\n")
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter HookSpoolTests`
+Expected: 3 tests pass.
+
+- [ ] **Step 5: Implement `main.swift`**
+
+Create `PetCore/Sources/HookHelper/main.swift`:
+```swift
+import Foundation
+import PetCore
+
+@main
+struct ClaudegotchiHook {
+    static func main() {
+        let args = CommandLine.arguments
+        guard args.count >= 2 else {
+            FileHandle.standardError.write(Data("usage: claudegotchi-hook <type> [--json '<json>']\n".utf8))
+            exit(2)
+        }
+        let type = args[1]
+        var rawJSON: String? = nil
+        if let i = args.firstIndex(of: "--json"), i + 1 < args.count {
+            rawJSON = args[i + 1]
+        }
+
+        let extras = parseExtras(rawJSON)
+        let event = Event(
+            schemaVersion: 1,
+            eventId: ULID.generate(),
+            ts: Int64(Date().timeIntervalSince1970 * 1000),
+            type: Event.EventType(rawValue: type) ?? .notification,
+            sessionId: extras["session_id"] as? String,
+            tool: extras["tool"] as? String,
+            tokensIn: extras["tokens_in"] as? Int,
+            tokensOut: extras["tokens_out"] as? Int,
+            model: extras["model"] as? String
+        )
+
+        do {
+            let line = try event.encodeJSON()
+            try HookSpool.append(line, to: spoolURL())
+            exit(0)
+        } catch {
+            FileHandle.standardError.write(Data("claudegotchi-hook: \(error)\n".utf8))
+            exit(1)
+        }
+    }
+
+    private static func parseExtras(_ raw: String?) -> [String: Any] {
+        guard let raw, let data = raw.data(using: .utf8) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    private static func spoolURL() -> URL {
+        let support = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("claudegotchi")
+        return support.appendingPathComponent("spool.jsonl")
+    }
+}
+```
+
+- [ ] **Step 6: Build the helper end-to-end**
+
+Run: `cd PetCore && swift build --product claudegotchi-hook`
+Expected: builds without errors. Verify the binary exists at
+`.build/debug/claudegotchi-hook`.
+
+Smoke-test:
+```bash
+.build/debug/claudegotchi-hook session_start --json '{"session_id":"smoke"}'
+ls -la "$HOME/Library/Application Support/claudegotchi/spool.jsonl"
+cat  "$HOME/Library/Application Support/claudegotchi/spool.jsonl"
+```
+Expected: one JSON line ending with `\n` containing `session_start`. Then
+delete the spool to keep the dev environment clean:
+```bash
+rm "$HOME/Library/Application Support/claudegotchi/spool.jsonl"
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add PetCore/Package.swift PetCore/Sources/HookHelper PetCore/Tests/HookHelperTests
+git commit -m "Add claudegotchi-hook CLI: ULID-stamped JSONL append to spool"
+```
+
+---
+
+### Task 3.7: `SpoolWatcher` (FSEvents + rotation)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/SpoolWatcher.swift`
+- Create: `PetCore/Tests/PetCoreTests/SpoolWatcherTests.swift`
+
+`SpoolWatcher` is the production glue: it owns a `SpoolReader`, a
+`ApplyTransaction`, and an FSEvents stream that fires `drain()` whenever
+the spool file changes. It also owns rotation: when spool size > 10 MB or
+oldest line > 7 days, acquire `flock` on `spool.lock`, rename to
+`spool.jsonl.<ISO>.bak`, drain the .bak, delete it, release flock.
+
+Tests use a manual `pump()` method instead of FSEvents so they're
+deterministic.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/SpoolWatcherTests.swift`:
+```swift
+import XCTest
+import GRDB
+@testable import PetCore
+
+final class SpoolWatcherTests: XCTestCase {
+    var dbPath: String!
+    var db: DatabaseQueue!
+    var spoolDir: URL!
+    var spoolURL: URL!
+
+    override func setUpWithError() throws {
+        dbPath = NSTemporaryDirectory() + "watcher-\(UUID()).sqlite"
+        db = try Database.open(at: dbPath)
+        _ = try Pet.insert(.fresh(species: "frog", at: 0), into: db)
+        spoolDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("spool-\(UUID())")
+        try FileManager.default.createDirectory(at: spoolDir, withIntermediateDirectories: true)
+        spoolURL = spoolDir.appendingPathComponent("spool.jsonl")
+    }
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(atPath: dbPath)
+        try? FileManager.default.removeItem(at: spoolDir)
+    }
+
+    private func appendLine(_ s: String) throws {
+        try HookSpool.append(s, to: spoolURL)
+    }
+
+    private func makeWatcher(paused: Bool = false) -> SpoolWatcher {
+        SpoolWatcher(
+            db: db,
+            applier: EventApplier(config: .defaults),
+            spoolURL: spoolURL,
+            spoolLockURL: spoolDir.appendingPathComponent("spool.lock"),
+            pausedProvider: { paused },
+            config: .defaults
+        )
+    }
+
+    private func eventLine(eventId: String) throws -> String {
+        let e = Event(
+            schemaVersion: 1, eventId: eventId,
+            ts: Int64(Date().timeIntervalSince1970 * 1000),
+            type: .postToolUse, sessionId: "s", tool: "Bash",
+            tokensIn: 100, tokensOut: 100, model: nil
+        )
+        return try e.encodeJSON()
+    }
+
+    func testPumpDrainsAvailableLines() throws {
+        try appendLine(try eventLine(eventId: "01H0000000000000000000000A"))
+        try appendLine(try eventLine(eventId: "01H0000000000000000000000B"))
+        let w = makeWatcher()
+        try w.pump()
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 2)
+    }
+
+    func testRotationRenamesAndDrains() throws {
+        // Use a tiny rotation threshold for the test
+        var cfg = ConfigYAML.defaults
+        cfg = ConfigYAML(
+            decay: cfg.decay, eventCosts: cfg.eventCosts, thresholds: cfg.thresholds,
+            spool: ConfigYAML.Spool(rotateWhenBytesExceed: 100, rotateWhenAgeExceedsSeconds: 999_999)
+        )
+        let w = SpoolWatcher(
+            db: db, applier: EventApplier(config: cfg),
+            spoolURL: spoolURL,
+            spoolLockURL: spoolDir.appendingPathComponent("spool.lock"),
+            pausedProvider: { false }, config: cfg
+        )
+        // Write enough lines to trigger rotation
+        for i in 0..<3 {
+            let id = String(format: "01H000000000000000000000%02d", i)
+            try appendLine(try eventLine(eventId: id))
+        }
+        try w.pump()  // first drain — may or may not rotate depending on size
+        try w.maybeRotate()
+        try w.pump()  // drain post-rotate
+
+        // No .bak should remain after a successful rotation
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: spoolDir, includingPropertiesForKeys: nil
+        )
+        let baks = entries.filter { $0.lastPathComponent.contains(".bak") }
+        XCTAssertEqual(baks.count, 0)
+        // All 3 events should be in the DB
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 3)
+    }
+
+    func testPumpHonorsPause() throws {
+        try appendLine(try eventLine(eventId: "01H0000000000000000000000A"))
+        let w = makeWatcher(paused: true)
+        try w.pump()
+        // event row + rollup written, but pet stats untouched
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, 0)
+        XCTAssertGreaterThan(p.lastAppliedEventId, 0)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter SpoolWatcherTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `SpoolWatcher.swift`**
+
+Create `PetCore/Sources/PetCore/SpoolWatcher.swift`:
+```swift
+import Foundation
+import GRDB
+#if canImport(CoreServices)
+import CoreServices
+#endif
+
+public final class SpoolWatcher {
+    private let db: DatabaseQueue
+    private let applier: EventApplier
+    private let spoolURL: URL
+    private let spoolLockURL: URL
+    private let pausedProvider: () -> Bool
+    private let config: ConfigYAML
+    private let reader: SpoolReader
+    private var fsStream: FSEventStreamRef?
+
+    public init(
+        db: DatabaseQueue, applier: EventApplier,
+        spoolURL: URL, spoolLockURL: URL,
+        pausedProvider: @escaping () -> Bool,
+        config: ConfigYAML
+    ) {
+        self.db = db
+        self.applier = applier
+        self.spoolURL = spoolURL
+        self.spoolLockURL = spoolLockURL
+        self.pausedProvider = pausedProvider
+        self.config = config
+        self.reader = SpoolReader(url: spoolURL)
+    }
+
+    /// Test-only: process whatever is currently in the spool synchronously.
+    public func pump() throws {
+        let lines = try reader.readNewLines()
+        let atx = ApplyTransaction(db: db, applier: applier, paused: pausedProvider())
+        for line in lines {
+            try atx.process(jsonLine: line)
+        }
+    }
+
+    /// Rotates the spool if size or age thresholds exceeded.
+    public func maybeRotate() throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: spoolURL.path) else { return }
+        let attrs = try fm.attributesOfItem(atPath: spoolURL.path)
+        let size = (attrs[.size] as? Int) ?? 0
+        let mtime = (attrs[.modificationDate] as? Date) ?? .distantPast
+        let ageSeconds = -mtime.timeIntervalSinceNow
+        guard size > config.spool.rotateWhenBytesExceed
+            || ageSeconds > Double(config.spool.rotateWhenAgeExceedsSeconds) else { return }
+
+        let lockFD = open(spoolLockURL.path, O_WRONLY | O_CREAT, 0o600)
+        guard lockFD >= 0 else { return }
+        defer { close(lockFD) }
+        guard flock(lockFD, LOCK_EX) == 0 else { return }
+        defer { _ = flock(lockFD, LOCK_UN) }
+
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let bakURL = spoolURL.appendingPathExtension("\(stamp).bak")
+        try fm.moveItem(at: spoolURL, to: bakURL)
+
+        // Drain the .bak via a temporary reader
+        let bakReader = SpoolReader(url: bakURL)
+        let lines = try bakReader.readNewLines()
+        let atx = ApplyTransaction(db: db, applier: applier, paused: pausedProvider())
+        for line in lines {
+            try atx.process(jsonLine: line)
+        }
+        try fm.removeItem(at: bakURL)
+
+        // After rotation, the in-memory reader's offset is stale (file was
+        // renamed away then recreated empty). Reset it by replacing the reader.
+        // (For simplicity we rely on the SpoolReader's rotation-detection
+        // logic to reset offset on next read.)
+    }
+
+    public func startWatching() {
+        var ctx = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil, release: nil, copyDescription: nil
+        )
+        let paths = [spoolURL.deletingLastPathComponent().path] as CFArray
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info = info else { return }
+            let watcher = Unmanaged<SpoolWatcher>.fromOpaque(info).takeUnretainedValue()
+            // Drain on FS event; ignore errors (logged elsewhere).
+            try? watcher.pump()
+            try? watcher.maybeRotate()
+        }
+        fsStream = FSEventStreamCreate(
+            kCFAllocatorDefault, callback, &ctx, paths,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.05, FSEventStreamCreateFlags(kFSEventStreamCreateFlagFileEvents)
+        )
+        if let s = fsStream {
+            FSEventStreamSetDispatchQueue(s, .main)
+            FSEventStreamStart(s)
+        }
+    }
+
+    public func stopWatching() {
+        if let s = fsStream {
+            FSEventStreamStop(s)
+            FSEventStreamInvalidate(s)
+            FSEventStreamRelease(s)
+            fsStream = nil
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter SpoolWatcherTests`
+Expected: 3 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/SpoolWatcher.swift PetCore/Tests/PetCoreTests/SpoolWatcherTests.swift
+git commit -m "Add SpoolWatcher: FSEvents-driven drain + flock-based rotation"
+```
+
+---
+
+## Chunk 3 Exit Criteria
+
+- `cd PetCore && swift test` passes locally with **49 (Chunks 1+2) + 31 (Chunk 3) = 80 tests**:
+  - 6 Event (Task 3.1)
+  - 5 SpoolReader (Task 3.2)
+  - 4 DailyRollup (Task 3.3)
+  - 10 EventApplier (Task 3.4)
+  - 5 ApplyTransaction (Task 3.5)
+  - 3 HookSpool (Task 3.6)
+  - 3 SpoolWatcher (Task 3.7)
+- `cd PetCore && swift build --product claudegotchi-hook` produces a binary
+  that successfully appends a JSON line to `~/Library/Application Support/claudegotchi/spool.jsonl`
+- CI green on most recent main commit
+- No new third-party dependencies added (still GRDB.swift + Yams)
+
+---
+
+## Chunks 4-5: To be written after Chunk 3 passes review
+
+- **Chunk 4 — UI surfaces.** Xcode project that links `PetCore`, menu-bar
+  icon + sprite-sheet renderer, dropdown panel (SwiftUI) with click-on-pet
+  interaction + 60s cooldown, StatsWindow with three tabs (Overview / Models /
+  Pet 成长史), pause/settings/about menu items, reinstall-species banner.
+- **Chunk 5 — Distribution + polish.** `HooksInstaller` with permission
+  preflight + atomic merge + `_claudegotchi` sentinel, `uninstall.sh`,
+  `.dmg` builder via GitHub Actions, Homebrew tap, asset PR check workflow,
+  README screenshots, four launch species sprite assets (frog/slime/dragon/cat).
+
+Each remaining chunk follows the same TDD pattern. Chunk 4 is more sequential
+(UI depends on engine); Chunk 5 has parallel-friendly tasks (Homebrew tap and
+asset CI workflow are independent of the installer code).
