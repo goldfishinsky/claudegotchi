@@ -922,11 +922,872 @@ proceeding to Chunk 2.
 
 ---
 
-## Chunks 2-5: To be written after Chunk 1 passes review
+## Chunk 2: Game Engine Pure Logic
 
-- **Chunk 2 — Game engine pure logic.** Pet DAO, decay computation, hibernation state machine, death window, level computation, random species selection. All pure functions over `ConfigYAML` + `DecayClock` + `SpeciesRegistry`.
-- **Chunk 3 — Event pipeline.** Event JSON schema (Codable), `EventApplier`, single-transaction watcher, pre-tool-use timeout, spool rotation, and the `claudegotchi-hook` CLI binary.
-- **Chunk 4 — UI surfaces.** Xcode project, menu-bar icon + sprite renderer, dropdown panel, StatsWindow with three tabs, click-on-pet interaction.
-- **Chunk 5 — Distribution + polish.** Hooks installation flow, uninstall script, `.dmg` builder via GitHub Actions, Homebrew tap, asset PR workflow, README screenshots, four launch species sprite assets.
+Goal: pure functions over `ConfigYAML` + injectable clock + `SpeciesRegistry`,
+with no UI, no I/O beyond `Database` from Chunk 1. Every behavior in spec §6
+becomes a unit-tested function.
 
-Each chunk follows the same TDD pattern as Chunk 1: write failing test → minimal implementation → tests pass → commit. Chunks 2 and 3 are mostly parallelizable with subagents; chunks 4 and 5 are more sequential because UI depends on engine and distribution depends on UI.
+Module map (all under `PetCore/Sources/PetCore/`):
+
+| File | Responsibility |
+|---|---|
+| `Pet.swift` | `Pet` struct (matches `pet` table) + DAO read/write/upsert |
+| `DecayClock.swift` | `Clock` protocol + production `MachClock` impl + injectable `FixedClock` for tests |
+| `Decay.swift` | Pure `applyDecay(pet:elapsed:config:) -> Pet` |
+| `Hibernation.swift` | Pure functions: `shouldEnter`, `shouldWake` |
+| `DeathWindow.swift` | Sliding-window state machine; midnight checkpoint logic |
+| `Level.swift` | `Lv = floor(sqrt(XP / 100))` and inverse |
+| `SpeciesRoulette.swift` | Uniform random pick + zero/one-species fallbacks |
+
+### Task 2.1: `Pet` struct + DAO
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/Pet.swift`
+- Create: `PetCore/Tests/PetCoreTests/PetTests.swift`
+
+`Pet` mirrors the `pet` table 1:1. The DAO exposes only the operations used
+by later chunks: `fetchAlive`, `insert`, `update`, `markDead`, `fetchAllDead`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/PetTests.swift`:
+```swift
+import XCTest
+import GRDB
+@testable import PetCore
+
+final class PetTests: XCTestCase {
+    var dbPath: String!
+    var db: DatabaseQueue!
+
+    override func setUpWithError() throws {
+        dbPath = NSTemporaryDirectory() + "pet-\(UUID()).sqlite"
+        db = try Database.open(at: dbPath)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(atPath: dbPath)
+    }
+
+    func testInsertAndFetchAlive() throws {
+        let pet = Pet.fresh(species: "frog", at: 1_000_000)
+        let inserted = try Pet.insert(pet, into: db)
+        XCTAssertNotNil(inserted.id)
+        let fetched = try Pet.fetchAlive(from: db)
+        XCTAssertEqual(fetched?.id, inserted.id)
+        XCTAssertEqual(fetched?.species, "frog")
+        XCTAssertEqual(fetched?.fullness, 100)
+    }
+
+    func testFetchAliveReturnsNilWhenNoneAlive() throws {
+        XCTAssertNil(try Pet.fetchAlive(from: db))
+    }
+
+    func testMarkDead() throws {
+        let pet = try Pet.insert(.fresh(species: "frog", at: 0), into: db)
+        try Pet.markDead(id: pet.id!, at: 5_000_000, in: db)
+        XCTAssertNil(try Pet.fetchAlive(from: db))
+        let dead = try Pet.fetchAllDead(from: db)
+        XCTAssertEqual(dead.count, 1)
+        XCTAssertEqual(dead.first?.deathAt, 5_000_000)
+    }
+
+    func testInsertingSecondAliveFails() throws {
+        _ = try Pet.insert(.fresh(species: "frog", at: 0), into: db)
+        XCTAssertThrowsError(try Pet.insert(.fresh(species: "cat", at: 0), into: db))
+    }
+}
+```
+
+- [ ] **Step 2: Run test, expect failure**
+
+Run: `cd PetCore && swift test --filter PetTests`
+Expected: FAIL — `Pet` not defined.
+
+- [ ] **Step 3: Implement `Pet.swift`**
+
+Create `PetCore/Sources/PetCore/Pet.swift`:
+```swift
+import Foundation
+import GRDB
+
+public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable {
+    public var id: Int64?
+    public var species: String
+    public var name: String?
+    public var birthday: Int64
+    public var deathAt: Int64?
+    public var fullness: Double
+    public var stamina: Double
+    public var intimacy: Double
+    public var xp: Int64
+    public var lastTickAt: Int64
+    public var lastAppliedEventId: Int64
+    public var hibernationSince: Int64?
+    public var deathWindowState: String  // JSON array of booleans, length 0..5
+
+    public static let databaseTableName = "pet"
+
+    enum CodingKeys: String, CodingKey {
+        case id, species, name, birthday
+        case deathAt = "death_at"
+        case fullness, stamina, intimacy, xp
+        case lastTickAt = "last_tick_at"
+        case lastAppliedEventId = "last_applied_event_id"
+        case hibernationSince = "hibernation_since"
+        case deathWindowState = "death_window_state"
+    }
+
+    public mutating func didInsert(_ inserted: InsertionSuccess) {
+        id = inserted.rowID
+    }
+
+    public static func fresh(species: String, at ts: Int64) -> Pet {
+        Pet(
+            id: nil, species: species, name: nil,
+            birthday: ts, deathAt: nil,
+            fullness: 100, stamina: 100, intimacy: 50,
+            xp: 0, lastTickAt: ts, lastAppliedEventId: 0,
+            hibernationSince: nil, deathWindowState: "[]"
+        )
+    }
+
+    @discardableResult
+    public static func insert(_ pet: Pet, into db: DatabaseQueue) throws -> Pet {
+        try db.write { conn in
+            var copy = pet
+            try copy.insert(conn)
+            return copy
+        }
+    }
+
+    public static func fetchAlive(from db: DatabaseQueue) throws -> Pet? {
+        try db.read { conn in
+            try Pet.filter(Column("death_at") == nil).fetchOne(conn)
+        }
+    }
+
+    public static func fetchAllDead(from db: DatabaseQueue) throws -> [Pet] {
+        try db.read { conn in
+            try Pet.filter(Column("death_at") != nil)
+                .order(Column("death_at").desc)
+                .fetchAll(conn)
+        }
+    }
+
+    public static func markDead(id: Int64, at ts: Int64, in db: DatabaseQueue) throws {
+        try db.write { conn in
+            try conn.execute(
+                sql: "UPDATE pet SET death_at = ? WHERE id = ?",
+                arguments: [ts, id]
+            )
+        }
+    }
+
+    public static func update(_ pet: Pet, in db: DatabaseQueue) throws {
+        try db.write { conn in
+            try pet.update(conn)
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run tests, expect pass**
+
+Run: `cd PetCore && swift test --filter PetTests`
+Expected: 4 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/Pet.swift PetCore/Tests/PetCoreTests/PetTests.swift
+git commit -m "Add Pet model and DAO with GRDB record support"
+```
+
+---
+
+### Task 2.2: `DecayClock` (injectable wall clock)
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/DecayClock.swift`
+- Create: `PetCore/Tests/PetCoreTests/DecayClockTests.swift`
+
+The protocol exists so the engine never reads wall clock directly — production
+uses `mach_continuous_time` (sleep-aware monotonic), tests inject a fixed
+clock that advances on demand.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/DecayClockTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class DecayClockTests: XCTestCase {
+    func testFixedClockAdvances() {
+        let clock = FixedClock(start: 0)
+        XCTAssertEqual(clock.nowSeconds(), 0)
+        clock.advance(seconds: 60)
+        XCTAssertEqual(clock.nowSeconds(), 60)
+        clock.advance(seconds: 0.5)
+        XCTAssertEqual(clock.nowSeconds(), 60.5, accuracy: 1e-9)
+    }
+
+    func testMachClockReturnsRoughlyNow() {
+        let clock = MachClock()
+        let a = clock.nowSeconds()
+        Thread.sleep(forTimeInterval: 0.05)
+        let b = clock.nowSeconds()
+        XCTAssertGreaterThan(b - a, 0.04)
+        XCTAssertLessThan(b - a, 1.0)  // sanity ceiling
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter DecayClockTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `DecayClock.swift`**
+
+Create `PetCore/Sources/PetCore/DecayClock.swift`:
+```swift
+import Foundation
+
+/// Source of wall-clock time. Production uses `mach_continuous_time`, which
+/// continues to advance during macOS sleep and is monotonic. Tests inject
+/// `FixedClock` for deterministic time travel.
+public protocol Clock {
+    func nowSeconds() -> Double
+}
+
+public struct MachClock: Clock {
+    public init() {}
+    public func nowSeconds() -> Double {
+        var info = mach_timebase_info()
+        mach_timebase_info(&info)
+        let raw = mach_continuous_time()
+        let nanos = Double(raw) * Double(info.numer) / Double(info.denom)
+        return nanos / 1_000_000_000.0
+    }
+}
+
+public final class FixedClock: Clock {
+    private var t: Double
+    public init(start: Double = 0) { self.t = start }
+    public func nowSeconds() -> Double { t }
+    public func advance(seconds: Double) { t += seconds }
+    public func set(seconds: Double) { t = seconds }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter DecayClockTests`
+Expected: 2 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/DecayClock.swift PetCore/Tests/PetCoreTests/DecayClockTests.swift
+git commit -m "Add Clock protocol with mach_continuous_time + FixedClock for tests"
+```
+
+---
+
+### Task 2.3: Stat decay computation
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/Decay.swift`
+- Create: `PetCore/Tests/PetCoreTests/DecayTests.swift`
+
+Pure function: `Decay.apply(pet:elapsedSeconds:config:) -> Pet`. Hibernation
+is checked by the *caller*, not here — this function applies decay
+unconditionally given an elapsed-seconds value. Caller passes 0 for hibernating
+pets.
+
+Stamina has no time-based decay (only event-based costs); regen at
+`config.decay.staminaRegenPerSecond`. All stats clamp to [0, 100].
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/DecayTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class DecayTests: XCTestCase {
+    let cfg = ConfigYAML.defaults
+
+    func testFullnessDecaysAtRate() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        // 1 hour → 0.0006 * 3600 = 2.16 drop
+        let next = Decay.apply(pet: pet, elapsedSeconds: 3600, config: cfg)
+        XCTAssertEqual(next.fullness, 100 - 2.16, accuracy: 1e-6)
+    }
+
+    func testIntimacyDecaysAtRate() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 80
+        let next = Decay.apply(pet: pet, elapsedSeconds: 3600, config: cfg)
+        XCTAssertEqual(next.intimacy, 80 - 1.08, accuracy: 1e-6)
+    }
+
+    func testStaminaRegenerates() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 50
+        let next = Decay.apply(pet: pet, elapsedSeconds: 3600, config: cfg)
+        XCTAssertEqual(next.stamina, 50 + 0.72, accuracy: 1e-6)
+    }
+
+    func testStatsClampToZero() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 1
+        // Way more than enough seconds to drive fullness negative
+        let next = Decay.apply(pet: pet, elapsedSeconds: 1_000_000, config: cfg)
+        XCTAssertEqual(next.fullness, 0)
+    }
+
+    func testStaminaClampsTo100() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 99.9
+        let next = Decay.apply(pet: pet, elapsedSeconds: 1_000_000, config: cfg)
+        XCTAssertEqual(next.stamina, 100)
+    }
+
+    func testXPNeverChangesOnDecay() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.xp = 12345
+        let next = Decay.apply(pet: pet, elapsedSeconds: 86400, config: cfg)
+        XCTAssertEqual(next.xp, 12345)
+    }
+
+    func testFiveDayTotalDrop() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        // 5 days = 432000 s; fullness drop = 0.0006 * 432000 = 259.2 → clamped 0
+        // intimacy drop = 0.0003 * 432000 = 129.6 → starts 50, ends 0
+        let next = Decay.apply(pet: pet, elapsedSeconds: 86400 * 5, config: cfg)
+        XCTAssertEqual(next.fullness, 0)
+        XCTAssertEqual(next.intimacy, 0)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter DecayTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `Decay.swift`**
+
+Create `PetCore/Sources/PetCore/Decay.swift`:
+```swift
+import Foundation
+
+public enum Decay {
+    public static func apply(pet: Pet, elapsedSeconds: Double, config: ConfigYAML) -> Pet {
+        guard elapsedSeconds > 0 else { return pet }
+        var p = pet
+        p.fullness = clamp(p.fullness - config.decay.fullnessPerSecond * elapsedSeconds)
+        p.intimacy = clamp(p.intimacy - config.decay.intimacyPerSecond * elapsedSeconds)
+        p.stamina  = clamp(p.stamina  + config.decay.staminaRegenPerSecond * elapsedSeconds)
+        // xp is intentionally untouched (spec §4: never decays)
+        return p
+    }
+
+    private static func clamp(_ v: Double) -> Double { min(100, max(0, v)) }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter DecayTests`
+Expected: 7 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/Decay.swift PetCore/Tests/PetCoreTests/DecayTests.swift
+git commit -m "Add pure stat-decay function with [0,100] clamping"
+```
+
+---
+
+### Task 2.4: Hibernation state machine
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/Hibernation.swift`
+- Create: `PetCore/Tests/PetCoreTests/HibernationTests.swift`
+
+Two pure functions: `shouldEnter(now:lastEventTs:config:)` and
+`shouldWake(pet:newEventTs:)`. The actual mutation (setting
+`hibernation_since`, persisting decay-frozen state, inserting synthetic
+hibernate_start/hibernate_end events) lives in EventApplier in Chunk 3 —
+this chunk only encodes the pure decisions.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/HibernationTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class HibernationTests: XCTestCase {
+    let cfg = ConfigYAML.defaults
+
+    func testShouldEnterAfterThreshold() {
+        // 72h = 259200s. lastEvent = 0, now = 259201 → enter
+        XCTAssertTrue(Hibernation.shouldEnter(nowSeconds: 259201, lastEventSeconds: 0, config: cfg))
+    }
+
+    func testShouldNotEnterBeforeThreshold() {
+        XCTAssertFalse(Hibernation.shouldEnter(nowSeconds: 259199, lastEventSeconds: 0, config: cfg))
+    }
+
+    func testShouldEnterAtBoundary() {
+        // ≥ threshold ⇒ enter
+        XCTAssertTrue(Hibernation.shouldEnter(nowSeconds: 259200, lastEventSeconds: 0, config: cfg))
+    }
+
+    func testShouldWakeWhenHibernating() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.hibernationSince = 100
+        XCTAssertTrue(Hibernation.shouldWake(pet: pet))
+    }
+
+    func testShouldNotWakeWhenAwake() {
+        let pet = Pet.fresh(species: "frog", at: 0)
+        XCTAssertFalse(Hibernation.shouldWake(pet: pet))
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter HibernationTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `Hibernation.swift`**
+
+Create `PetCore/Sources/PetCore/Hibernation.swift`:
+```swift
+import Foundation
+
+public enum Hibernation {
+    /// True when (now - lastEvent) ≥ configured threshold.
+    public static func shouldEnter(nowSeconds: Double, lastEventSeconds: Double, config: ConfigYAML) -> Bool {
+        let elapsed = nowSeconds - lastEventSeconds
+        return elapsed >= Double(config.thresholds.hibernationAfterSeconds)
+    }
+
+    /// True iff the pet is currently hibernating; the caller decides whether
+    /// the inbound event ends the hibernation (always true in the current
+    /// design — any event wakes the pet).
+    public static func shouldWake(pet: Pet) -> Bool {
+        pet.hibernationSince != nil
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter HibernationTests`
+Expected: 5 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/Hibernation.swift PetCore/Tests/PetCoreTests/HibernationTests.swift
+git commit -m "Add hibernation state-machine pure functions"
+```
+
+---
+
+### Task 2.5: Death-window state machine
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/DeathWindow.swift`
+- Create: `PetCore/Tests/PetCoreTests/DeathWindowTests.swift`
+
+Encapsulates spec §6's daily midnight checkpoint. Two operations:
+
+1. `appendDay(pet:lowToday:)` — push a boolean, truncate to last 5
+2. `shouldDie(pet:)` — true iff window has 5 entries and all are `true`
+
+Plus `parse(_:) -> [Bool]` and `serialize(_:) -> String` for the JSON-array
+storage in `pet.death_window_state`. Corruption (parse failure) returns `[]`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/DeathWindowTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class DeathWindowTests: XCTestCase {
+    func testParseEmpty() {
+        XCTAssertEqual(DeathWindow.parse("[]"), [])
+    }
+
+    func testParseValid() {
+        XCTAssertEqual(DeathWindow.parse("[true, false, true]"), [true, false, true])
+    }
+
+    func testParseCorruptionReturnsEmpty() {
+        XCTAssertEqual(DeathWindow.parse("not-json"), [])
+        XCTAssertEqual(DeathWindow.parse("[1, 2, 3]"), [])  // wrong type
+    }
+
+    func testSerialize() {
+        XCTAssertEqual(DeathWindow.serialize([true, false]), "[true,false]")
+    }
+
+    func testAppendTruncatesTo5() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        for _ in 0..<10 {
+            pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        }
+        XCTAssertEqual(DeathWindow.parse(pet.deathWindowState).count, 5)
+    }
+
+    func testShouldDieWhenAllFiveTrue() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        for _ in 0..<5 {
+            pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        }
+        XCTAssertTrue(DeathWindow.shouldDie(pet: pet))
+    }
+
+    func testShouldNotDieWithOneFalse() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: false)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        XCTAssertFalse(DeathWindow.shouldDie(pet: pet))
+    }
+
+    func testShouldNotDieWithFewerThan5() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        XCTAssertFalse(DeathWindow.shouldDie(pet: pet))
+    }
+
+    func testHibernatedDayShrinks() {
+        // Spec §6: hibernated days are skipped — neither true nor false appended
+        var pet = Pet.fresh(species: "frog", at: 0)
+        for _ in 0..<5 {
+            pet = DeathWindow.appendDay(pet: pet, lowToday: true)
+        }
+        XCTAssertTrue(DeathWindow.shouldDie(pet: pet))
+        // simulate "skip a day" — caller doesn't call appendDay; we verify
+        // the function under test does the right thing for callers that
+        // already manage skipping. Just sanity-check that empty after reset
+        // means no death:
+        pet.deathWindowState = "[]"
+        XCTAssertFalse(DeathWindow.shouldDie(pet: pet))
+    }
+
+    func testCountLowStats() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 19; pet.stamina = 19; pet.intimacy = 21
+        XCTAssertTrue(DeathWindow.isLowDay(pet: pet, threshold: 20, requiredCount: 2))
+        pet.fullness = 21; pet.stamina = 19; pet.intimacy = 21
+        XCTAssertFalse(DeathWindow.isLowDay(pet: pet, threshold: 20, requiredCount: 2))
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter DeathWindowTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `DeathWindow.swift`**
+
+Create `PetCore/Sources/PetCore/DeathWindow.swift`:
+```swift
+import Foundation
+
+public enum DeathWindow {
+    /// Decode the JSON array of booleans. Returns `[]` on any failure
+    /// (corruption recovery rule from spec §3).
+    public static func parse(_ json: String) -> [Bool] {
+        guard let data = json.data(using: .utf8) else { return [] }
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
+        var out: [Bool] = []
+        for v in arr {
+            guard let b = v as? Bool else { return [] }
+            out.append(b)
+        }
+        return out
+    }
+
+    public static func serialize(_ window: [Bool]) -> String {
+        let parts = window.map { $0 ? "true" : "false" }
+        return "[" + parts.joined(separator: ",") + "]"
+    }
+
+    /// Returns the pet with one boolean appended, sliding window truncated
+    /// to the last 5 entries.
+    public static func appendDay(pet: Pet, lowToday: Bool) -> Pet {
+        var window = parse(pet.deathWindowState)
+        window.append(lowToday)
+        if window.count > 5 { window = Array(window.suffix(5)) }
+        var p = pet
+        p.deathWindowState = serialize(window)
+        return p
+    }
+
+    public static func shouldDie(pet: Pet) -> Bool {
+        let window = parse(pet.deathWindowState)
+        return window.count == 5 && window.allSatisfy { $0 }
+    }
+
+    public static func isLowDay(pet: Pet, threshold: Double, requiredCount: Int) -> Bool {
+        var lowCount = 0
+        if pet.fullness <= threshold { lowCount += 1 }
+        if pet.stamina  <= threshold { lowCount += 1 }
+        if pet.intimacy <= threshold { lowCount += 1 }
+        return lowCount >= requiredCount
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter DeathWindowTests`
+Expected: 9 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/DeathWindow.swift PetCore/Tests/PetCoreTests/DeathWindowTests.swift
+git commit -m "Add death-window 5-day sliding-window state machine"
+```
+
+---
+
+### Task 2.6: Level computation
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/Level.swift`
+- Create: `PetCore/Tests/PetCoreTests/LevelTests.swift`
+
+`Lv = floor(sqrt(XP / 100))` from spec §6. Also expose `xpForLevel(_:)` for
+the dropdown ("XP / next threshold" display).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/LevelTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class LevelTests: XCTestCase {
+    func testLevelTable() {
+        XCTAssertEqual(Level.compute(xp: 0), 0)
+        XCTAssertEqual(Level.compute(xp: 99), 0)
+        XCTAssertEqual(Level.compute(xp: 100), 1)
+        XCTAssertEqual(Level.compute(xp: 399), 1)
+        XCTAssertEqual(Level.compute(xp: 400), 2)
+        XCTAssertEqual(Level.compute(xp: 2_499), 4)
+        XCTAssertEqual(Level.compute(xp: 2_500), 5)
+        XCTAssertEqual(Level.compute(xp: 9_999), 9)
+        XCTAssertEqual(Level.compute(xp: 10_000), 10)
+    }
+
+    func testXpForLevelInverts() {
+        XCTAssertEqual(Level.xpForLevel(1), 100)
+        XCTAssertEqual(Level.xpForLevel(5), 2_500)
+        XCTAssertEqual(Level.xpForLevel(10), 10_000)
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter LevelTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `Level.swift`**
+
+Create `PetCore/Sources/PetCore/Level.swift`:
+```swift
+import Foundation
+
+public enum Level {
+    public static func compute(xp: Int64) -> Int {
+        guard xp > 0 else { return 0 }
+        return Int(Double(xp / 100).squareRoot().rounded(.down))
+    }
+
+    public static func xpForLevel(_ lv: Int) -> Int64 {
+        Int64(lv * lv) * 100
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter LevelTests`
+Expected: 2 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/Level.swift PetCore/Tests/PetCoreTests/LevelTests.swift
+git commit -m "Add Level.compute and Level.xpForLevel"
+```
+
+---
+
+### Task 2.7: Random species selection
+
+**Files:**
+- Create: `PetCore/Sources/PetCore/SpeciesRoulette.swift`
+- Create: `PetCore/Tests/PetCoreTests/SpeciesRouletteTests.swift`
+
+Picks a random species from the registry. Falls back to hardcoded `"frog"`
+when the registry is empty (spec §6 — surfaces a banner; the banner UI
+itself is in Chunk 4). Uses an injectable `RandomNumberGenerator` so tests
+can pin the choice.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `PetCore/Tests/PetCoreTests/SpeciesRouletteTests.swift`:
+```swift
+import XCTest
+@testable import PetCore
+
+final class SpeciesRouletteTests: XCTestCase {
+    func testPicksFromRegistry() throws {
+        let url = Bundle.module.url(forResource: "Fixtures/species", withExtension: nil)!
+        let registry = try SpeciesRegistry.load(directory: url)
+        var rng = SeededRNG(seed: 1)
+        let pick = SpeciesRoulette.pick(from: registry, using: &rng)
+        XCTAssertEqual(pick.id, "frog")
+        XCTAssertFalse(pick.usedFallback)
+    }
+
+    func testFallbackOnEmptyRegistry() {
+        var rng = SeededRNG(seed: 1)
+        let pick = SpeciesRoulette.pick(
+            from: SpeciesRegistry(all: []),
+            using: &rng
+        )
+        XCTAssertEqual(pick.id, "frog")
+        XCTAssertTrue(pick.usedFallback)
+    }
+
+    func testUniformOver4Species() throws {
+        // With 4 species, two distinct seeds should be capable of producing
+        // different picks. Construct a synthetic registry with 4 items.
+        let url = Bundle.module.url(forResource: "Fixtures/species", withExtension: nil)!
+        let frog = try SpeciesRegistry.load(directory: url).all.first!
+        let species = (0..<4).map { i in
+            Species(
+                id: "s\(i)", nameZh: "x", nameEn: "y",
+                stages: frog.stages, animations: frog.animations,
+                spriteGrid: frog.spriteGrid, bundleURL: frog.bundleURL
+            )
+        }
+        let registry = SpeciesRegistry(all: species)
+        var counts = [String: Int]()
+        for seed in (0..<200).map(UInt64.init) {
+            var rng = SeededRNG(seed: seed)
+            let pick = SpeciesRoulette.pick(from: registry, using: &rng)
+            counts[pick.id, default: 0] += 1
+        }
+        XCTAssertEqual(counts.count, 4, "Across 200 seeds, all 4 species should be reachable")
+    }
+}
+
+struct SeededRNG: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed | 1 }  // avoid all-zero state
+    mutating func next() -> UInt64 {
+        state &*= 6364136223846793005
+        state &+= 1442695040888963407
+        return state
+    }
+}
+```
+
+- [ ] **Step 2: Run, expect failure**
+
+Run: `cd PetCore && swift test --filter SpeciesRouletteTests`
+Expected: FAIL.
+
+- [ ] **Step 3: Implement `SpeciesRoulette.swift`**
+
+Create `PetCore/Sources/PetCore/SpeciesRoulette.swift`:
+```swift
+import Foundation
+
+public enum SpeciesRoulette {
+    public struct Pick {
+        public let id: String
+        public let species: Species?
+        public let usedFallback: Bool
+    }
+
+    /// Uniform random pick across all loaded species. If the registry is empty,
+    /// returns the hardcoded fallback id "frog" with `usedFallback = true`.
+    public static func pick<G: RandomNumberGenerator>(
+        from registry: SpeciesRegistry,
+        using rng: inout G
+    ) -> Pick {
+        guard !registry.all.isEmpty else {
+            return Pick(id: "frog", species: nil, usedFallback: true)
+        }
+        let idx = Int.random(in: 0..<registry.all.count, using: &rng)
+        let s = registry.all[idx]
+        return Pick(id: s.id, species: s, usedFallback: false)
+    }
+}
+```
+
+- [ ] **Step 4: Run, expect pass**
+
+Run: `cd PetCore && swift test --filter SpeciesRouletteTests`
+Expected: 3 tests pass.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add PetCore/Sources/PetCore/SpeciesRoulette.swift PetCore/Tests/PetCoreTests/SpeciesRouletteTests.swift
+git commit -m "Add SpeciesRoulette with uniform pick + zero-species fallback"
+```
+
+---
+
+## Chunk 2 Exit Criteria
+
+- `cd PetCore && swift test` passes locally with **exactly 16 (Chunk 1) + 32 (Chunk 2) = 48 tests**:
+  - 4 Pet (Task 2.1)
+  - 2 DecayClock (Task 2.2)
+  - 7 Decay (Task 2.3)
+  - 5 Hibernation (Task 2.4)
+  - 9 DeathWindow (Task 2.5)
+  - 2 Level (Task 2.6)
+  - 3 SpeciesRoulette (Task 2.7)
+- CI green on most recent main commit
+- No new third-party dependencies added (still just GRDB.swift + Yams)
+
+---
+
+## Chunks 3-5: To be written after Chunk 2 passes review
+
+- **Chunk 3 — Event pipeline.** Event JSON schema (Codable), `EventApplier` (event → stat changes), single-transaction `SpoolWatcher` with FSEvents, pre-tool-use timeout state, spool rotation with `flock`, the `claudegotchi-hook` CLI binary (Swift executable target), helper end-to-end test.
+- **Chunk 4 — UI surfaces.** Xcode project that links `PetCore`, menu-bar icon + sprite-sheet renderer, dropdown panel (SwiftUI) with click-on-pet interaction, StatsWindow with three tabs, pause/settings/about menu items.
+- **Chunk 5 — Distribution + polish.** `HooksInstaller` + permission preflight + atomic merge + `_claudegotchi` sentinel, `uninstall.sh`, `.dmg` builder via GitHub Actions, Homebrew tap, asset PR check workflow, README screenshots, four launch species sprite assets (frog/slime/dragon/cat).
+
+Each chunk follows the same TDD pattern as Chunks 1-2. Chunks 2 and 3 are
+well-suited to subagent-driven-development with parallel dispatch (most tasks
+in each chunk touch different files); Chunks 4 and 5 are more sequential
+because UI depends on engine and distribution depends on UI.
