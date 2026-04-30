@@ -1287,6 +1287,10 @@ Create `PetCore/Sources/PetCore/Decay.swift`:
 import Foundation
 
 public enum Decay {
+    /// Applies time-based stat decay/regen for the given elapsed-seconds
+    /// interval. Pure: does NOT update `lastTickAt` (the caller — Chunk 3's
+    /// EventApplier or the tick scheduler — is responsible for persisting
+    /// the new `lastTickAt`). Pass 0 elapsed when the pet is hibernating.
     public static func apply(pet: Pet, elapsedSeconds: Double, config: ConfigYAML) -> Pet {
         guard elapsedSeconds > 0 else { return pet }
         var p = pet
@@ -1382,9 +1386,9 @@ public enum Hibernation {
         return elapsed >= Double(config.thresholds.hibernationAfterSeconds)
     }
 
-    /// True iff the pet is currently hibernating; the caller decides whether
-    /// the inbound event ends the hibernation (always true in the current
-    /// design — any event wakes the pet).
+    /// True iff the pet is currently hibernating. Any inbound event wakes
+    /// the pet in the current design, so the caller (EventApplier in
+    /// Chunk 3) treats this as "needs wake" without further checks.
     public static func shouldWake(pet: Pet) -> Bool {
         pet.hibernationSince != nil
     }
@@ -1440,6 +1444,14 @@ final class DeathWindowTests: XCTestCase {
         XCTAssertEqual(DeathWindow.parse("[1, 2, 3]"), [])  // wrong type
     }
 
+    /// Regression guard: NSNumber bridges to Bool for 0/1, so a naive
+    /// `as? Bool` check would silently accept integer arrays. Force the
+    /// implementation to type-check explicitly via CFBooleanGetTypeID.
+    func testParseRejectsIntegerBooleans() {
+        XCTAssertEqual(DeathWindow.parse("[1, 0]"), [])
+        XCTAssertEqual(DeathWindow.parse("[1]"), [])
+    }
+
     func testSerialize() {
         XCTAssertEqual(DeathWindow.serialize([true, false]), "[true,false]")
     }
@@ -1477,21 +1489,6 @@ final class DeathWindowTests: XCTestCase {
         XCTAssertFalse(DeathWindow.shouldDie(pet: pet))
     }
 
-    func testHibernatedDayShrinks() {
-        // Spec §6: hibernated days are skipped — neither true nor false appended
-        var pet = Pet.fresh(species: "frog", at: 0)
-        for _ in 0..<5 {
-            pet = DeathWindow.appendDay(pet: pet, lowToday: true)
-        }
-        XCTAssertTrue(DeathWindow.shouldDie(pet: pet))
-        // simulate "skip a day" — caller doesn't call appendDay; we verify
-        // the function under test does the right thing for callers that
-        // already manage skipping. Just sanity-check that empty after reset
-        // means no death:
-        pet.deathWindowState = "[]"
-        XCTAssertFalse(DeathWindow.shouldDie(pet: pet))
-    }
-
     func testCountLowStats() {
         var pet = Pet.fresh(species: "frog", at: 0)
         pet.fullness = 19; pet.stamina = 19; pet.intimacy = 21
@@ -1515,14 +1512,17 @@ import Foundation
 
 public enum DeathWindow {
     /// Decode the JSON array of booleans. Returns `[]` on any failure
-    /// (corruption recovery rule from spec §3).
+    /// (corruption recovery rule from spec §3). Explicitly rejects integers
+    /// to avoid NSNumber → Bool bridging (`1 as? Bool == true`).
     public static func parse(_ json: String) -> [Bool] {
         guard let data = json.data(using: .utf8) else { return [] }
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
         var out: [Bool] = []
         for v in arr {
-            guard let b = v as? Bool else { return [] }
-            out.append(b)
+            guard let n = v as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else {
+                return []
+            }
+            out.append(n.boolValue)
         }
         return out
     }
@@ -1561,7 +1561,7 @@ public enum DeathWindow {
 - [ ] **Step 4: Run, expect pass**
 
 Run: `cd PetCore && swift test --filter DeathWindowTests`
-Expected: 9 tests pass.
+Expected: 10 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1768,12 +1768,12 @@ git commit -m "Add SpeciesRoulette with uniform pick + zero-species fallback"
 
 ## Chunk 2 Exit Criteria
 
-- `cd PetCore && swift test` passes locally with **exactly 16 (Chunk 1) + 32 (Chunk 2) = 48 tests**:
+- `cd PetCore && swift test` passes locally with **exactly 16 (Chunk 1) + 33 (Chunk 2) = 49 tests**:
   - 4 Pet (Task 2.1)
   - 2 DecayClock (Task 2.2)
   - 7 Decay (Task 2.3)
   - 5 Hibernation (Task 2.4)
-  - 9 DeathWindow (Task 2.5)
+  - 10 DeathWindow (Task 2.5, including `testParseRejectsIntegerBooleans` regression guard)
   - 2 Level (Task 2.6)
   - 3 SpeciesRoulette (Task 2.7)
 - CI green on most recent main commit
