@@ -400,6 +400,14 @@ final class SpeciesTests: XCTestCase {
         }
     }
 
+    /// Regression guard: catches anyone breaking the `min_xp` ↔ `minXp`
+    /// CodingKeys mapping on Species.Stage.
+    func testStageMinXpDecodes() throws {
+        let registry = try SpeciesRegistry.load(directory: fixturesURL)
+        let frog = registry.all.first!
+        XCTAssertEqual(frog.stages.map(\.minXp), [0, 50, 200, 800])
+    }
+
     func testLoadEmptyDirectoryReturnsEmptyRegistry() throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("empty-\(UUID())")
@@ -518,7 +526,7 @@ public enum SpeciesError: Error, Equatable {
 - [ ] **Step 5: Run tests, expect pass**
 
 Run: `cd PetCore && swift test --filter SpeciesTests`
-Expected: 3 tests pass.
+Expected: 4 tests pass (testLoadValidSpecies, testFrameIndicesWithinBounds, testStageMinXpDecodes, testLoadEmptyDirectoryReturnsEmptyRegistry).
 
 - [ ] **Step 6: Commit**
 
@@ -586,6 +594,15 @@ final class ConfigYAMLTests: XCTestCase {
     func testMissingFileFallsBackToDefaults() {
         let cfg = ConfigYAML.defaults
         XCTAssertEqual(cfg.thresholds.deathConsecutiveDays, 5)
+    }
+
+    /// Drift guard: the in-Swift `ConfigYAML.defaults` literal must stay in
+    /// sync with `Fixtures/config-default.yaml`. If someone tunes one but
+    /// not the other, this test fails.
+    func testDefaultsMatchBundledYAML() throws {
+        let url = Bundle.module.url(forResource: "Fixtures/config-default", withExtension: "yaml")!
+        let fromYAML = try ConfigYAML.load(from: url)
+        XCTAssertEqual(fromYAML, ConfigYAML.defaults)
     }
 }
 ```
@@ -689,7 +706,7 @@ public struct ConfigYAML: Codable, Equatable {
 - [ ] **Step 5: Run tests, expect pass**
 
 Run: `cd PetCore && swift test --filter ConfigYAMLTests`
-Expected: 2 tests pass.
+Expected: 3 tests pass (loadsAllConstants, missingFileFallsBackToDefaults, defaultsMatchBundledYAML).
 
 - [ ] **Step 6: Commit**
 
@@ -890,30 +907,15 @@ If CI is red, fix locally first; do not move to Chunk 2 with a red main.
 
 ## Chunk 1 Exit Criteria
 
-- `cd PetCore && swift test` passes locally with **exactly 15 tests**:
+- `cd PetCore && swift test` passes locally with **exactly 16 tests**:
   - 1 smoke (Task 1.1)
   - 3 Database (Task 1.2)
-  - 3 Species (Task 1.3)
-  - 3 ConfigYAML (Task 1.4 — see drift test below)
+  - 4 Species (Task 1.3, including `testStageMinXpDecodes` regression guard)
+  - 3 ConfigYAML (Task 1.4, including `testDefaultsMatchBundledYAML` drift guard)
   - 5 ULID (Task 1.5)
 - `.github/workflows/ci.yml` is green on the most recent main commit
 - Repo layout matches the diagram at the top of this plan
 - Schema migration v1 is in place; further migrations append to `Database.swift`
-
-**Note on the 3rd ConfigYAML test:** add an explicit drift guard so the
-in-Swift `ConfigYAML.defaults` literal never silently disagrees with
-`Fixtures/config-default.yaml`:
-
-```swift
-func testDefaultsMatchBundledYAML() throws {
-    let url = Bundle.module.url(forResource: "Fixtures/config-default", withExtension: "yaml")!
-    let fromYAML = try ConfigYAML.load(from: url)
-    XCTAssertEqual(fromYAML, ConfigYAML.defaults)
-}
-```
-
-This catches the case where someone tunes the YAML in Chunk 5 but forgets to
-update the Swift literal (or vice versa).
 
 When all four exit criteria are true, ask the user to review Chunk 1 before
 proceeding to Chunk 2.
