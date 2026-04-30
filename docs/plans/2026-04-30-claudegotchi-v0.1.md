@@ -489,6 +489,10 @@ private struct SpeciesYAML: Decodable {
 public struct SpeciesRegistry {
     public let all: [Species]
 
+    public init(all: [Species]) {
+        self.all = all
+    }
+
     public static func load(directory: URL) throws -> SpeciesRegistry {
         let fm = FileManager.default
         guard let entries = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
