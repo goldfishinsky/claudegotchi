@@ -1790,6 +1790,13 @@ via `helper_event_id` UNIQUE + watermark, pre-tool-use 5-min timeout, pause
 that updates rollup but skips applier, spool rotation with `flock` + atomic
 rename, hibernation transitions encoded as synthetic events.
 
+**Bootstrap dependency:** `ApplyTransaction.process()` requires an alive pet
+to exist in the `pet` table; it throws `noAlivePet` if the table is empty.
+Creating the very first egg on a clean install is the responsibility of the
+**UI launch sequence in Chunk 4** — the app must call a "ensure alive pet
+exists" helper (random species via `SpeciesRoulette`) before starting the
+`SpoolWatcher`. Within Chunk 3, tests pre-insert a pet in `setUpWithError`.
+
 Module map (under `PetCore/Sources/PetCore/`):
 
 | File | Responsibility |
@@ -1894,6 +1901,10 @@ Create `PetCore/Sources/PetCore/Event.swift`:
 ```swift
 import Foundation
 
+/// JSON contract between `claudegotchi-hook` and the app.
+/// Forward-compatible: unknown JSON keys are ignored by JSONDecoder, and
+/// `ApplyTransaction` stores the raw line in `event.payload` so future
+/// fields are not lost.
 public struct Event: Codable, Equatable {
     public let schemaVersion: Int
     public let eventId: String
@@ -1904,6 +1915,22 @@ public struct Event: Codable, Equatable {
     public let tokensIn: Int?
     public let tokensOut: Int?
     public let model: String?
+
+    public init(
+        schemaVersion: Int, eventId: String, ts: Int64, type: EventType,
+        sessionId: String?, tool: String?,
+        tokensIn: Int?, tokensOut: Int?, model: String?
+    ) {
+        self.schemaVersion = schemaVersion
+        self.eventId = eventId
+        self.ts = ts
+        self.type = type
+        self.sessionId = sessionId
+        self.tool = tool
+        self.tokensIn = tokensIn
+        self.tokensOut = tokensOut
+        self.model = model
+    }
 
     public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
 
@@ -2302,11 +2329,13 @@ final class EventApplierTests: XCTestCase {
     }
 
     func testPostToolUseIncreasesFullnessAndXP() {
-        let pet = Pet.fresh(species: "frog", at: 0)
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 50  // unsaturated so the +1 isn't clamped to 100
+        let before = pet.fullness
         let next = applier.apply(event: evt(.postToolUse, tokensIn: 1000, tokensOut: 1000), to: pet)
         // tokens_total = 2000 → fullness += min(2000/2000, 5) = 1
         // xp += 2000/200 = 10
-        XCTAssertEqual(next.fullness, pet.fullness + 1, accuracy: 1e-9)
+        XCTAssertEqual(next.fullness, before + 1, accuracy: 1e-9)
         XCTAssertEqual(next.xp, 10)
     }
 
@@ -2423,6 +2452,11 @@ public final class EventApplier {
             }
 
         case .preToolUse:
+            // Defensive: a malformed pre_tool_use missing session_id or tool
+            // is silently dropped (no stamina charge, no pending entry). The
+            // helper at Chunk 3 Task 3.6 always populates both fields per
+            // spec §4 schema, so this branch is for forward-compat with
+            // future event variants only.
             guard let sid = event.sessionId, let tool = event.tool else { return p }
             let cost = isSustained(sessionId: sid, eventMs: event.ts)
                 ? config.eventCosts.preToolUseStaminaSustained
@@ -2627,6 +2661,9 @@ public final class ApplyTransaction {
         let event = try Event.parse(jsonLine)
 
         try db.write { conn in
+            // Cache the alive pet once for the whole transaction.
+            var pet = try aliveOrThrow(in: conn)
+
             // 1. INSERT event row. UNIQUE(helper_event_id) → duplicates fail.
             do {
                 try conn.execute(sql: """
@@ -2636,12 +2673,15 @@ public final class ApplyTransaction {
                     event.eventId,
                     event.ts,
                     event.type.rawValue,
-                    try aliveOrThrow(in: conn).id!,
+                    pet.id!,
                     jsonLine
                 ])
             } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                // Duplicate helper_event_id — silent skip, transaction will commit
-                // with no effect since we return before the other steps.
+                // Duplicate helper_event_id — silent skip. Returning from the
+                // closure (without throwing) lets GRDB commit a no-op
+                // transaction. Throwing here would roll back, which is also
+                // safe but slightly noisier. We choose commit-no-op so the
+                // SpoolReader's byte offset advances normally.
                 return
             }
 
@@ -2655,7 +2695,6 @@ public final class ApplyTransaction {
             )
 
             // 3. If !paused, apply event to pet
-            var pet = try aliveOrThrow(in: conn)
             if !paused {
                 pet = applier.apply(event: event, to: pet)
                 try pet.update(conn)
@@ -2862,9 +2901,11 @@ final class HookSpoolTests: XCTestCase {
 Run: `cd PetCore && swift test --filter HookSpoolTests`
 Expected: 3 tests pass.
 
-- [ ] **Step 5: Implement `main.swift`**
+- [ ] **Step 5: Implement `ClaudegotchiHook.swift`**
 
-Create `PetCore/Sources/HookHelper/main.swift`:
+Create `PetCore/Sources/HookHelper/ClaudegotchiHook.swift` (NOT `main.swift` —
+Swift forbids combining a file named `main.swift` with `@main`):
+
 ```swift
 import Foundation
 import PetCore
@@ -3137,6 +3178,10 @@ public final class SpoolWatcher {
 
         let stamp = ISO8601DateFormatter().string(from: Date())
         let bakURL = spoolURL.appendingPathExtension("\(stamp).bak")
+        // Spec §4: a helper that is mid-write during this rename keeps its
+        // open fd pointing at the .bak inode (POSIX semantics on APFS). The
+        // helper finishes its write into the .bak, which we drain below.
+        // No event loss.
         try fm.moveItem(at: spoolURL, to: bakURL)
 
         // Drain the .bak via a temporary reader
@@ -3206,7 +3251,7 @@ git commit -m "Add SpoolWatcher: FSEvents-driven drain + flock-based rotation"
 
 ## Chunk 3 Exit Criteria
 
-- `cd PetCore && swift test` passes locally with **49 (Chunks 1+2) + 31 (Chunk 3) = 80 tests**:
+- `cd PetCore && swift test` passes locally with **49 (Chunks 1+2) + 36 (Chunk 3) = 85 tests**:
   - 6 Event (Task 3.1)
   - 5 SpoolReader (Task 3.2)
   - 4 DailyRollup (Task 3.3)
