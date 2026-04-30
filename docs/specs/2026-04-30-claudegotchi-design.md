@@ -1,6 +1,6 @@
 # claudegotchi — Design
 
-- Status: Draft (post-review revision 1)
+- Status: Draft (post-review revision 2)
 - Brainstorming date: 2026-04-28 ~ 2026-04-30
 - Author: jalen
 
@@ -134,15 +134,21 @@ CREATE TABLE pet (
   name TEXT,                              -- user-given name, nullable
   birthday INTEGER NOT NULL,              -- unix epoch (seconds)
   death_at INTEGER,                       -- NULL = alive
-  fullness REAL NOT NULL,                 -- 0..100
-  stamina REAL NOT NULL,                  -- 0..100
-  intimacy REAL NOT NULL,                 -- 0..100
-  xp INTEGER NOT NULL,                    -- cumulative, never decreases
+  fullness REAL NOT NULL CHECK (fullness BETWEEN 0 AND 100),
+  stamina REAL NOT NULL CHECK (stamina BETWEEN 0 AND 100),
+  intimacy REAL NOT NULL CHECK (intimacy BETWEEN 0 AND 100),
+  xp INTEGER NOT NULL CHECK (xp >= 0),    -- cumulative, never decreases
   last_tick_at INTEGER NOT NULL,          -- unix epoch of last decay tick
   last_applied_event_id INTEGER NOT NULL DEFAULT 0,  -- replay watermark
   hibernation_since INTEGER,              -- NULL when awake
   death_window_state TEXT NOT NULL DEFAULT '[]'  -- JSON array of last 5 midnight booleans
 );
+
+-- death_window_state invariants (enforced in code, not schema):
+--   * Always a JSON array of booleans, length 0..5.
+--   * Sliding window: append + truncate-to-last-5 on each midnight.
+--   * On JSON parse failure (corruption), engine resets to '[]' and logs a
+--     warning. This loses up to 4 days of history but never crashes the app.
 
 -- Hard invariant: at most one alive pet at any time.
 CREATE UNIQUE INDEX idx_one_alive ON pet(death_at) WHERE death_at IS NULL;
@@ -162,12 +168,17 @@ CREATE TABLE event (
 CREATE INDEX idx_event_ts ON event(ts);
 CREATE INDEX idx_event_pet ON event(pet_id);
 
--- Daily rollups for the heatmap. Backfilled lazily; falls back to event scan.
+-- Daily rollups for the heatmap.
+-- date = strftime('%Y-%m-%d', ts/1000, 'unixepoch', 'localtime') at apply time.
+-- Crossing timezones can split a calendar day across two rollup rows; this is
+-- accepted (it correctly reflects each event's wall-clock day at the moment
+-- it happened, which is what most users expect for activity history).
 CREATE TABLE daily_rollup (
-  date TEXT PRIMARY KEY,                  -- 'YYYY-MM-DD' local time
+  date TEXT PRIMARY KEY,                  -- 'YYYY-MM-DD' local time at apply
   sessions INTEGER NOT NULL,
   messages INTEGER NOT NULL,
-  tokens_total INTEGER NOT NULL,
+  tokens_in INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0,
   tools_used INTEGER NOT NULL
 );
 ```
@@ -276,42 +287,85 @@ exec: claudegotchi-hook <type> --json '<json>'
 helper:
   1. Generate ULID for event_id
   2. Open spool.jsonl with O_APPEND | O_CREAT, mode 0600
-  3. Write one JSON line + '\n', fsync, close, exit 0
+  3. Write one JSON line + '\n', fsync(file), close, exit 0
   ↓ (FSEvents fires on file size change)
 SpoolWatcher (in app):
-  1. Read new lines since last position (track byte offset in memory)
-  2. For each line, parse JSON
-  3. Insert into event table; if helper_event_id is duplicate, ignore (UNIQUE constraint)
-  4. Hand off to EventApplier
+  ┌── For each new JSON line, run as a SINGLE SQLite transaction ──┐
+  │  1. INSERT INTO event (...) — fails silently on duplicate     │
+  │     helper_event_id (UNIQUE); skip the rest in that case       │
+  │  2. UPSERT daily_rollup for date(ts) (always, even when paused)│
+  │  3. If NOT paused: invoke EventApplier (see below)             │
+  │  4. UPDATE pet.last_applied_event_id = event.id                │
+  └────────────────────────────────────────────────────────────────┘
   ↓
-EventApplier:
-  · session_start  → wake from hibernation if active; persist event
-  · pre_tool_use   → record pending(event_id, tool, ts); animation = thinking
-  · post_tool_use  → resolve matching pending; fullness += min(tokens_total/2000, 5);
-                     xp += tokens_total/200; animation = idle
+EventApplier (only runs when not paused):
+  · session_start  → if hibernation_since IS NOT NULL: clear it,
+                     play 3s yawn animation (skipped during replay)
+  · pre_tool_use   → record pending(event_id, session_id, tool, ts);
+                     stamina -= 0.5 (or -1.0 if session active > 30 min);
+                     animation = thinking
+  · post_tool_use  → resolve matching pending(session_id, tool);
+                     fullness += min(tokens_total/2000, 5);
+                     xp += tokens_total/200;
+                     animation = idle
   · stop (success) → 'happy' animation 1.5s; intimacy += 0.5
   · pet_click      → intimacy += 2 (60s cooldown enforced in UI)
+
+  where: tokens_total = (tokens_in or 0) + (tokens_out or 0)
   ↓
-StatsStore.persist(); daily_rollup.upsert(date(ts), ...)
-  ↓
-Update pet.last_applied_event_id = event.id
-  ↓
-NotificationCenter post → UI redraws
+NotificationCenter post → UI redraws (suppressed during replay)
 ```
+
+**Atomicity contract.** All four steps inside the SpoolWatcher transaction
+commit together or not at all. A crash partway through leaves the database
+in a state where neither the event nor the rollup has advanced; on restart
+the SpoolWatcher will re-encounter the same line in spool.jsonl and re-run
+the transaction. The UNIQUE constraint on `helper_event_id` ensures the
+event row is inserted at most once even across many such retries.
+
+**Why daily_rollup is updated in the watcher (not the applier).** The user
+can right-click → Pause tracking. Pause stops the EventApplier (so pet stats
+freeze) but the dashboard / heatmap should keep reflecting reality. Writing
+the rollup in the SpoolWatcher transaction guarantees that whether or not
+EventApplier ran, the dashboard data is consistent with the event table.
 
 ### Spool drain semantics
 
-- The app tracks the in-memory **byte offset** of how far it has read into
-  spool.jsonl. On launch, the byte offset is recovered by querying
-  `MAX(event.id)` and finding the corresponding helper_event_id, then scanning
-  the spool for that ULID. If not found (e.g., spool was truncated), the app
-  reads from byte 0.
-- Lines older than the most recent applied helper_event_id are inserted into
-  the event table; the UNIQUE constraint on `helper_event_id` causes duplicates
-  to be silently ignored, achieving exactly-once apply.
-- Once the spool exceeds 10 MB OR is older than 7 days (whichever first),
-  the app rotates: rename → `spool.jsonl.<timestamp>.bak` → start fresh
-  spool.jsonl. Backups older than 30 days are deleted.
+- On launch, the SpoolWatcher reads spool.jsonl from byte 0. Every line is
+  attempted as an INSERT; duplicates fail the UNIQUE constraint on
+  `helper_event_id` and are silently skipped. After the initial scan, the
+  watcher keeps an in-memory byte offset and only re-reads new tail bytes on
+  each FSEvents notification.
+- Reading from byte 0 every launch is cheap (the spool is bounded — see
+  rotation below) and simplifies recovery: no offset to persist or recover.
+
+**Rotation policy.** Rotation is performed **only by the app**, never by the
+helper. When the app observes spool.jsonl ≥ 10 MB or oldest line > 7 days
+(whichever first):
+
+1. App acquires an advisory lock (`flock`) on a sentinel file
+   `spool.lock` to serialize against itself.
+2. App calls `rename(spool.jsonl, spool.jsonl.<ISO8601>.bak)`. The rename
+   is atomic on APFS. From this instant, any helper that opens
+   `spool.jsonl` with `O_APPEND | O_CREAT` will create a fresh file with
+   the same name and append there.
+3. App drains the .bak file fully (every line → INSERT-or-skip), then deletes
+   the .bak.
+4. App releases `flock`.
+
+**Helper write during rename.** If a helper is mid-write when the rename
+happens, the helper's open file handle still points to the .bak inode (the
+write completes against the renamed file). The line ends up in the .bak
+which the app drains in step 3. No event loss.
+
+**Two helpers writing simultaneously.** Each helper opens with
+`O_APPEND | O_CREAT`, which on POSIX guarantees the lseek-and-write is atomic
+for writes ≤ PIPE_BUF (4096 bytes on macOS — far larger than any of our event
+lines). No interleaving.
+
+**No backup retention.** After step 3 the .bak is deleted. Diagnostic
+logs are kept separately under `~/Library/Application Support/claudegotchi/log/`
+and persist across rotations.
 
 ### Pending tool-use timeout
 
@@ -424,16 +478,22 @@ Independent window, opened from the dropdown.
 
 **Pause tracking semantics:**
 
+Pause is "leave my pet alone". It freezes the pet entirely while letting
+the dashboard keep tracking your real Claude usage.
+
 - All decay tick computation is suspended.
-- Incoming events from the spool are still ingested into the `event` table
-  AND into `daily_rollup` (so stats history stays accurate), but they are
-  **not** applied to the pet's live stats. `pet.last_applied_event_id` is
-  advanced as if applied (events are silently consumed, not retroactively
-  applied on resume).
+- Incoming events still flow into the `event` table and `daily_rollup` (so
+  the dashboard, heatmap, and today's session count stay accurate). The
+  watcher's transaction advances `pet.last_applied_event_id` even when
+  paused, so events are not re-applied on resume.
+- **Trade-off:** pet stat changes that *would* have happened (XP, fullness,
+  intimacy from `stop`, etc.) are **dropped**. A user who paused for a week
+  while heavily using Claude does not get a week of XP. This is the chosen
+  meaning of "pause": stop the game, don't bank gameplay for later.
 - Animation freezes on a static "paused" sprite frame.
 - Click-on-pet does not increment intimacy while paused.
-- Resume re-engages decay tick and event application starting from the
-  current watermark and current wall clock — no replay, no spike.
+- Resume re-engages decay tick and EventApplier starting from the current
+  watermark and current wall clock — no replay, no spike.
 
 ## 6. Game Logic
 
@@ -514,14 +574,30 @@ but recovered to 50 by midnight does **not** count as low for that day.
 
 1. Set `death_at = now()` on the pet row (do not delete).
 2. Insert a new pet row with random species, fresh stats, `xp = 0`,
-   `last_applied_event_id` set to the same watermark as the previous pet
-   (events that arrive after the death stay attributable to the new pet via
-   their `pet_id` foreign key).
-3. Post a system notification with the deceased pet's name, species, peak
+   `last_applied_event_id = MAX(event.id)` at this moment.
+3. From step 2 forward, the SpoolWatcher writes `pet_id = <new pet id>` on
+   all subsequent event rows. Events for the deceased pet remain in the
+   table with their original `pet_id` — the new pet's watermark scan
+   (`event.pet_id = <new pet id>`) cannot pick them up. No accidental
+   double-application across pet generations.
+4. Post a system notification with the deceased pet's name, species, peak
    stage, and final XP.
-4. Force-open the dropdown showing the egg.
+5. Force-open the dropdown showing the egg.
 
 **No revival, no inheritance.** Hardcore mode by user choice.
+
+#### Random species selection
+
+Selection is uniform random across all loadable species YAMLs at the moment
+of hatch. The deceased pet's species is eligible (no anti-repeat in v0.1).
+
+**Edge cases:**
+
+- If only one species is loadable, that species is chosen — no error.
+- If zero species are loadable (e.g., bundled assets corrupted, user
+  installed a broken override), the engine falls back to a hardcoded
+  species id (`frog`) and surfaces a banner in the dropdown asking the user
+  to reinstall.
 
 ### Tunability
 
@@ -579,8 +655,10 @@ On first launch the app:
    - Inserts hook entries into the appropriate `hooks.<event>` arrays. Each
      entry carries an `"id"` field matching the list above so Remove can
      target only its own.
-   - Writes atomically: write to `settings.json.tmp` → rename. Backup of the
-     original is kept at `settings.json.bak.<timestamp>` for one revision.
+   - Writes atomically: write to `settings.json.tmp` → rename. The original
+     content is kept at `settings.json.claudegotchi.bak` (single file, no
+     timestamp). Each subsequent install or remove overwrites this single
+     backup, so disk usage stays bounded at 1× the original file size.
 4. Settings page exposes idempotent **Reinstall hooks** and **Remove hooks**
    buttons. Both operate on entries with matching `id` only — never touch
    user-added hooks.
@@ -644,6 +722,15 @@ user's `config.yaml`.
   log → final state matches expected.
 - **Replay idempotency:** N duplicate events in spool produce same final state
   as deduped sequence.
+- **Transaction atomicity:** simulate process kill between event INSERT and
+  watermark UPDATE; on restart, verify (a) `daily_rollup` is not
+  double-incremented, (b) pet stats are correct, (c) the same event is
+  re-encountered in spool and processed exactly once.
+- **Spool rotation race:** spool reaches 10 MB while a helper is
+  mid-write; verify the in-flight line lands in the .bak and is drained,
+  no duplicates.
+- **Random species fallback:** zero-species directory → engine falls back to
+  hardcoded `frog`; banner is rendered.
 - **Hooks install idempotence:** install twice in a row produces same
   `settings.json`; install then uninstall leaves it byte-identical to before
   install (modulo the `.bak` file).
