@@ -1,0 +1,22 @@
+decay:
+  fullness_per_second: 0.0006
+  intimacy_per_second: 0.0003
+  stamina_regen_per_second: 0.0002
+event_costs:
+  pre_tool_use_stamina: 0.5
+  pre_tool_use_stamina_sustained: 1.0
+  post_tool_use_fullness_per_2k_tokens: 1.0
+  post_tool_use_xp_per_200_tokens: 1.0
+  stop_intimacy: 0.5
+  pet_click_intimacy: 2.0
+thresholds:
+  death_stat_low: 20
+  death_low_stats_required: 2
+  death_consecutive_days: 5
+  hibernation_after_seconds: 259200    # 72h
+  pet_click_cooldown_seconds: 60
+  sustained_session_seconds: 1800       # 30m
+  pre_tool_use_timeout_seconds: 300     # 5m
+spool:
+  rotate_when_bytes_exceed: 10485760    # 10MB
+  rotate_when_age_exceeds_seconds: 604800  # 7d
