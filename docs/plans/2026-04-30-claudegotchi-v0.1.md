@@ -325,9 +325,9 @@ git commit -m "Add SQLite schema with CHECK constraints and unique-alive index"
 - Create: `PetCore/Sources/PetCore/Species.swift`
 - Create: `PetCore/Tests/PetCoreTests/SpeciesTests.swift`
 - Create: `PetCore/Tests/PetCoreTests/Fixtures/species/frog/species.yaml`
-- Create: `PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png` (placeholder)
+- Modify: `PetCore/Package.swift` (add `resources:` to test target)
 
-The loader reads a directory of `<id>/species.yaml` + `sprite.png` and returns validated `Species` structs. Sprite-frame index validation against PNG dimensions is in this loader.
+The loader reads a directory of `<id>/species.yaml` files and returns validated `Species` structs. Frame-index validation is against the YAML's declared `sprite_grid`, **not** by reading the PNG. Sprite PNG validation lives in the asset-check CI workflow (Chunk 5), not in the loader. Therefore Chunk 1's fixture does not need a real PNG file.
 
 - [ ] **Step 1: Create the test fixture**
 
@@ -358,19 +358,9 @@ sprite_grid:
   rows: 3
 ```
 
-For `sprite.png`, generate a minimal 48×48 placeholder (3×3 grid of 16×16 frames). Use a one-line script:
-```bash
-python3 -c "
-from PIL import Image
-img = Image.new('RGBA', (48, 48), (0, 0, 0, 0))
-img.save('PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png')
-" || curl -L -o PetCore/Tests/PetCoreTests/Fixtures/species/frog/sprite.png \
-    https://via.placeholder.com/48.png
-```
+(No `sprite.png` is needed; the loader does not open it. Real sprite assets ship in Chunk 5.)
 
-(If neither works, hand-craft a 48×48 PNG via any tool. The loader doesn't render — just reads dimensions.)
-
-Update `PetCore/Package.swift` to include the resources:
+Update `PetCore/Package.swift` to expose fixtures to the test bundle:
 ```swift
 .testTarget(
     name: "PetCoreTests",
@@ -433,9 +423,10 @@ Create `PetCore/Sources/PetCore/Species.swift`:
 ```swift
 import Foundation
 import Yams
-import AppKit
 
-public struct Species: Codable, Equatable {
+/// Runtime model for a species. `bundleURL` is set by the loader after
+/// decoding the YAML wire format; it is intentionally not Codable.
+public struct Species: Equatable {
     public let id: String
     public let nameZh: String
     public let nameEn: String
@@ -448,6 +439,10 @@ public struct Species: Codable, Equatable {
         public let id: String
         public let sprite: String
         public let minXp: Int
+        enum CodingKeys: String, CodingKey {
+            case id, sprite
+            case minXp = "min_xp"
+        }
     }
 
     public struct SpriteGrid: Codable, Equatable {
@@ -458,6 +453,16 @@ public struct Species: Codable, Equatable {
     }
 
     public var maxFrameIndex: Int { spriteGrid.cols * spriteGrid.rows - 1 }
+}
+
+/// YAML wire format (no bundleURL, decoded directly from species.yaml).
+private struct SpeciesYAML: Decodable {
+    let id: String
+    let nameZh: String
+    let nameEn: String
+    let stages: [Species.Stage]
+    let animations: [String: [Int]]
+    let spriteGrid: Species.SpriteGrid
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -465,12 +470,6 @@ public struct Species: Codable, Equatable {
         case nameEn = "name_en"
         case stages, animations
         case spriteGrid = "sprite_grid"
-        case bundleURL
-    }
-
-    enum StageKeys: String, CodingKey {
-        case id, sprite
-        case minXp = "min_xp"
     }
 }
 
@@ -487,27 +486,25 @@ public struct SpeciesRegistry {
             let yamlURL = entry.appendingPathComponent("species.yaml")
             guard fm.fileExists(atPath: yamlURL.path) else { continue }
             let raw = try String(contentsOf: yamlURL)
-            let decoder = YAMLDecoder()
-            var species = try decoder.decode(Species.self, from: raw)
-            species = withBundleURL(species, url: entry)
+            let yaml = try YAMLDecoder().decode(SpeciesYAML.self, from: raw)
+            let species = Species(
+                id: yaml.id, nameZh: yaml.nameZh, nameEn: yaml.nameEn,
+                stages: yaml.stages, animations: yaml.animations,
+                spriteGrid: yaml.spriteGrid, bundleURL: entry
+            )
             try validate(species)
             loaded.append(species)
         }
         return SpeciesRegistry(all: loaded.sorted { $0.id < $1.id })
     }
 
-    private static func withBundleURL(_ s: Species, url: URL) -> Species {
-        Species(
-            id: s.id, nameZh: s.nameZh, nameEn: s.nameEn,
-            stages: s.stages, animations: s.animations,
-            spriteGrid: s.spriteGrid, bundleURL: url
-        )
-    }
-
     private static func validate(_ species: Species) throws {
         for (anim, indices) in species.animations {
             for i in indices where i < 0 || i > species.maxFrameIndex {
-                throw SpeciesError.frameOutOfRange(species: species.id, animation: anim, index: i, max: species.maxFrameIndex)
+                throw SpeciesError.frameOutOfRange(
+                    species: species.id, animation: anim,
+                    index: i, max: species.maxFrameIndex
+                )
             }
         }
     }
@@ -517,8 +514,6 @@ public enum SpeciesError: Error, Equatable {
     case frameOutOfRange(species: String, animation: String, index: Int, max: Int)
 }
 ```
-
-Note: this implementation imports `AppKit` only to make resource URL handling consistent with the eventual sprite renderer; if AppKit causes test failures on a non-macOS CI, gate it with `#if canImport(AppKit)`.
 
 - [ ] **Step 5: Run tests, expect pass**
 
@@ -744,16 +739,20 @@ final class ULIDTests: XCTestCase {
 
     func testULIDsAreLexicographicallyOrdered() {
         let a = ULID.generate()
-        Thread.sleep(forTimeInterval: 0.002)
+        Thread.sleep(forTimeInterval: 0.010)  // 10ms is comfortably above macOS timer coalescing
         let b = ULID.generate()
         XCTAssertLessThan(a, b)
     }
 
     func testULIDTimestampPrefixDecodes() {
-        let now = Date().timeIntervalSince1970 * 1000
+        let before = UInt64(Date().timeIntervalSince1970 * 1000)
         let ulid = ULID.generate()
         let decoded = ULID.timestampMs(from: ulid)!
-        XCTAssertEqual(Double(decoded), now, accuracy: 1000)
+        let after = UInt64(Date().timeIntervalSince1970 * 1000)
+        // Decoded timestamp must lie inside the [before, after] interval; this
+        // is a tight bound (no fuzz factor) so a generator off by even 1 ms fails.
+        XCTAssertGreaterThanOrEqual(decoded, before)
+        XCTAssertLessThanOrEqual(decoded, after)
     }
 }
 ```
@@ -768,14 +767,21 @@ Expected: FAIL.
 Create `PetCore/Sources/PetCore/ULID.swift`:
 ```swift
 import Foundation
+import Security
 
+/// Standard ULID: 48-bit ms timestamp prefix + 80-bit random suffix, encoded
+/// as 26 chars of Crockford base32. The 10-char prefix encodes 50 bits but
+/// real-world ms timestamps fit in 48 bits until year 10889, so the first
+/// char only uses values 0-7 — matching the spec.
 public enum ULID {
     private static let alphabet = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
 
     public static func generate() -> String {
         let ms = UInt64(Date().timeIntervalSince1970 * 1000)
         var rand = [UInt8](repeating: 0, count: 10)
-        _ = SecRandomCopyBytes(kSecRandomDefault, rand.count, &rand)
+        let result = SecRandomCopyBytes(kSecRandomDefault, rand.count, &rand)
+        precondition(result == errSecSuccess,
+                     "SecRandomCopyBytes failed (\(result)); cannot produce a valid ULID")
         return encodeTime(ms) + encodeRandom(rand)
     }
 
@@ -799,8 +805,9 @@ public enum ULID {
         return String(out)
     }
 
+    /// Encodes 80 random bits (10 bytes) as exactly 16 base32 chars.
     private static func encodeRandom(_ bytes: [UInt8]) -> String {
-        // 80 random bits → 16 base32 chars
+        precondition(bytes.count == 10)
         var out = ""
         var buffer: UInt64 = 0
         var bits: UInt64 = 0
@@ -813,11 +820,8 @@ public enum ULID {
                 out.append(alphabet[idx])
             }
         }
-        if bits > 0 {
-            let idx = Int((buffer << (5 - bits)) & 0x1f)
-            out.append(alphabet[idx])
-        }
-        return String(out.prefix(16))
+        // 80 bits ≡ 0 mod 5, so no leftover bits to flush.
+        return out
     }
 }
 ```
@@ -886,12 +890,33 @@ If CI is red, fix locally first; do not move to Chunk 2 with a red main.
 
 ## Chunk 1 Exit Criteria
 
-- `cd PetCore && swift test` passes locally with 14+ tests across Database, Species, ConfigYAML, ULID, and the smoke test
+- `cd PetCore && swift test` passes locally with **exactly 15 tests**:
+  - 1 smoke (Task 1.1)
+  - 3 Database (Task 1.2)
+  - 3 Species (Task 1.3)
+  - 3 ConfigYAML (Task 1.4 — see drift test below)
+  - 5 ULID (Task 1.5)
 - `.github/workflows/ci.yml` is green on the most recent main commit
 - Repo layout matches the diagram at the top of this plan
 - Schema migration v1 is in place; further migrations append to `Database.swift`
 
-When all four are true, ask the user to review Chunk 1 before proceeding to Chunk 2.
+**Note on the 3rd ConfigYAML test:** add an explicit drift guard so the
+in-Swift `ConfigYAML.defaults` literal never silently disagrees with
+`Fixtures/config-default.yaml`:
+
+```swift
+func testDefaultsMatchBundledYAML() throws {
+    let url = Bundle.module.url(forResource: "Fixtures/config-default", withExtension: "yaml")!
+    let fromYAML = try ConfigYAML.load(from: url)
+    XCTAssertEqual(fromYAML, ConfigYAML.defaults)
+}
+```
+
+This catches the case where someone tunes the YAML in Chunk 5 but forgets to
+update the Swift literal (or vice versa).
+
+When all four exit criteria are true, ask the user to review Chunk 1 before
+proceeding to Chunk 2.
 
 ---
 
