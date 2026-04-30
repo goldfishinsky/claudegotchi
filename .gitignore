@@ -1,6 +1,11 @@
 .DS_Store
 .superpowers/
 
+# SwiftPM
+.build/
+Package.resolved
+*.xcodeproj/
+
 # Editor
 .vscode/
 .idea/
