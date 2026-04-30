@@ -3346,6 +3346,13 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.goldfishinsky.claudegotchi
         ENABLE_HARDENED_RUNTIME: true
+  claudegotchiTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - claudegotchiTests
+    dependencies:
+      - target: claudegotchi
   claudegotchiUITests:
     type: bundle.ui-testing
     platform: macOS
@@ -3852,7 +3859,7 @@ final class MenuBarCoordinator {
         self.popover = NSPopover()
         self.popover.behavior = .transient
         self.popover.contentViewController = NSHostingController(
-            rootView: DropdownView(viewModel: viewModel)
+            rootView: DropdownView(viewModel: viewModel, renderer: renderer)
                 .frame(width: 260)
         )
         wireButton()
@@ -3895,6 +3902,7 @@ import PetCore
 
 struct DropdownView: View {
     @ObservedObject var viewModel: PetViewModel
+    let renderer: SpriteRenderer
     @State private var clickFeedback: Bool = false
 
     var body: some View {
@@ -3902,9 +3910,10 @@ struct DropdownView: View {
             // Pet area — clickable for petting
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(Color.black)
-                Text(viewModel.pet?.species.uppercased() ?? "—")
-                    .foregroundColor(.white)
-                    .font(.system(size: 11, design: .monospaced))
+                Image(nsImage: renderer.image(forFrameIndex: viewModel.currentFrameIndex))
+                    .resizable()
+                    .interpolation(.none)   // crisp pixel art
+                    .frame(width: 64, height: 64)
             }
             .frame(height: 90)
             .onTapGesture {
@@ -4399,8 +4408,9 @@ Module map:
 
 **Files:**
 - Create: `App/claudegotchi/HooksInstaller.swift`
-- Create: `App/claudegotchiUITests/HooksInstallerTests.swift` (unit-level via
-  XCTest, run inside the app target)
+- Create: `App/claudegotchiTests/HooksInstallerTests.swift` (unit test target,
+  NOT the UI test target — XCUITest bundles cannot `@testable import` host
+  classes)
 
 `HooksInstaller` does the spec §7 atomic merge: permission preflight →
 read existing JSON → merge in `_claudegotchi` sentinel + hook entries with
@@ -4412,7 +4422,7 @@ Tests use a fixture path under `NSTemporaryDirectory()` instead of
 
 - [ ] **Step 1: Write the failing test**
 
-Create `App/claudegotchiUITests/HooksInstallerTests.swift`:
+Create `App/claudegotchiTests/HooksInstallerTests.swift`:
 ```swift
 import XCTest
 @testable import claudegotchi
@@ -4576,18 +4586,22 @@ final class HooksInstaller {
 
     private func mergeIn(hooks: [String: Any], helperPath: String) -> [String: Any] {
         var hooks = hooks
-        let mapping: [(String, String)] = [
-            ("SessionStart", "claudegotchi-session-start"),
-            ("PreToolUse",   "claudegotchi-pre-tool"),
-            ("PostToolUse",  "claudegotchi-post-tool"),
-            ("Stop",         "claudegotchi-stop"),
+        // Triple: (Claude-Code event name, our hook id, helper argv[1])
+        // The third element is the snake_case form expected by ClaudegotchiHook
+        // (matches Event.EventType raw values). DO NOT compute via lowercased() —
+        // "SessionStart".lowercased() == "sessionstart" ≠ "session_start".
+        let mapping: [(String, String, String)] = [
+            ("SessionStart", "claudegotchi-session-start", "session_start"),
+            ("PreToolUse",   "claudegotchi-pre-tool",      "pre_tool_use"),
+            ("PostToolUse",  "claudegotchi-post-tool",     "post_tool_use"),
+            ("Stop",         "claudegotchi-stop",          "stop"),
         ]
-        for (eventName, hookID) in mapping {
+        for (eventName, hookID, helperArg) in mapping {
             var arr = hooks[eventName] as? [[String: Any]] ?? []
             arr.removeAll { ($0["id"] as? String) == hookID }
             arr.append([
                 "id": hookID,
-                "command": "\(helperPath) \(eventName.lowercased())"
+                "command": "\(helperPath) \(helperArg)"
             ])
             hooks[eventName] = arr
         }
@@ -4600,8 +4614,10 @@ final class HooksInstaller {
         )
         let tmp = settingsURL.appendingPathExtension("tmp")
         try data.write(to: tmp)
-        _ = try? FileManager.default.removeItem(at: settingsURL)
-        try FileManager.default.moveItem(at: tmp, to: settingsURL)
+        // replaceItemAt wraps the POSIX rename / FSReplaceObjectAsync path which
+        // is atomic on APFS. Unlike removeItem-then-moveItem, there is no
+        // intermediate state where settings.json does not exist.
+        _ = try FileManager.default.replaceItemAt(settingsURL, withItemAt: tmp)
     }
 }
 
@@ -4613,14 +4629,14 @@ enum HooksInstallerError: Error, Equatable {
 - [ ] **Step 3: Run tests**
 
 ```bash
-xcodebuild test -project App/claudegotchi.xcodeproj -scheme claudegotchi -destination 'platform=macOS' -only-testing:claudegotchiUITests/HooksInstallerTests
+xcodebuild test -project App/claudegotchi.xcodeproj -scheme claudegotchi -destination 'platform=macOS' -only-testing:claudegotchiTests/HooksInstallerTests
 ```
 Expected: 5 tests pass.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add App/claudegotchi/HooksInstaller.swift App/claudegotchiUITests/HooksInstallerTests.swift
+git add App/claudegotchi/HooksInstaller.swift App/claudegotchiTests/HooksInstallerTests.swift
 git commit -m "Add HooksInstaller with sentinel-based atomic merge and bounded backup"
 ```
 
@@ -4683,19 +4699,37 @@ echo "claudegotchi uninstalled. Re-run /Applications/claudegotchi.app for setup,
 chmod +x App/claudegotchi/Resources/uninstall.sh
 ```
 
-Add to `App/project.yml` under the `claudegotchi` target:
+The `claudegotchi` target's `sources:` block in `App/project.yml` needs to
+preserve directory structure for the species tree (so
+`Bundle.main.resourceURL/species/<id>/species.yaml` works at runtime). The
+default Xcode "Copy Bundle Resources" phase **flattens** group hierarchies,
+so a plain `sources: [claudegotchi]` would produce four `species.yaml` and
+four `sprite.png` collisions in the flat Resources dir. The fix is a
+`type: folder` source entry (XcodeGen synonym for an Xcode "blue folder
+reference"), which copies the directory verbatim:
+
 ```yaml
+targets:
+  claudegotchi:
+    type: application
+    platform: macOS
     sources:
-      - claudegotchi
-      - path: claudegotchi/Resources
-        buildPhase:
-          copyFiles:
-            destination: resources
-            subpath: ""
+      - claudegotchi                                      # all .swift files
+      - path: claudegotchi/Resources/species              # blue folder ref
+        type: folder
+      - path: claudegotchi/Resources/uninstall.sh         # plain resource
+        buildPhase: resources
 ```
 
-(or whatever XcodeGen syntax is current; verify by regenerating and
-inspecting the project.)
+After regenerating, verify the bundle layout:
+```bash
+cd App && xcodegen generate
+xcodebuild -project claudegotchi.xcodeproj -scheme claudegotchi -configuration Debug build
+ls build/Build/Products/Debug/claudegotchi.app/Contents/Resources/species/
+# Expected: cat/  dragon/  frog/  slime/   (subdirs preserved)
+ls build/Build/Products/Debug/claudegotchi.app/Contents/Resources/uninstall.sh
+# Expected: -rwxr-xr-x ... uninstall.sh
+```
 
 - [ ] **Step 3: Add `SettingsWindow.swift` with Uninstall button**
 

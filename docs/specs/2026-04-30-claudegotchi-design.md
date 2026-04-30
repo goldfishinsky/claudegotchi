@@ -780,6 +780,15 @@ A broken species cannot land on `main`.
 - Telemetry
 - Anti-repeat species selection on hatch (uniform random for v0.1)
 - Event log retention / pruning (revisit in v0.2)
+- **Stats Window — Models tab**: placeholder text only in v0.1; real per-model
+  breakdown lands in v0.2 when the rollup table grows the necessary columns.
+- **Stats Window — extended metrics**: v0.1 ships only Sessions / Messages /
+  Total tokens / Active days. Current streak, longest streak, peak hour,
+  favorite model, the contribution-graph heatmap, and the rotating witty
+  footer line all land in v0.2.
+- **Range selector (All / 30d / 7d)** in the stats window: v0.1 shows
+  All-time only. Range selector lands in v0.2 alongside the additional
+  metrics.
 
 ## 10. Open questions
 
