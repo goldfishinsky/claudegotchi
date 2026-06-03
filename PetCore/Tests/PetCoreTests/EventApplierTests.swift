@@ -89,4 +89,37 @@ final class EventApplierTests: XCTestCase {
         let next = applier.apply(event: evt(.hibernateStart, ts: 5000), to: pet)
         XCTAssertEqual(next.hibernationSince, 5000)
     }
+
+    func testPrApprovedRaisesIntimacy() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 40
+        let next = applier.apply(event: evt(.prApproved), to: pet)
+        XCTAssertEqual(next.intimacy, 40 + cfg.work.prApprovedIntimacy, accuracy: 1e-9)
+    }
+
+    func testPrApprovedIntimacyClampsTo100() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 99.5
+        let next = applier.apply(event: evt(.prApproved), to: pet)
+        XCTAssertEqual(next.intimacy, 100)
+    }
+
+    func testPrApprovedRepeatedApplyStaysClamped() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 100
+        let a = applier.apply(event: evt(.prApproved), to: pet)
+        let b = applier.apply(event: evt(.prApproved), to: a)
+        XCTAssertEqual(a.intimacy, 100)
+        XCTAssertEqual(b.intimacy, 100)
+    }
+
+    func testPrMergedAddsXpAndLeavesStatsUntouched() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 30; pet.stamina = 30; pet.intimacy = 30
+        let next = applier.apply(event: evt(.prMerged), to: pet)
+        XCTAssertEqual(next.xp, cfg.work.prMergedXp)
+        XCTAssertEqual(next.fullness, 30, accuracy: 1e-9)
+        XCTAssertEqual(next.stamina, 30, accuracy: 1e-9)
+        XCTAssertEqual(next.intimacy, 30, accuracy: 1e-9)
+    }
 }

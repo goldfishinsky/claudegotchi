@@ -66,6 +66,12 @@ public final class EventApplier {
 
         case .hibernateEnd:
             p.hibernationSince = nil
+
+        case .prApproved:
+            p.intimacy = clamp(p.intimacy + config.work.prApprovedIntimacy)
+
+        case .prMerged:
+            p.xp += config.work.prMergedXp
         }
         return p
     }
