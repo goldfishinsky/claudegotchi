@@ -101,4 +101,29 @@ final class PRSyncTests: XCTestCase {
         XCTAssertEqual(result.upserts[0].reviewDecision, "APPROVED")
         XCTAssertTrue(result.events.isEmpty)
     }
+
+    func testDisappearedMergedUpdatesStateNoEventsInP1() {
+        let old = [pr(slug: "o/r", number: 5, state: "OPEN")]
+        let result = PRSync.diff(old: old, fresh: [], disappeared: [(slug: "o/r", number: 5, outcome: .merged(atMs: 9000))],
+                                 selfLogin: "alice", config: cfg, nowMs: 0)
+        XCTAssertEqual(result.upserts.count, 1)
+        XCTAssertEqual(result.upserts[0].state, "MERGED")
+        XCTAssertTrue(result.events.isEmpty)
+    }
+
+    func testDisappearedClosedUpdatesStateOnly() {
+        let old = [pr(slug: "o/r", number: 6, state: "OPEN")]
+        let result = PRSync.diff(old: old, fresh: [], disappeared: [(slug: "o/r", number: 6, outcome: .closed)],
+                                 selfLogin: "alice", config: cfg, nowMs: 0)
+        XCTAssertEqual(result.upserts[0].state, "CLOSED")
+        XCTAssertTrue(result.events.isEmpty)
+    }
+
+    func testWindowDropoutLeavesCacheUntouched() {
+        let old = [pr(slug: "o/r", number: 7, state: "OPEN")]
+        let result = PRSync.diff(old: old, fresh: [], disappeared: [(slug: "o/r", number: 7, outcome: .windowDropout)],
+                                 selfLogin: "alice", config: cfg, nowMs: 0)
+        XCTAssertTrue(result.upserts.isEmpty)
+        XCTAssertTrue(result.events.isEmpty)
+    }
 }
