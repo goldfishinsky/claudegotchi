@@ -89,4 +89,68 @@ final class ApplyTransactionTests: XCTestCase {
         XCTAssertEqual(row.0, "sess-xyz")
         XCTAssertEqual(row.1, "/Users/jalen/repo")
     }
+
+    private func prEvent(eventId: String, type: Event.EventType, ts: Int64 = 1714500000123) -> Event {
+        Event(schemaVersion: 1, eventId: eventId, ts: ts, type: type,
+              sessionId: nil, tool: nil, tokensIn: nil, tokensOut: nil, model: nil, cwd: nil)
+    }
+
+    func testProcessEventInsertsWithNullSessionAndCwdAndSkipsRollup() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let input = prEvent(eventId: "pr:o/r#1:approved:1000", type: .prApproved)
+        try atx.process(event: input)
+
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1)
+        let nullCols = try db.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event WHERE session_id IS NULL AND cwd IS NULL")
+        }
+        XCTAssertEqual(nullCols, 1, "Synthetic events insert session_id/cwd as NULL")
+        let rollupRows = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM daily_rollup") }
+        XCTAssertEqual(rollupRows, 0, "PR events skip the rollup path")
+
+        let payload = try db.read {
+            try String.fetchOne($0, sql: "SELECT payload FROM event WHERE helper_event_id = ?",
+                                arguments: ["pr:o/r#1:approved:1000"])
+        }!
+        let roundTripped = try Event.parse(payload)
+        XCTAssertEqual(roundTripped, input, "Synthetic payload round-trips byte-stable on replay")
+        XCTAssertNil(roundTripped.cwd)
+        XCTAssertNil(roundTripped.sessionId)
+
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.intimacy, 50 + ConfigYAML.defaults.work.prApprovedIntimacy, accuracy: 1e-9)
+        XCTAssertGreaterThan(p.lastAppliedEventId, 0)
+    }
+
+    func testProcessEventDuplicateNoDoubleCount() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let e = prEvent(eventId: "pr:o/r#1:approved:1000", type: .prApproved)
+        try atx.process(event: e)
+        try atx.process(event: e)
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1, "Duplicate synthetic event_id ignored")
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.intimacy, 50 + ConfigYAML.defaults.work.prApprovedIntimacy, accuracy: 1e-9)
+    }
+
+    func testProcessEventPausedDropsNudgeButAdvancesWatermark() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: true)
+        try atx.process(event: prEvent(eventId: "pr:o/r#1:merged:2000", type: .prMerged))
+        let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
+        XCTAssertEqual(count, 1)
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, 0, "Paused → nudge dropped")
+        XCTAssertGreaterThan(p.lastAppliedEventId, 0, "Watermark advances while paused")
+    }
+
+    func testProcessEventReplayIdempotent() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let merged = prEvent(eventId: "pr:o/r#1:merged:2000", type: .prMerged)
+        try atx.process(event: merged)
+        try atx.process(event: merged)
+        try atx.process(event: merged)
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, ConfigYAML.defaults.work.prMergedXp, "xp banked exactly once across replays")
+    }
 }
