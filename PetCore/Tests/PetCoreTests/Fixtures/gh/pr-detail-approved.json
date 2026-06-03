@@ -1,0 +1,24 @@
+{
+  "number": 128,
+  "reviewDecision": "APPROVED",
+  "state": "OPEN",
+  "mergedAt": null,
+  "url": "https://github.com/jalen/app/pull/128",
+  "latestReviews": [
+    { "author": { "login": "reviewer1" }, "state": "APPROVED", "submittedAt": "2026-06-02T10:15:00Z" }
+  ],
+  "reviewThreads": [
+    {
+      "isResolved": false,
+      "path": "src/auth.ts",
+      "line": 42,
+      "comments": [ { "author": { "login": "reviewer1" }, "body": "Guard against nil session here." } ]
+    },
+    {
+      "isResolved": true,
+      "path": "src/util.ts",
+      "line": 7,
+      "comments": [ { "author": { "login": "reviewer1" }, "body": "resolved already" } ]
+    }
+  ]
+}
