@@ -92,23 +92,25 @@ final class PRSyncTests: XCTestCase {
         XCTAssertTrue(result.events.isEmpty)
     }
 
-    func testApprovalTransitionStillEmitsNoEventsInP1() {
+    func testApprovalTransitionUpsertsApprovedAndEmitsEvent() {
         let old = [pr(slug: "o/r", number: 1, reviewDecision: "REVIEW_REQUIRED")]
         let fresh = [ClassifiedPR(slug: "o/r", list: ghPR(1, decision: "APPROVED"),
                                   detail: detail(1, decision: "APPROVED", approvedAtMs: 7000))]
         let result = PRSync.diff(old: old, fresh: fresh, disappeared: [],
                                  selfLogin: "alice", config: cfg, nowMs: 0)
         XCTAssertEqual(result.upserts[0].reviewDecision, "APPROVED")
-        XCTAssertTrue(result.events.isEmpty)
+        XCTAssertEqual(result.events.filter { $0.type == .prApproved }.count, 1)
+        XCTAssertEqual(result.events.first?.eventId, "pr:o/r#1:approved:7000")
     }
 
-    func testDisappearedMergedUpdatesStateNoEventsInP1() {
+    func testDisappearedMergedUpdatesStateAndEmitsEvent() {
         let old = [pr(slug: "o/r", number: 5, state: "OPEN")]
         let result = PRSync.diff(old: old, fresh: [], disappeared: [(slug: "o/r", number: 5, outcome: .merged(atMs: 9000))],
                                  selfLogin: "alice", config: cfg, nowMs: 0)
         XCTAssertEqual(result.upserts.count, 1)
         XCTAssertEqual(result.upserts[0].state, "MERGED")
-        XCTAssertTrue(result.events.isEmpty)
+        XCTAssertEqual(result.events.filter { $0.type == .prMerged }.count, 1)
+        XCTAssertEqual(result.events.first?.eventId, "pr:o/r#5:merged:9000")
     }
 
     func testDisappearedClosedUpdatesStateOnly() {
@@ -125,5 +127,94 @@ final class PRSyncTests: XCTestCase {
                                  selfLogin: "alice", config: cfg, nowMs: 0)
         XCTAssertTrue(result.upserts.isEmpty)
         XCTAssertTrue(result.events.isEmpty)
+    }
+
+    func testApprovedTransitionEmitsOneEvent() {
+        let old = [pr(slug: "o/r", number: 1, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0)]
+        let fresh = [classified(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 1700)]
+        let r = PRSync.diff(old: old, fresh: fresh, disappeared: [],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        let approved = r.events.filter { $0.type == .prApproved }
+        XCTAssertEqual(approved.count, 1)
+        XCTAssertEqual(approved.first?.eventId, "pr:o/r#1:approved:1700")
+        XCTAssertEqual(approved.first?.ts, 1700)
+    }
+
+    func testColdStartAlreadyApprovedDoesNotRetroFire() {
+        // First poll after adding a repo: old is empty, PR already APPROVED.
+        // Must NOT emit (silent load, §10 first-poll); upsert still happens.
+        let fresh = [classified(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 1700)]
+        let r = PRSync.diff(old: [], fresh: fresh, disappeared: [],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        XCTAssertTrue(r.events.isEmpty, "Cold-start already-approved PR does not retro-fire pr_approved")
+        XCTAssertEqual(r.upserts.count, 1, "But the PR is still cached on first sight")
+    }
+
+    func testReApprovalEmitsNewDistinctEvent() {
+        // old exists (CHANGES_REQUESTED) → re-approve at a LATER ts → new id.
+        let old = [pr(slug: "o/r", number: 1, reviewDecision: "CHANGES_REQUESTED", lastApprovedReviewAt: 1700)]
+        let fresh = [classified(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 2500)]
+        let r = PRSync.diff(old: old, fresh: fresh, disappeared: [],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        let approved = r.events.filter { $0.type == .prApproved }
+        XCTAssertEqual(approved.count, 1)
+        XCTAssertEqual(approved.first?.eventId, "pr:o/r#1:approved:2500",
+                       "Re-approval at a new ts is a separately-applicable event")
+    }
+
+    func testStillApprovedNoNewEvent() {
+        let old = [pr(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAt: 1700)]
+        let fresh = [classified(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 1700)]
+        let r = PRSync.diff(old: old, fresh: fresh, disappeared: [],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        XCTAssertTrue(r.events.isEmpty, "Unchanged APPROVED poll emits no event")
+    }
+
+    func testMergedDisappearanceEmitsMergedEvent() {
+        let old = [pr(slug: "o/r", number: 7, reviewDecision: "APPROVED", lastApprovedReviewAt: 1700)]
+        let r = PRSync.diff(old: old, fresh: [],
+                            disappeared: [(slug: "o/r", number: 7, outcome: .merged(atMs: 3300))],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        let merged = r.events.filter { $0.type == .prMerged }
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.eventId, "pr:o/r#7:merged:3300")
+        XCTAssertEqual(merged.first?.ts, 3300)
+    }
+
+    func testClosedAndWindowDropoutEmitNoEvent() {
+        let old = [pr(slug: "o/r", number: 8, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0),
+                   pr(slug: "o/r", number: 9, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0)]
+        let r = PRSync.diff(old: old, fresh: [],
+                            disappeared: [(slug: "o/r", number: 8, outcome: .closed),
+                                          (slug: "o/r", number: 9, outcome: .windowDropout)],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        XCTAssertTrue(r.events.isEmpty)
+    }
+
+    func testCrossRepoSamePrNumberDoesNotCollideOrCrossSlug() {
+        // Two repos each with PR #1: approval transition in repo-a, merge in repo-b.
+        // (slug, number) keying must keep slugs straight; ids must not collide.
+        let old = [pr(slug: "o/a", number: 1, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0),
+                   pr(slug: "o/b", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAt: 50)]
+        let fresh = [classified(slug: "o/a", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 100)]
+        let r = PRSync.diff(old: old, fresh: fresh,
+                            disappeared: [(slug: "o/b", number: 1, outcome: .merged(atMs: 200))],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        let ids = Set(r.events.map { $0.eventId })
+        XCTAssertTrue(ids.contains("pr:o/a#1:approved:100"))
+        XCTAssertTrue(ids.contains("pr:o/b#1:merged:200"))
+        XCTAssertEqual(ids.count, 2, "Same PR number in two repos never collides or cross-slugs")
+    }
+
+    func testDistinctTransitionTsIdsNeverCollide() {
+        let old = [pr(slug: "o/r", number: 1, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0),
+                   pr(slug: "o/r", number: 2, reviewDecision: "REVIEW_REQUIRED", lastApprovedReviewAt: 0)]
+        let fresh = [classified(slug: "o/r", number: 1, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 100),
+                     classified(slug: "o/r", number: 2, reviewDecision: "APPROVED", lastApprovedReviewAtMs: 100)]
+        let r = PRSync.diff(old: old, fresh: fresh,
+                            disappeared: [(slug: "o/r", number: 2, outcome: .merged(atMs: 100))],
+                            selfLogin: "me", config: cfg, nowMs: 9999)
+        let ids = Set(r.events.map { $0.eventId })
+        XCTAssertEqual(ids.count, r.events.count, "(slug,number,transition,ts) ids never collide")
     }
 }

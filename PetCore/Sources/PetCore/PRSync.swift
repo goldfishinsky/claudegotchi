@@ -64,7 +64,41 @@ public enum PRSync {
             upserts.append(row)
         }
 
-        return SyncResult(upserts: upserts, events: [])
+        var events: [Event] = []
+
+        let oldByKey = Dictionary(
+            old.map { ($0.repoSlug + "#" + String($0.number), $0) },
+            uniquingKeysWith: { a, _ in a }
+        )
+
+        for c in fresh {
+            let number = c.list.number
+            let key = c.slug + "#" + String(number)
+            guard let prior = oldByKey[key] else { continue }   // cold-start: first sight never retro-fires
+            let wasApproved = prior.reviewDecision == "APPROVED"
+            let isApproved = c.detail.reviewDecision == "APPROVED"
+            if isApproved && !wasApproved {
+                let ms = c.detail.lastApprovedReviewAtMs
+                events.append(Event(
+                    schemaVersion: 1,
+                    eventId: "pr:\(c.slug)#\(number):approved:\(ms)",
+                    ts: ms, type: .prApproved,
+                    sessionId: nil, tool: nil, tokensIn: nil, tokensOut: nil, model: nil, cwd: nil
+                ))
+            }
+        }
+
+        for (slug, number, outcome) in disappeared {
+            guard case let .merged(atMs) = outcome else { continue }
+            events.append(Event(
+                schemaVersion: 1,
+                eventId: "pr:\(slug)#\(number):merged:\(atMs)",
+                ts: atMs, type: .prMerged,
+                sessionId: nil, tool: nil, tokensIn: nil, tokensOut: nil, model: nil, cwd: nil
+            ))
+        }
+
+        return SyncResult(upserts: upserts, events: events)
     }
 
     private static func stateFrom(detail: PRDetail, fallback: String) -> String {
