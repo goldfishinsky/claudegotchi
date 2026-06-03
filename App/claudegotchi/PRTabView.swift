@@ -55,14 +55,48 @@ enum PRTabFormat {
         f.dateFormat = "HH:mm"
         return "上次更新于 \(f.string(from: date))"
     }
+
+    static let historyInlineCap = 20
+
+    static func timeLabel(_ ms: Int64?) -> String {
+        guard let ms else { return "排队中" }
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: date)
+    }
+
+    static func tokenLabel(_ tokens: Int?) -> String {
+        guard let tokens, tokens > 0 else { return "" }
+        if tokens >= 1000 {
+            return String(format: "%.1fk tok", Double(tokens) / 1000)
+        }
+        return "\(tokens) tok"
+    }
+
+    static func jobStateChip(_ state: FixJobState) -> String {
+        switch state {
+        case .queued: return "🕒 排队"
+        case .checkout: return "📦 检出"
+        case .running: return "▶️ 运行中"
+        case .succeeded: return "✅ 成功"
+        case .failed: return "❌ 失败"
+        case .canceled: return "🚫 已取消"
+        }
+    }
 }
 
 struct PRTabView: View {
     @ObservedObject var watcher: PRWatcher
+    @ObservedObject var coordinator: FixCoordinator
     let db: DatabaseQueue
     let config: ConfigYAML
 
     @State private var prs: [PR] = []
+    @State private var repos: [WatchedRepo] = []
+    @State private var activeSlugs: Set<String> = []
+    @State private var history: [FixJob] = []
+    @State private var logViewerJob: FixJob?
 
     private var grouped: [(slug: String, rows: [PR])] {
         let bySlug = Dictionary(grouping: prs, by: \.repoSlug)
@@ -77,10 +111,14 @@ struct PRTabView: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             content
+            Divider()
+            fixHistorySection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onReceive(watcher.$snapshot) { _ in reload() }
+        .onReceive(coordinator.$progress) { _ in reloadHistory() }
         .onAppear { reload() }
+        .sheet(item: $logViewerJob) { job in LogViewer(job: job) }
     }
 
     @ViewBuilder
@@ -177,10 +215,167 @@ struct PRTabView: View {
             if pr.unresolvedCount > 0 {
                 Text("💬\(PRTabFormat.cappedCount(pr.unresolvedCount))").font(.caption)
             }
+            fixButton(pr)
         }
+    }
+
+    @ViewBuilder
+    private func fixButton(_ pr: PR) -> some View {
+        let disabledReason = fixDisabledReason(pr)
+        Button("修复") { startFix(pr) }
+            .controlSize(.small)
+            .disabled(disabledReason != nil)
+            .help(disabledReason ?? "运行 Claude 修复评审反馈")
+    }
+
+    private func repo(forSlug slug: String) -> WatchedRepo? {
+        repos.first { $0.slug == slug }
+    }
+
+    private func fixDisabledReason(_ pr: PR) -> String? {
+        if !pr.isMine { return "仅能修复本人的 PR" }
+        guard let repo = repo(forSlug: pr.repoSlug),
+              let path = repo.localPath, !path.isEmpty else {
+            return "无本地路径或 origin 不匹配"
+        }
+        if activeSlugs.contains(pr.repoSlug) { return "已有任务运行中" }
+        return nil
+    }
+
+    private func startFix(_ pr: PR) {
+        guard let repo = repo(forSlug: pr.repoSlug),
+              let path = repo.localPath, !path.isEmpty,
+              let prRowid = pr.id else { return }
+        coordinator.enqueue(
+            prRowid: prRowid, slug: pr.repoSlug, number: pr.number,
+            repoPath: URL(fileURLWithPath: path), headBranch: pr.headBranch
+        )
+        reloadHistory()
+    }
+
+    // MARK: - 修复任务 (fix-job history)
+
+    @ViewBuilder
+    private var fixHistorySection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("修复任务").font(.caption.bold()).foregroundColor(.secondary)
+            if history.isEmpty {
+                Text("暂无修复任务").font(.caption).foregroundColor(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(history, id: \.id) { job in fixJobRow(job) }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 160)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fixJobRow(_ job: FixJob) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(PRTabFormat.jobStateChip(job.state)).font(.caption)
+                Text("#\(job.prNumber)").font(.caption.monospaced()).foregroundColor(.secondary)
+                Text(job.repoSlug).font(.caption).foregroundColor(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer()
+                if job.state == .running, let id = job.id, let p = coordinator.progress[id] {
+                    if let tool = p.tool {
+                        Text(tool).font(.caption2).lineLimit(1).truncationMode(.tail)
+                    }
+                    let tok = PRTabFormat.tokenLabel(p.tokens)
+                    if !tok.isEmpty { Text(tok).font(.caption2).foregroundColor(.secondary) }
+                    Button("取消") { coordinator.cancel(jobId: id) }.controlSize(.mini)
+                }
+                if job.logPath != nil {
+                    Button("log") { logViewerJob = job }.controlSize(.mini)
+                }
+            }
+            HStack(spacing: 8) {
+                Text("开始：\(PRTabFormat.timeLabel(job.startedAt))")
+                    .font(.caption2).foregroundColor(.secondary)
+                if let ended = job.endedAt {
+                    Text("结束：\(PRTabFormat.timeLabel(ended))")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            if job.state == .succeeded {
+                if let sha = job.commitSha {
+                    Text("提交 \(sha.prefix(8))").font(.caption2).foregroundColor(.secondary)
+                }
+                Text(FixRunner.integrationCommand(number: job.prNumber, headBranch: branch(for: job)))
+                    .font(.caption2.monospaced()).foregroundColor(.secondary)
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                if let wt = job.worktreePath {
+                    Text(wt).font(.caption2).foregroundColor(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            if let err = job.error {
+                Text(LogRedactor.redact(err)).font(.caption2).foregroundColor(.red)
+                    .lineLimit(2).truncationMode(.tail)
+            }
+        }
+    }
+
+    private func branch(for job: FixJob) -> String {
+        prs.first { $0.repoSlug == job.repoSlug && $0.number == job.prNumber }?.headBranch ?? ""
     }
 
     private func reload() {
         prs = (try? PRStore.allPRs(in: db)) ?? []
+        repos = (try? PRStore.watchedRepos(in: db)) ?? []
+        reloadHistory()
+    }
+
+    private func reloadHistory() {
+        history = (try? db.read { try FixJobStore.history(limit: PRTabFormat.historyInlineCap, in: $0) }) ?? []
+        var slugs: Set<String> = []
+        for repo in repos {
+            if let active = try? db.read({ try FixJobStore.activeJob(repoSlug: repo.slug, in: $0) }),
+               active != nil {
+                slugs.insert(repo.slug)
+            }
+        }
+        activeSlugs = slugs
     }
 }
+
+private struct LogViewer: View {
+    let job: FixJob
+    @Environment(\.dismiss) private var dismiss
+    @State private var contents: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("修复日志 #\(job.prNumber)").font(.headline)
+                Spacer()
+                Button("关闭") { dismiss() }
+            }
+            ScrollView {
+                Text(contents.isEmpty ? "（无日志内容）" : contents)
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(minWidth: 480, maxHeight: 360)
+        }
+        .padding()
+        .onAppear { load() }
+    }
+
+    private func load() {
+        guard let path = job.logPath,
+              let raw = try? String(contentsOfFile: path, encoding: .utf8) else {
+            contents = ""
+            return
+        }
+        contents = LogRedactor.redact(raw)
+    }
+}
+
+extension FixJob: Identifiable {}
