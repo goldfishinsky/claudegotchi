@@ -80,4 +80,16 @@ final class EventTests: XCTestCase {
         """#
         XCTAssertEqual(try Event.parse(json).cwd, "/tmp/x")
     }
+
+    func testDecodesPrApprovedType() throws {
+        let json = #"{"schema_version":1,"event_id":"a","ts":0,"type":"pr_approved"}"#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.type, .prApproved)
+    }
+
+    func testDecodesPrMergedType() throws {
+        let json = #"{"schema_version":1,"event_id":"a","ts":0,"type":"pr_merged"}"#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.type, .prMerged)
+    }
 }

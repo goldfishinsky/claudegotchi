@@ -44,6 +44,8 @@ public struct Event: Codable, Equatable {
         case notification
         case hibernateStart = "hibernate_start"
         case hibernateEnd = "hibernate_end"
+        case prApproved = "pr_approved"
+        case prMerged = "pr_merged"
     }
 
     enum CodingKeys: String, CodingKey {
