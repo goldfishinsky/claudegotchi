@@ -21,3 +21,11 @@ public enum SpeciesRoulette {
         return Pick(id: s.id, species: s, usedFallback: false)
     }
 }
+
+extension SpeciesRoulette {
+    public static func pick<G: RandomNumberGenerator>(fromIds ids: [String], using gen: inout G) -> String {
+        precondition(!ids.isEmpty, "pick(fromIds:) requires a non-empty id list")
+        let idx = Int.random(in: 0..<ids.count, using: &gen)
+        return ids[idx]
+    }
+}

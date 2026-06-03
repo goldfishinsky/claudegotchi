@@ -40,6 +40,21 @@ final class SpeciesRouletteTests: XCTestCase {
         }
         XCTAssertEqual(counts.count, 4, "Across 200 seeds, all 4 species should be reachable")
     }
+
+    func testPickFromIdsDeterministicWithSeed() {
+        let ids = ["frog", "slime", "cat", "dragon"]
+        var a = SeededRNG(seed: 7)
+        var b = SeededRNG(seed: 7)
+        let pa = SpeciesRoulette.pick(fromIds: ids, using: &a)
+        let pb = SpeciesRoulette.pick(fromIds: ids, using: &b)
+        XCTAssertEqual(pa, pb, "same seed → same id")
+        XCTAssertTrue(ids.contains(pa))
+    }
+
+    func testPickFromIdsSingleton() {
+        var rng = SeededRNG(seed: 1)
+        XCTAssertEqual(SpeciesRoulette.pick(fromIds: ["only"], using: &rng), "only")
+    }
 }
 
 struct SeededRNG: RandomNumberGenerator {
