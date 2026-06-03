@@ -22,6 +22,7 @@ final class PRWatcher: ObservableObject {
     private nonisolated let applier: EventApplier
     private nonisolated let github: GitHubClient
     private nonisolated let config: ConfigYAML
+    private nonisolated let pausedProvider: () -> Bool
 
     private var timer: DispatchSourceTimer?
     private nonisolated let pollQueue = DispatchQueue(label: "claudegotchi.prwatcher")
@@ -30,11 +31,13 @@ final class PRWatcher: ObservableObject {
     private nonisolated(unsafe) var isPolling = false
     private nonisolated(unsafe) var lastPerRepoStatus: [String: RepoStatus] = [:]
 
-    init(db: DatabaseQueue, applier: EventApplier, github: GitHubClient, config: ConfigYAML) {
+    init(db: DatabaseQueue, applier: EventApplier, github: GitHubClient, config: ConfigYAML,
+         pausedProvider: @escaping () -> Bool = { false }) {
         self.db = db
         self.applier = applier
         self.github = github
         self.config = config
+        self.pausedProvider = pausedProvider
     }
 
     func start() {
@@ -129,7 +132,15 @@ final class PRWatcher: ObservableObject {
                     selfLogin: selfLogin, config: config, nowMs: nowMs
                 )
                 try PRStore.upsertPRs(result.upserts, in: db)
-                // P1: result.events is always empty; pet coupling (process(event:)) is P3.
+
+                // §3: reuse the shared EventApplier/DatabaseQueue (never fresh); the pause
+                // gate lives inside process(event:) so polling/upserts stay live while paused.
+                if !result.events.isEmpty {
+                    let atx = ApplyTransaction(db: db, applier: applier, paused: pausedProvider())
+                    for event in result.events {
+                        try atx.process(event: event)
+                    }
+                }
 
                 perRepoStatus[repo.slug] = RepoStatus(lastSuccessAtMs: nowMs, lastError: nil)
             } catch {
