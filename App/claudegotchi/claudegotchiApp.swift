@@ -208,9 +208,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconTimer = icon
 
         petChangeObserver = NotificationCenter.default.addObserver(
-            forName: .claudegotchiPetDidChange, object: nil, queue: nil
+            forName: .claudegotchiPetDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.refreshPanels()
                 self?.redrawStatusIcon()
             }

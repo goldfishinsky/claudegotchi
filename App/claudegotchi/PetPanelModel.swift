@@ -27,9 +27,9 @@ final class PetPanelModel: ObservableObject {
         self.config = config
         self.sessionWindowMs = sessionWindowMs
         observer = NotificationCenter.default.addObserver(
-            forName: .claudegotchiPetDidChange, object: nil, queue: nil
+            forName: .claudegotchiPetDidChange, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            MainActor.assumeIsolated { self?.refresh() }
         }
     }
 
