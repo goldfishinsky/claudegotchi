@@ -27,6 +27,18 @@ public struct PRDetail: Equatable {
     public let state: String
     public let mergedAtMs: Int64?
     public let threads: [GHReviewThread]
+
+    public init(number: Int, reviewDecision: String?, unresolvedCount: Int,
+                lastApprovedReviewAtMs: Int64, state: String, mergedAtMs: Int64?,
+                threads: [GHReviewThread]) {
+        self.number = number
+        self.reviewDecision = reviewDecision
+        self.unresolvedCount = unresolvedCount
+        self.lastApprovedReviewAtMs = lastApprovedReviewAtMs
+        self.state = state
+        self.mergedAtMs = mergedAtMs
+        self.threads = threads
+    }
 }
 
 public enum PRDisappearance: Equatable {

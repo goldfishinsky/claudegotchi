@@ -40,19 +40,19 @@ public final class CLIClaudeRunner: ClaudeRunner {
             prompt: prompt, allowedTools: allowedTools,
             disallowedTools: disallowedTools, permissionMode: permissionMode
         )
-        let result = try runner.run("claude", args, cwd: cwd, timeout: timeout)
 
-        let raw = String(data: result.stdout, encoding: .utf8) ?? ""
-        for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-            if let progress = Self.parseProgress(String(line)) {
-                onProgress(progress)
+        FileManager.default.createFile(atPath: logURL.path, contents: Data(),
+                                       attributes: [.posixPermissions: 0o600])
+        let sink = LogSink(url: logURL)
+        defer { sink.close() }
+
+        let result = try runner.runStreaming(
+            "claude", args, cwd: cwd, timeout: timeout, cancel: cancel,
+            onStdoutLine: { line in
+                sink.appendLine(LogRedactor.redact(line))
+                if let progress = Self.parseProgress(line) { onProgress(progress) }
             }
-        }
-
-        let redacted = LogRedactor.redact(raw)
-        try redacted.data(using: .utf8)?.write(to: logURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: logURL.path)
-
+        )
         return result.status
     }
 
@@ -90,5 +90,24 @@ public final class CLIClaudeRunner: ClaudeRunner {
 
         if tool == nil && tokens == nil { return nil }
         return ClaudeProgress(tool: tool, tokens: tokens)
+    }
+}
+
+private final class LogSink {
+    private let handle: FileHandle?
+    private let lock = NSLock()
+
+    init(url: URL) {
+        handle = try? FileHandle(forWritingTo: url)
+    }
+
+    func appendLine(_ line: String) {
+        guard let handle, let data = (line + "\n").data(using: .utf8) else { return }
+        lock.lock(); defer { lock.unlock() }
+        handle.write(data)
+    }
+
+    func close() {
+        try? handle?.close()
     }
 }
