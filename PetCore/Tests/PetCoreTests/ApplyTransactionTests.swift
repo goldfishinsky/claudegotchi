@@ -74,4 +74,19 @@ final class ApplyTransactionTests: XCTestCase {
         let count = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event") }
         XCTAssertEqual(count, 0)
     }
+
+    func testHookLineLandsSessionIdAndCwdInTypedColumns() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let line = #"""
+        {"schema_version":1,"event_id":"01H0000000000000000000000A","ts":1714500000123,"type":"session_start","session_id":"sess-xyz","cwd":"/Users/jalen/repo"}
+        """#
+        try atx.process(jsonLine: line)
+        let row = try db.read { conn -> (String?, String?) in
+            let sid = try String.fetchOne(conn, sql: "SELECT session_id FROM event LIMIT 1")
+            let cwd = try String.fetchOne(conn, sql: "SELECT cwd FROM event LIMIT 1")
+            return (sid, cwd)
+        }
+        XCTAssertEqual(row.0, "sess-xyz")
+        XCTAssertEqual(row.1, "/Users/jalen/repo")
+    }
 }

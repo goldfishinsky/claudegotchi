@@ -20,14 +20,16 @@ public final class ApplyTransaction {
 
             do {
                 try conn.execute(sql: """
-                    INSERT INTO event (helper_event_id, ts, type, pet_id, payload)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO event (helper_event_id, ts, type, pet_id, payload, session_id, cwd)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, arguments: [
                     event.eventId,
                     event.ts,
                     event.type.rawValue,
                     pet.id!,
-                    jsonLine
+                    jsonLine,
+                    event.sessionId,
+                    event.cwd
                 ])
             } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
                 return
