@@ -35,6 +35,7 @@ final class AppServices: ObservableObject {
     let watcher: PRWatcher
     let coordinator: FixCoordinator
     let midnight: MidnightDriver
+    let tick: TickDriver
 
     /// Thread-safe pause flag shared by both watchers (§7 pause semantics):
     /// while paused, synthetic PR nudges and hook events are still written and
@@ -91,7 +92,13 @@ final class AppServices: ObservableObject {
             config: config
         )
 
-        midnight = MidnightDriver(db: db, config: config)
+        let sharedDB2 = db
+        midnight = MidnightDriver(db: db, config: config, onDeath: {
+            try? HatchService.ensureAlive(sharedDB2, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
+            postPetDidChange()
+        })
+
+        tick = TickDriver(db: db, applier: applier, config: config, pausedProvider: pausedRef)
     }
 
     /// Order matters: reconcile stale/queued fix jobs (and clean their worktrees)
@@ -99,14 +106,17 @@ final class AppServices: ObservableObject {
     /// can't leave a registered worktree blocking the next job. Spec §8.
     func start() {
         coordinator.reconcileOnLaunch()
+        try? HatchService.ensureAlive(db, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
         try? spool.pump()
         spool.startWatching()
         watcher.start()
         midnight.start()
+        tick.start()
     }
 
     /// Spec §8: terminate every live fix child via its process group on quit.
     func terminate() {
+        tick.stop()
         midnight.stop()
         watcher.stop()
         spool.stopWatching()
@@ -132,7 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var workPanelModel: WorkPanelModel?
+    private var petPanelModel: PetPanelModel?
     private var panelRefreshTimer: Timer?
+    private var iconTimer: Timer?
+    private var petChangeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let services = try? AppServices() else { return }
@@ -143,6 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         panelRefreshTimer?.invalidate()
+        iconTimer?.invalidate()
+        if let petChangeObserver { NotificationCenter.default.removeObserver(petChangeObserver) }
         services?.terminate()
     }
 
@@ -151,21 +166,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installMenuBar(_ services: AppServices) {
         let model = WorkPanelModel(db: services.db, config: services.config)
         workPanelModel = model
+        let petModel = PetPanelModel(db: services.db, config: services.config)
+        petPanelModel = petModel
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "🐤"
+        item.button?.title = ""
         item.button?.action = #selector(togglePopover(_:))
         item.button?.target = self
         statusItem = item
 
         let pop = NSPopover()
         pop.behavior = .transient
-        pop.contentSize = NSSize(width: 276, height: 240)
+        pop.contentSize = NSSize(width: 276, height: 460)
         pop.contentViewController = NSHostingController(
-            rootView: WorkPanelRoot(
-                model: model,
+            rootView: UnifiedDropdown(
+                petModel: petModel,
+                workModel: model,
                 services: services,
-                onOpenWorktable: { [weak self] in
+                onOpenStats: { [weak self] in
                     self?.popover?.performClose(nil)
                     self?.showWorkbench(services)
                 }
@@ -173,18 +191,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         popover = pop
 
-        refreshWorkPanel()
+        refreshPanels()
+        redrawStatusIcon()
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshWorkPanel() }
+            MainActor.assumeIsolated { self?.refreshPanels() }
         }
         timer.tolerance = 1
         RunLoop.main.add(timer, forMode: .common)
         panelRefreshTimer = timer
+
+        let icon = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.redrawStatusIcon() }
+        }
+        icon.tolerance = 1
+        RunLoop.main.add(icon, forMode: .common)
+        iconTimer = icon
+
+        petChangeObserver = NotificationCenter.default.addObserver(
+            forName: .claudegotchiPetDidChange, object: nil, queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPanels()
+                self?.redrawStatusIcon()
+            }
+        }
     }
 
-    private func refreshWorkPanel() {
-        guard let model = workPanelModel, let services = services else { return }
-        model.refresh(firstPollComplete: services.watcher.snapshot.firstPollComplete)
+    private func refreshPanels() {
+        guard let services = services else { return }
+        workPanelModel?.refresh(firstPollComplete: services.watcher.snapshot.firstPollComplete)
+        petPanelModel?.refresh()
+    }
+
+    private func redrawStatusIcon() {
+        guard let services = services,
+              let pet = try? Pet.fetchAlive(from: services.db) else { return }
+        let tier = WorkPressure.tier((try? PRStore.allPRs(in: services.db)) ?? [], config: services.config)
+        let visual = PetMood.derive(pet: pet, pressure: tier)
+        let image = PixelPetRenderer.renderToNSImage(visual: visual, species: pet.species, size: 18)
+        image.isTemplate = false
+        statusItem?.button?.image = image
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -192,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if pop.isShown {
             pop.performClose(sender)
         } else {
-            refreshWorkPanel()
+            refreshPanels()
             pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
@@ -224,29 +270,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Hosts the dropdown 工作 section plus a pause toggle so the §7 pause gate is
-/// reachable from the menu bar (the toggle is the thing that mutates
-/// `AppServices.paused`, which both watchers read via `pausedProvider`).
-private struct WorkPanelRoot: View {
-    @ObservedObject var model: WorkPanelModel
+/// The unified menu-bar dropdown: pet status panel on top, the existing work
+/// section (scroll-capped so NSPopover's hard clip can't hide it), and a pinned
+/// footer outside the scroll holding the single open affordance + the §7 pause
+/// toggle (the thing that mutates `AppServices.paused`, read via `pausedProvider`).
+private struct UnifiedDropdown: View {
+    @ObservedObject var petModel: PetPanelModel
+    @ObservedObject var workModel: WorkPanelModel
     @ObservedObject var services: AppServices
-    var onOpenWorktable: () -> Void
+    var onOpenStats: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            WorkPanelView(model: model, onOpenWorktable: onOpenWorktable)
+            PetPanelView(model: petModel)
             Divider()
+            ScrollView {
+                WorkPanelView(model: workModel)
+            }
+            .frame(maxHeight: 140)
+            Divider()
+            footer
+        }
+        .frame(width: 276)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button(action: onOpenStats) {
+                Text("打开统计").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
             Toggle(isOn: Binding(
                 get: { services.paused },
                 set: { services.setPaused($0) }
             )) {
-                Text("暂停宠物耦合").font(.caption)
+                Text("暂停").font(.caption)
             }
             .toggleStyle(.switch)
             .controlSize(.mini)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .fixedSize()
         }
-        .frame(width: 276)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 }
