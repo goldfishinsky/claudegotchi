@@ -15,19 +15,20 @@ final class FixCoordinator: ObservableObject {
 
     @Published private(set) var progress: [Int64: ClaudeProgress] = [:]
 
-    private let db: DatabaseQueue
-    private let makeRunner: () -> FixRunner
-    private let git: GitRunner
-    private let config: ConfigYAML
+    private nonisolated let db: DatabaseQueue
+    private nonisolated let makeRunner: () -> FixRunner
+    private nonisolated let git: GitRunner
+    private nonisolated let config: ConfigYAML
 
-    // All mutation of queue/lockedSlugs/cancelTokens/runningJobId happens on this serial queue.
-    private let serial = DispatchQueue(label: "fix.coordinator")
-    private let work = DispatchQueue(label: "fix.coordinator.work", attributes: .concurrent)
+    // All mutation of queue/lockedSlugs/cancelTokens/runningJobId happens on this
+    // serial queue; the queue is the synchronization domain (not the main actor).
+    private nonisolated let serial = DispatchQueue(label: "fix.coordinator")
+    private nonisolated let work = DispatchQueue(label: "fix.coordinator.work", attributes: .concurrent)
 
-    private var queue: [PendingJob] = []
-    private var lockedSlugs: Set<String> = []
-    private var cancelTokens: [Int64: CancelToken] = [:]
-    private var runningJobId: Int64?
+    private nonisolated(unsafe) var queue: [PendingJob] = []
+    private nonisolated(unsafe) var lockedSlugs: Set<String> = []
+    private nonisolated(unsafe) var cancelTokens: [Int64: CancelToken] = [:]
+    private nonisolated(unsafe) var runningJobId: Int64?
 
     init(db: DatabaseQueue, makeRunner: @escaping () -> FixRunner,
          git: GitRunner, config: ConfigYAML) {
@@ -100,7 +101,7 @@ final class FixCoordinator: ObservableObject {
 
     // MARK: - Pump (serial queue only)
 
-    private func pump() {
+    private nonisolated func pump() {
         guard runningJobId == nil else { return }
         guard let idx = queue.firstIndex(where: { !lockedSlugs.contains($0.slug) }) else { return }
         let pending = queue.remove(at: idx)
@@ -111,38 +112,44 @@ final class FixCoordinator: ObservableObject {
         cancelTokens[pending.jobId] = token
 
         let runner = makeRunner()
-        work.async { [weak self] in
-            let onProgress: (ClaudeProgress) -> Void = { p in
-                Task { @MainActor in self?.progress[pending.jobId] = p }
+        let jobId = pending.jobId
+        let headBranch = pending.headBranch.isEmpty
+            ? (resolveHeadBranch(pending.prRowid) ?? pending.headBranch)
+            : pending.headBranch
+        let serial = self.serial
+        let onProgress: @Sendable (ClaudeProgress) -> Void = { [weak self] p in
+            guard let coordinator = self else { return }
+            Task { @MainActor in coordinator.progress[jobId] = p }
+        }
+        let onFinish: @Sendable () -> Void = { [weak self] in
+            serial.async { [weak self] in
+                guard let coordinator = self else { return }
+                coordinator.lockedSlugs.remove(pending.slug)
+                coordinator.cancelTokens[jobId] = nil
+                coordinator.runningJobId = nil
+                Task { @MainActor in coordinator.progress[jobId] = nil }
+                coordinator.pump()
             }
-            let headBranch = pending.headBranch.isEmpty
-                ? (self?.resolveHeadBranch(pending.prRowid) ?? pending.headBranch)
-                : pending.headBranch
+        }
+        work.async {
             _ = runner.run(job: FixJob(id: pending.jobId, prRowid: pending.prRowid,
                                        repoSlug: pending.slug, prNumber: pending.number,
                                        state: .queued, createdAt: 0),
                            repoPath: pending.repoPath, headBranch: headBranch,
                            prNumber: pending.number, slug: pending.slug,
                            onProgress: onProgress, cancel: token)
-            self?.serial.async {
-                guard let self else { return }
-                self.lockedSlugs.remove(pending.slug)
-                self.cancelTokens[pending.jobId] = nil
-                self.runningJobId = nil
-                Task { @MainActor in self.progress[pending.jobId] = nil }
-                self.pump()
-            }
+            onFinish()
         }
     }
 
-    private func resolveHeadBranch(_ prRowid: Int64) -> String? {
+    private nonisolated func resolveHeadBranch(_ prRowid: Int64) -> String? {
         try? db.read { conn in
             try String.fetchOne(conn, sql: "SELECT head_branch FROM pr WHERE id = ?",
                                 arguments: [prRowid])
         }
     }
 
-    private func repoPath(forSlug slug: String) -> URL? {
+    private nonisolated func repoPath(forSlug slug: String) -> URL? {
         let path = try? db.read { conn in
             try String.fetchOne(conn, sql: "SELECT local_path FROM watched_repo WHERE slug = ?",
                                 arguments: [slug])

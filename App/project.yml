@@ -1,0 +1,49 @@
+name: claudegotchi
+options:
+  bundleIdPrefix: com.goldfishinsky
+  xcodeVersion: "15.4"
+  preferredProjectObjectVersion: 60
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+packages:
+  PetCore:
+    path: ../PetCore
+targets:
+  claudegotchi:
+    type: application
+    platform: macOS
+    sources:
+      - claudegotchi
+    dependencies:
+      - package: PetCore
+        product: PetCore
+    info:
+      path: claudegotchi/Info.plist
+      properties:
+        LSUIElement: true
+        CFBundleName: claudegotchi
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSHumanReadableCopyright: "© 2026 jalen"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.goldfishinsky.claudegotchi
+        ENABLE_HARDENED_RUNTIME: true
+  claudegotchiTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - claudegotchiTests
+    dependencies:
+      - target: claudegotchi
+  claudegotchiUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - claudegotchiUITests
+    dependencies:
+      - target: claudegotchi
