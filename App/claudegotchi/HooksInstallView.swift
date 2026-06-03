@@ -93,6 +93,7 @@ final class HooksInstallModel: ObservableObject {
 
 struct HooksInstallView: View {
     @StateObject private var model = HooksInstallModel()
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -128,6 +129,12 @@ struct HooksInstallView: View {
                     .foregroundStyle(.red)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
