@@ -21,6 +21,23 @@ targets:
     dependencies:
       - package: PetCore
         product: PetCore
+      - package: PetCore
+        product: claudegotchi-hook
+    postBuildScripts:
+      - name: Embed claudegotchi-hook
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          HELPERS="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
+          mkdir -p "$HELPERS"
+          SRC="${BUILT_PRODUCTS_DIR}/claudegotchi-hook"
+          cp -f "$SRC" "$HELPERS/claudegotchi-hook"
+          chmod 0755 "$HELPERS/claudegotchi-hook"
+          if [ "${ENABLE_HARDENED_RUNTIME:-}" = "YES" ] || [ "${CODE_SIGNING_ALLOWED:-}" = "YES" ]; then
+            codesign --force --options runtime \
+              --sign "${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}" \
+              "$HELPERS/claudegotchi-hook"
+          fi
     info:
       path: claudegotchi/Info.plist
       properties:
