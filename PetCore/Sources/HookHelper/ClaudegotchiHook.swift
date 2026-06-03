@@ -10,7 +10,7 @@ struct ClaudegotchiHook {
         exit(run(args: CommandLine.arguments, stdin: stdin))
     }
 
-    static func run(args: [String], stdin: String?) -> Int32 {
+    static func run(args: [String], stdin: String?, spoolURL: URL = ClaudegotchiHook.spoolURL()) -> Int32 {
         guard args.count >= 2 else { return 0 }
         let type = args[1]
         if rejectsRawType(type) { return 0 }
@@ -35,7 +35,7 @@ struct ClaudegotchiHook {
         )
 
         if let line = try? event.encodeJSON() {
-            try? HookSpool.append(line, to: spoolURL())
+            try? HookSpool.append(line, to: spoolURL)
         }
         return 0
     }
@@ -62,9 +62,7 @@ struct ClaudegotchiHook {
         type.hasPrefix("pr_") || type.hasPrefix("pet_")
     }
 
-    static func spoolURLForTesting() -> URL { spoolURL() }
-
-    private static func spoolURL() -> URL {
+    static func spoolURL() -> URL {
         let support = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("claudegotchi")

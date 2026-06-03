@@ -46,31 +46,41 @@ final class HookTypeGuardTests: XCTestCase {
         XCTAssertTrue(ClaudegotchiHook.parsePayload("not json").isEmpty)
     }
 
+    private func tempSpoolURL() -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("spool-\(UUID()).jsonl")
+    }
+
     func testRunRejectsAppInternalTypeWithExitZero() {
-        let spool = ClaudegotchiHook.spoolURLForTesting()
-        try? FileManager.default.removeItem(at: spool)
-        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "pet_click"], stdin: nil)
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "pet_click"], stdin: nil, spoolURL: spool)
         XCTAssertEqual(code, 0, "app-internal type must never block a tool call")
         XCTAssertFalse(FileManager.default.fileExists(atPath: spool.path), "rejected type must not be spooled")
     }
 
     func testRunEmptyStdinSpoolsTypeOnlyEventExitZero() throws {
-        let spool = ClaudegotchiHook.spoolURLForTesting()
-        try? FileManager.default.removeItem(at: spool)
-        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "session_start"], stdin: nil)
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "session_start"], stdin: nil, spoolURL: spool)
         XCTAssertEqual(code, 0)
         let lines = try String(contentsOf: spool).split(separator: "\n")
         XCTAssertEqual(lines.count, 1, "empty stdin still emits one type-only event")
         XCTAssertTrue(lines[0].contains("session_start"))
     }
 
-    func testRunWithPayloadExitZero() {
-        let spool = ClaudegotchiHook.spoolURLForTesting()
-        try? FileManager.default.removeItem(at: spool)
+    func testRunWithPayloadExitZero() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
         let code = ClaudegotchiHook.run(
             args: ["claudegotchi-hook", "post_tool_use"],
-            stdin: #"{"tool_name":"Bash","model":"opus","tokens_in":1,"tokens_out":2}"#
+            stdin: #"{"tool_name":"Bash","model":"opus","tokens_in":1,"tokens_out":2}"#,
+            spoolURL: spool
         )
         XCTAssertEqual(code, 0)
+        let lines = try String(contentsOf: spool).split(separator: "\n")
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertTrue(lines[0].contains("post_tool_use"))
+        XCTAssertTrue(lines[0].contains("Bash"))
     }
 }
