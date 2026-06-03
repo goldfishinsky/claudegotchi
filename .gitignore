@@ -13,3 +13,6 @@ Package.resolved
 
 # OS
 Thumbs.db
+
+# Xcode build output (xcodebuild -derivedDataPath build)
+App/build/

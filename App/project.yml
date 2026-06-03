@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.goldfishinsky
   xcodeVersion: "15.4"
   preferredProjectObjectVersion: 60
+  postGenCommand: "sed -i '' 's/objectVersion = 77;/objectVersion = 60;/' claudegotchi.xcodeproj/project.pbxproj"
   deploymentTarget:
     macOS: "13.0"
 settings:
