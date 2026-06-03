@@ -139,6 +139,7 @@ final class AppServices: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var services: AppServices?
     private var window: NSWindow?
+    private var statsSelection: StatsSelection?
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var workPanelModel: WorkPanelModel?
@@ -250,6 +251,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let root = PRTabView(
+            watcher: services.watcher,
+            coordinator: services.coordinator,
+            db: services.db,
+            config: services.config
+        )
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered, defer: false
+        )
+        win.title = "claudegotchi"
+        win.contentView = NSHostingView(rootView: root)
+        win.isReleasedWhenClosed = false
+        win.center()
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window = win
+    }
+
+    private func openStats(_ services: AppServices, select tab: StatsTab) {
+        if let win = window {
+            statsSelection?.tab = tab
+            win.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let holder = StatsSelection(tab)
+        statsSelection = holder
+        let root = StatsWindowView(
+            selection: holder,
             watcher: services.watcher,
             coordinator: services.coordinator,
             db: services.db,
