@@ -123,6 +123,17 @@ public enum Database {
             try db.execute(sql: "ALTER TABLE event ADD COLUMN cwd TEXT;")
             try db.execute(sql: "CREATE INDEX idx_event_session ON event(session_id);")
         }
+        m.registerMigration("v3_pet_stats") { db in
+            try db.execute(sql: "ALTER TABLE pet ADD COLUMN last_event_at INTEGER NOT NULL DEFAULT 0;")
+            try db.execute(sql: """
+                CREATE TABLE model_usage (
+                  model TEXT PRIMARY KEY,
+                  tokens_in INTEGER NOT NULL DEFAULT 0,
+                  tokens_out INTEGER NOT NULL DEFAULT 0,
+                  calls INTEGER NOT NULL DEFAULT 0
+                );
+                """)
+        }
         return m
     }
 }

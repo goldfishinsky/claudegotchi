@@ -83,6 +83,35 @@ final class DatabaseTests: XCTestCase {
         let tables = try db2.read { try $0.tableNames() }
         XCTAssertTrue(tables.contains("pr"))
     }
+
+    private func petColumns(_ db: DatabaseQueue) throws -> [String] {
+        try db.read { try String.fetchAll($0, sql: "SELECT name FROM pragma_table_info('pet')") }
+    }
+
+    func testV3AddsLastEventAtColumn() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        XCTAssertTrue(try petColumns(db).contains("last_event_at"))
+    }
+
+    func testV3CreatesModelUsageTable() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        let tables = try db.read { try $0.tableNames() }
+        XCTAssertTrue(tables.contains("model_usage"))
+    }
+
+    func testV3MigrationIdempotentAcrossReopen() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        _ = try Database.open(at: dbPath)
+        let db2 = try Database.open(at: dbPath)
+        let tables = try db2.read { try $0.tableNames() }
+        XCTAssertTrue(tables.contains("model_usage"))
+        XCTAssertEqual(try petColumns(db2).filter { $0 == "last_event_at" }.count, 1)
+    }
 }
 
 extension GRDB.Database {
