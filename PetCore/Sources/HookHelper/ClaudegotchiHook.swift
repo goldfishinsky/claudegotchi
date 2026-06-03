@@ -4,22 +4,23 @@ import PetCore
 @main
 struct ClaudegotchiHook {
     static func main() {
-        let args = CommandLine.arguments
-        guard args.count >= 2 else {
-            FileHandle.standardError.write(Data("usage: claudegotchi-hook <type> [--json '<json>']\n".utf8))
-            exit(2)
-        }
+        var stdin: String? = nil
+        let raw = FileHandle.standardInput.readDataToEndOfFile()
+        if !raw.isEmpty { stdin = String(data: raw, encoding: .utf8) }
+        exit(run(args: CommandLine.arguments, stdin: stdin))
+    }
+
+    static func run(args: [String], stdin: String?) -> Int32 {
+        guard args.count >= 2 else { return 0 }
         let type = args[1]
-        if rejectsRawType(type) {
-            FileHandle.standardError.write(Data("claudegotchi-hook: type '\(type)' is app-internal\n".utf8))
-            exit(2)
-        }
-        var rawJSON: String? = nil
+        if rejectsRawType(type) { return 0 }
+
+        var rawJSON = stdin
         if let i = args.firstIndex(of: "--json"), i + 1 < args.count {
             rawJSON = args[i + 1]
         }
 
-        let extras = parseExtras(rawJSON)
+        let extras = parsePayload(rawJSON)
         let event = Event(
             schemaVersion: 1,
             eventId: ULID.generate(),
@@ -33,28 +34,35 @@ struct ClaudegotchiHook {
             cwd: extras["cwd"] as? String
         )
 
-        do {
-            let line = try event.encodeJSON()
-            try HookSpool.append(line, to: spoolURL())
-            exit(0)
-        } catch {
-            FileHandle.standardError.write(Data("claudegotchi-hook: \(error)\n".utf8))
-            exit(1)
+        if let line = try? event.encodeJSON() {
+            try? HookSpool.append(line, to: spoolURL())
         }
+        return 0
     }
 
-    static func parseExtras(_ raw: String?) -> [String: Any] {
-        guard let raw, let data = raw.data(using: .utf8) else { return [:] }
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    static func parsePayload(_ raw: String?) -> [String: Any] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        var out: [String: Any] = [:]
+        if let v = obj["session_id"] { out["session_id"] = v }
+        if let v = obj["cwd"] { out["cwd"] = v }
+        if let v = obj["tool_name"] ?? obj["tool"] { out["tool"] = v }
+        if let v = obj["model"] { out["model"] = v }
+        if let v = obj["tokens_in"] { out["tokens_in"] = v }
+        if let v = obj["tokens_out"] { out["tokens_out"] = v }
+        return out
     }
 
     static func cwdFromPayload(_ raw: String?) -> String? {
-        parseExtras(raw)["cwd"] as? String
+        parsePayload(raw)["cwd"] as? String
     }
 
     static func rejectsRawType(_ type: String) -> Bool {
-        type.hasPrefix("pr_")
+        type.hasPrefix("pr_") || type.hasPrefix("pet_")
     }
+
+    static func spoolURLForTesting() -> URL { spoolURL() }
 
     private static func spoolURL() -> URL {
         let support = FileManager.default
