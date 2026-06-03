@@ -6,12 +6,14 @@ public struct ConfigYAML: Codable, Equatable {
     public let eventCosts: EventCosts
     public let thresholds: Thresholds
     public let spool: Spool
+    public let work: Work
 
     enum CodingKeys: String, CodingKey {
         case decay
         case eventCosts = "event_costs"
         case thresholds
         case spool
+        case work
     }
 
     public struct Decay: Codable, Equatable {
@@ -70,6 +72,31 @@ public struct ConfigYAML: Codable, Equatable {
         }
     }
 
+    public struct Work: Codable, Equatable {
+        public let pollIntervalSeconds: Int
+        public let pressureBusyThreshold: Int
+        public let pressureStressedThreshold: Int
+        public let prApprovedIntimacy: Double
+        public let prMergedXp: Int64
+        public let fixTimeoutSeconds: Int
+        public let fixPermissionMode: String
+        public let fixAllowedTools: String
+        public let fixDisallowedTools: String
+        public let fixCommit: Bool
+        enum CodingKeys: String, CodingKey {
+            case pollIntervalSeconds = "poll_interval_seconds"
+            case pressureBusyThreshold = "pressure_busy_threshold"
+            case pressureStressedThreshold = "pressure_stressed_threshold"
+            case prApprovedIntimacy = "pr_approved_intimacy"
+            case prMergedXp = "pr_merged_xp"
+            case fixTimeoutSeconds = "fix_timeout_seconds"
+            case fixPermissionMode = "fix_permission_mode"
+            case fixAllowedTools = "fix_allowed_tools"
+            case fixDisallowedTools = "fix_disallowed_tools"
+            case fixCommit = "fix_commit"
+        }
+    }
+
     public static func load(from url: URL) throws -> ConfigYAML {
         let raw = try String(contentsOf: url)
         return try YAMLDecoder().decode(ConfigYAML.self, from: raw)
@@ -87,6 +114,14 @@ public struct ConfigYAML: Codable, Equatable {
             hibernationAfterSeconds: 259200, petClickCooldownSeconds: 60,
             sustainedSessionSeconds: 1800, preToolUseTimeoutSeconds: 300
         ),
-        spool: .init(rotateWhenBytesExceed: 10_485_760, rotateWhenAgeExceedsSeconds: 604_800)
+        spool: .init(rotateWhenBytesExceed: 10_485_760, rotateWhenAgeExceedsSeconds: 604_800),
+        work: .init(
+            pollIntervalSeconds: 90,
+            pressureBusyThreshold: 1, pressureStressedThreshold: 3,
+            prApprovedIntimacy: 2.0, prMergedXp: 50,
+            fixTimeoutSeconds: 900, fixPermissionMode: "acceptEdits",
+            fixAllowedTools: "Edit,Read,Write,Grep,Glob",
+            fixDisallowedTools: "WebFetch,WebSearch", fixCommit: true
+        )
     )
 }

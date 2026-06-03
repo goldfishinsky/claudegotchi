@@ -70,7 +70,8 @@ final class SpoolWatcherTests: XCTestCase {
         var cfg = ConfigYAML.defaults
         cfg = ConfigYAML(
             decay: cfg.decay, eventCosts: cfg.eventCosts, thresholds: cfg.thresholds,
-            spool: ConfigYAML.Spool(rotateWhenBytesExceed: 100, rotateWhenAgeExceedsSeconds: 999_999)
+            spool: ConfigYAML.Spool(rotateWhenBytesExceed: 100, rotateWhenAgeExceedsSeconds: 999_999),
+            work: cfg.work
         )
         let w = SpoolWatcher(
             db: db, applier: EventApplier(config: cfg),
