@@ -21,8 +21,6 @@ targets:
     dependencies:
       - package: PetCore
         product: PetCore
-      - package: PetCore
-        product: claudegotchi-hook
     postBuildScripts:
       - name: Embed claudegotchi-hook
         basedOnDependencyAnalysis: false
@@ -30,7 +28,9 @@ targets:
           set -euo pipefail
           HELPERS="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Helpers"
           mkdir -p "$HELPERS"
-          SRC="${BUILT_PRODUCTS_DIR}/claudegotchi-hook"
+          PKG="${SRCROOT}/../PetCore"
+          swift build --package-path "$PKG" -c release --product claudegotchi-hook
+          SRC="$(swift build --package-path "$PKG" -c release --product claudegotchi-hook --show-bin-path)/claudegotchi-hook"
           cp -f "$SRC" "$HELPERS/claudegotchi-hook"
           chmod 0755 "$HELPERS/claudegotchi-hook"
           if [ "${ENABLE_HARDENED_RUNTIME:-}" = "YES" ] || [ "${CODE_SIGNING_ALLOWED:-}" = "YES" ]; then
