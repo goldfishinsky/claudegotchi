@@ -61,6 +61,68 @@ public enum Database {
                 );
                 """)
         }
+        m.registerMigration("v2_pr_watch") { db in
+            try db.execute(sql: """
+                CREATE TABLE watched_repo (
+                  id INTEGER PRIMARY KEY,
+                  slug TEXT NOT NULL UNIQUE,
+                  local_path TEXT,
+                  enabled INTEGER NOT NULL DEFAULT 1
+                );
+                """)
+            try db.execute(sql: """
+                CREATE TABLE watched_author (
+                  id INTEGER PRIMARY KEY,
+                  repo_id INTEGER NOT NULL REFERENCES watched_repo(id) ON DELETE CASCADE,
+                  login TEXT NOT NULL,
+                  UNIQUE (repo_id, login)
+                );
+                """)
+            try db.execute(sql: """
+                CREATE TABLE pr (
+                  id INTEGER PRIMARY KEY,
+                  repo_slug TEXT NOT NULL,
+                  number INTEGER NOT NULL,
+                  title TEXT NOT NULL,
+                  author TEXT NOT NULL,
+                  state TEXT NOT NULL,
+                  is_draft INTEGER NOT NULL DEFAULT 0,
+                  review_decision TEXT,
+                  unresolved_count INTEGER NOT NULL DEFAULT 0,
+                  last_approved_review_at INTEGER NOT NULL DEFAULT 0,
+                  head_branch TEXT NOT NULL,
+                  url TEXT NOT NULL,
+                  updated_at INTEGER NOT NULL,
+                  is_mine INTEGER NOT NULL DEFAULT 0,
+                  fetched_at INTEGER NOT NULL,
+                  UNIQUE (repo_slug, number)
+                );
+                """)
+            try db.execute(sql: "CREATE INDEX idx_pr_repo ON pr(repo_slug);")
+            try db.execute(sql: """
+                CREATE TABLE fix_job (
+                  id INTEGER PRIMARY KEY,
+                  pr_rowid INTEGER NOT NULL REFERENCES pr(id),
+                  repo_slug TEXT NOT NULL,
+                  pr_number INTEGER NOT NULL,
+                  state TEXT NOT NULL,
+                  prompt TEXT,
+                  worktree_path TEXT,
+                  started_at INTEGER,
+                  ended_at INTEGER,
+                  exit_code INTEGER,
+                  error TEXT,
+                  log_path TEXT,
+                  commit_sha TEXT,
+                  created_at INTEGER NOT NULL
+                );
+                """)
+            try db.execute(sql: "CREATE INDEX idx_fix_job_pr ON fix_job(pr_rowid);")
+            try db.execute(sql: "CREATE INDEX idx_fix_job_state ON fix_job(state);")
+            try db.execute(sql: "ALTER TABLE event ADD COLUMN session_id TEXT;")
+            try db.execute(sql: "ALTER TABLE event ADD COLUMN cwd TEXT;")
+            try db.execute(sql: "CREATE INDEX idx_event_session ON event(session_id);")
+        }
         return m
     }
 }

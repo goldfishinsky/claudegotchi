@@ -52,6 +52,37 @@ final class DatabaseTests: XCTestCase {
             "Fullness > 100 must violate CHECK constraint"
         )
     }
+
+    func testV2TablesExist() throws {
+        let dbPath = NSTemporaryDirectory() + "test-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        let tables = try db.read { try $0.tableNames() }
+        XCTAssertTrue(tables.contains("watched_repo"))
+        XCTAssertTrue(tables.contains("watched_author"))
+        XCTAssertTrue(tables.contains("pr"))
+        XCTAssertTrue(tables.contains("fix_job"))
+    }
+
+    func testV2AddsTypedEventColumns() throws {
+        let dbPath = NSTemporaryDirectory() + "test-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        let cols = try db.read {
+            try String.fetchAll($0, sql: "SELECT name FROM pragma_table_info('event')")
+        }
+        XCTAssertTrue(cols.contains("session_id"))
+        XCTAssertTrue(cols.contains("cwd"))
+    }
+
+    func testMigrationIsIdempotent() throws {
+        let dbPath = NSTemporaryDirectory() + "test-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        _ = try Database.open(at: dbPath)
+        let db2 = try Database.open(at: dbPath)
+        let tables = try db2.read { try $0.tableNames() }
+        XCTAssertTrue(tables.contains("pr"))
+    }
 }
 
 extension GRDB.Database {
