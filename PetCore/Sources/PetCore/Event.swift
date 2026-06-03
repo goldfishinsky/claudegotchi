@@ -42,6 +42,7 @@ public struct Event: Codable, Equatable {
         case postToolUse = "post_tool_use"
         case stop
         case notification
+        case petClick = "pet_click"
         case hibernateStart = "hibernate_start"
         case hibernateEnd = "hibernate_end"
         case prApproved = "pr_approved"

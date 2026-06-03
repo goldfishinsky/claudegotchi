@@ -30,6 +30,7 @@ public final class EventApplier {
             }
             if p.hibernationSince != nil {
                 p.hibernationSince = nil
+                p.lastTickAt = event.ts
             }
 
         case .preToolUse:
@@ -57,6 +58,9 @@ public final class EventApplier {
 
         case .stop:
             p.intimacy = clamp(p.intimacy + config.eventCosts.stopIntimacy)
+
+        case .petClick:
+            p.intimacy = clamp(p.intimacy + config.eventCosts.petClickIntimacy)
 
         case .notification:
             break

@@ -122,4 +122,35 @@ final class EventApplierTests: XCTestCase {
         XCTAssertEqual(next.stamina, 30, accuracy: 1e-9)
         XCTAssertEqual(next.intimacy, 30, accuracy: 1e-9)
     }
+
+    func testPetClickAddsIntimacyClamped() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 10
+        let next = applier.apply(event: evt(.petClick), to: pet)
+        XCTAssertEqual(next.intimacy, 10 + cfg.eventCosts.petClickIntimacy, accuracy: 1e-9)
+    }
+
+    func testPetClickClampsAt100() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.intimacy = 99.5
+        let next = applier.apply(event: evt(.petClick), to: pet)
+        XCTAssertEqual(next.intimacy, 100)
+    }
+
+    func testSessionStartWakeReanchorsLastTickAt() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.hibernationSince = 100
+        pet.lastTickAt = 100
+        let next = applier.apply(event: evt(.sessionStart, ts: 5_000_000), to: pet)
+        XCTAssertNil(next.hibernationSince)
+        XCTAssertEqual(next.lastTickAt, 5_000_000, "wake re-anchors lastTickAt to event.ts")
+    }
+
+    func testSessionStartWhenAwakeDoesNotReanchor() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.hibernationSince = nil
+        pet.lastTickAt = 100
+        let next = applier.apply(event: evt(.sessionStart, ts: 5_000_000), to: pet)
+        XCTAssertEqual(next.lastTickAt, 100, "no wake → lastTickAt untouched")
+    }
 }
