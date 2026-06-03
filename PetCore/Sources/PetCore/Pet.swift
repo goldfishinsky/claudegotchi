@@ -15,6 +15,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
     public var lastAppliedEventId: Int64
     public var hibernationSince: Int64?
     public var deathWindowState: String
+    public var lastEventAt: Int64
 
     public static let databaseTableName = "pet"
 
@@ -26,6 +27,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
         case lastAppliedEventId = "last_applied_event_id"
         case hibernationSince = "hibernation_since"
         case deathWindowState = "death_window_state"
+        case lastEventAt = "last_event_at"
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
@@ -38,7 +40,8 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
             birthday: ts, deathAt: nil,
             fullness: 100, stamina: 100, intimacy: 50,
             xp: 0, lastTickAt: ts, lastAppliedEventId: 0,
-            hibernationSince: nil, deathWindowState: "[]"
+            hibernationSince: nil, deathWindowState: "[]",
+            lastEventAt: ts
         )
     }
 
