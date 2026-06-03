@@ -153,4 +153,51 @@ final class ApplyTransactionTests: XCTestCase {
         let p = try Pet.fetchAlive(from: db)!
         XCTAssertEqual(p.xp, ConfigYAML.defaults.work.prMergedXp, "xp banked exactly once across replays")
     }
+
+    func testProcessJsonLineBumpsModelUsageOnce() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let line = #"{"schema_version":1,"event_id":"01H0000000000000000000000A","ts":1714500000123,"type":"post_tool_use","session_id":"s","tool":"Bash","tokens_in":100,"tokens_out":200,"model":"opus"}"#
+        try atx.process(jsonLine: line)
+        try atx.process(jsonLine: line) // duplicate: dedup short-circuit → must NOT double-bank
+        let all = try ModelUsageStore.all(in: db)
+        XCTAssertEqual(all, [ModelUsage(model: "opus", tokensIn: 100, tokensOut: 200, calls: 1)])
+    }
+
+    func testProcessJsonLineAdvancesLastEventAt() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A", ts: 5000))
+        XCTAssertEqual(try Pet.fetchAlive(from: db)!.lastEventAt, 5000)
+        // An older event must NOT move last_event_at backward (MAX semantics).
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000B", ts: 3000))
+        XCTAssertEqual(try Pet.fetchAlive(from: db)!.lastEventAt, 5000)
+    }
+
+    func testPostToolUseWithoutModelSkipsModelUsage() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))
+        XCTAssertEqual(try ModelUsageStore.all(in: db).count, 0)
+    }
+
+    func testSyntheticEventSkipsModelUsageAndLastEventAt() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(event: prEvent(eventId: "pr:o/r#1:approved:1000", type: .prApproved))
+        XCTAssertEqual(try ModelUsageStore.all(in: db).count, 0)
+        XCTAssertEqual(try Pet.fetchAlive(from: db)!.lastEventAt, 0, "synthetic events do not advance last_event_at")
+    }
+
+    func testProcessJsonLinePostsPetDidChangeOnApply() throws {
+        let exp = expectation(forNotification: .claudegotchiPetDidChange, object: nil, handler: nil)
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))
+        wait(for: [exp], timeout: 1.0)
+    }
+
+    func testDuplicateSpoolLineDoesNotPostPetDidChange() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A")) // first apply
+        let exp = expectation(forNotification: .claudegotchiPetDidChange, object: nil, handler: nil)
+        exp.isInverted = true
+        try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A")) // dedup → no post
+        wait(for: [exp], timeout: 0.5)
+    }
 }

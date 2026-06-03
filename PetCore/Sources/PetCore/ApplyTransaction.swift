@@ -15,7 +15,7 @@ public final class ApplyTransaction {
     public func process(jsonLine: String) throws {
         let event = try Event.parse(jsonLine)
 
-        try db.write { conn in
+        let didApply: Bool = try db.write { conn in
             var pet = try aliveOrThrow(in: conn)
 
             do {
@@ -32,7 +32,23 @@ public final class ApplyTransaction {
                     event.cwd
                 ])
             } catch let error as DatabaseError where error.resultCode == .SQLITE_CONSTRAINT {
-                return
+                return false
+            }
+
+            try conn.execute(
+                sql: "UPDATE pet SET last_event_at = MAX(last_event_at, ?) WHERE id = ?",
+                arguments: [event.ts, pet.id!]
+            )
+            // applier.apply + pet.update(conn) persist the full record; sync the
+            // in-memory copy so that write does not clobber last_event_at back.
+            pet.lastEventAt = max(pet.lastEventAt, event.ts)
+            if event.type == .postToolUse, let model = event.model {
+                try ModelUsageStore.bump(
+                    model: model,
+                    tokensIn: event.tokensIn ?? 0,
+                    tokensOut: event.tokensOut ?? 0,
+                    in: conn
+                )
             }
 
             let date = localDate(fromUnixMs: event.ts)
@@ -53,7 +69,10 @@ public final class ApplyTransaction {
                 sql: "UPDATE pet SET last_applied_event_id = ? WHERE id = ?",
                 arguments: [eventDbId, pet.id!]
             )
+            return true
         }
+
+        if didApply { postPetDidChange() }
     }
 
     public func process(event: Event) throws {
