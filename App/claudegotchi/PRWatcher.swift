@@ -18,15 +18,17 @@ final class PRWatcher: ObservableObject {
 
     @Published private(set) var snapshot = Snapshot()
 
-    private let db: DatabaseQueue
-    private let applier: EventApplier
-    private let github: GitHubClient
-    private let config: ConfigYAML
+    private nonisolated let db: DatabaseQueue
+    private nonisolated let applier: EventApplier
+    private nonisolated let github: GitHubClient
+    private nonisolated let config: ConfigYAML
 
     private var timer: DispatchSourceTimer?
-    private let pollQueue = DispatchQueue(label: "claudegotchi.prwatcher")
-    private var cachedSelfLogin: String?
-    private var isPolling = false
+    private nonisolated let pollQueue = DispatchQueue(label: "claudegotchi.prwatcher")
+    // Touched only on pollQueue (serial); the queue is the synchronization domain.
+    private nonisolated(unsafe) var cachedSelfLogin: String?
+    private nonisolated(unsafe) var isPolling = false
+    private nonisolated(unsafe) var lastPerRepoStatus: [String: RepoStatus] = [:]
 
     init(db: DatabaseQueue, applier: EventApplier, github: GitHubClient, config: ConfigYAML) {
         self.db = db
@@ -41,7 +43,7 @@ final class PRWatcher: ObservableObject {
         let interval = max(1, config.work.pollIntervalSeconds)
         t.schedule(deadline: .now(), repeating: .seconds(interval))
         t.setEventHandler { [weak self] in
-            Task { await self?.pollOnce() }
+            self?.pollOnSerialQueue()
         }
         timer = t
         t.resume()
@@ -52,15 +54,28 @@ final class PRWatcher: ObservableObject {
         timer = nil
     }
 
-    func pollOnce() async {
+    nonisolated func pollOnce() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            pollQueue.async { [weak self] in
+                self?.pollLocked()
+                continuation.resume()
+            }
+        }
+    }
+
+    private nonisolated func pollOnSerialQueue() {
+        pollQueue.async { [weak self] in self?.pollLocked() }
+    }
+
+    // Runs entirely on pollQueue: all gh/git/DB I/O happens here, never on the main actor.
+    private nonisolated func pollLocked() {
         if isPolling { return }
         isPolling = true
         defer { isPolling = false }
 
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        var perRepoStatus = snapshot.perRepoStatus
+        var perRepoStatus = lastPerRepoStatus
         var ghUnavailable = false
-        var anySuccess = false
 
         let login = resolveSelfLogin()
         if login == nil {
@@ -74,8 +89,7 @@ final class PRWatcher: ObservableObject {
             repos = try PRStore.watchedRepos(in: db).filter { $0.enabled }
             cached = try PRStore.allPRs(in: db)
         } catch {
-            await publish(nowMs: nowMs, perRepoStatus: perRepoStatus,
-                          ghUnavailable: ghUnavailable, anySuccess: false)
+            publish(nowMs: nowMs, perRepoStatus: perRepoStatus, ghUnavailable: ghUnavailable)
             return
         }
 
@@ -118,7 +132,6 @@ final class PRWatcher: ObservableObject {
                 // P1: result.events is always empty; pet coupling (process(event:)) is P3.
 
                 perRepoStatus[repo.slug] = RepoStatus(lastSuccessAtMs: nowMs, lastError: nil)
-                anySuccess = true
             } catch {
                 var status = perRepoStatus[repo.slug] ?? RepoStatus()
                 status.lastError = describe(error)
@@ -126,11 +139,10 @@ final class PRWatcher: ObservableObject {
             }
         }
 
-        await publish(nowMs: nowMs, perRepoStatus: perRepoStatus,
-                      ghUnavailable: ghUnavailable, anySuccess: anySuccess)
+        publish(nowMs: nowMs, perRepoStatus: perRepoStatus, ghUnavailable: ghUnavailable)
     }
 
-    private func resolveSelfLogin() -> String? {
+    private nonisolated func resolveSelfLogin() -> String? {
         if let cachedSelfLogin { return cachedSelfLogin }
         do {
             let login = try github.selfLogin()
@@ -141,12 +153,14 @@ final class PRWatcher: ObservableObject {
         }
     }
 
-    func refreshSelfLogin() {
-        cachedSelfLogin = nil
-        _ = resolveSelfLogin()
+    nonisolated func refreshSelfLogin() {
+        pollQueue.async { [weak self] in
+            self?.cachedSelfLogin = nil
+            _ = self?.resolveSelfLogin()
+        }
     }
 
-    private func detailFrom(_ pr: PR) -> PRDetail {
+    private nonisolated func detailFrom(_ pr: PR) -> PRDetail {
         PRDetail(
             number: pr.number, reviewDecision: pr.reviewDecision,
             unresolvedCount: pr.unresolvedCount, lastApprovedReviewAtMs: pr.lastApprovedReviewAt,
@@ -154,7 +168,7 @@ final class PRWatcher: ObservableObject {
         )
     }
 
-    private func describe(_ error: Error) -> String {
+    private nonisolated func describe(_ error: Error) -> String {
         if let e = error as? GitHubClientError {
             switch e {
             case .commandFailed(_, let stderr): return LogRedactor.redact(stderr)
@@ -164,13 +178,15 @@ final class PRWatcher: ObservableObject {
         return LogRedactor.redact("\(error)")
     }
 
-    private func publish(nowMs: Int64, perRepoStatus: [String: RepoStatus],
-                         ghUnavailable: Bool, anySuccess: Bool) async {
-        var s = snapshot
-        s.lastPollAtMs = nowMs
-        s.perRepoStatus = perRepoStatus
-        s.ghUnavailable = ghUnavailable
-        if anySuccess { s.firstPollComplete = true }
-        snapshot = s
+    private nonisolated func publish(nowMs: Int64, perRepoStatus: [String: RepoStatus], ghUnavailable: Bool) {
+        lastPerRepoStatus = perRepoStatus
+        Task { @MainActor in
+            var s = self.snapshot
+            s.lastPollAtMs = nowMs
+            s.perRepoStatus = perRepoStatus
+            s.ghUnavailable = ghUnavailable
+            s.firstPollComplete = true
+            self.snapshot = s
+        }
     }
 }

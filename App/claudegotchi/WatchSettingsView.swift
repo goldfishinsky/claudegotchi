@@ -23,6 +23,8 @@ final class WatchSettingsModel: ObservableObject {
     let github: GitHubClient
     let git: GitRunner
 
+    private var pathValidationWork: DispatchWorkItem?
+
     init(db: DatabaseQueue, github: GitHubClient, git: GitRunner) {
         self.db = db
         self.github = github
@@ -49,17 +51,29 @@ final class WatchSettingsModel: ObservableObject {
         slugError = RefValidator.isValidSlug(newSlug) ? nil : "无效的 owner/name"
     }
 
-    func validatePath() {
-        pathError = nil
-        let trimmed = newLocalPath.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }  // blank path is allowed (status-only)
-        let url = URL(fileURLWithPath: trimmed)
-        guard git.isRepo(url) else { pathError = "不是 git 仓库"; return }
-        guard RefValidator.isValidSlug(newSlug) else { pathError = "请先填写有效的 owner/name"; return }
-        let remote = (try? git.remoteSlug(url)) ?? nil
-        if remote != newSlug {
-            pathError = "本地仓库 origin 与 owner/name 不匹配"
+    func schedulePathValidation() {
+        pathValidationWork?.cancel()
+        let path = newLocalPath
+        let slug = newSlug
+        let work = DispatchWorkItem { [weak self, git] in
+            let error = Self.pathValidationError(path: path, slug: slug, git: git)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.newLocalPath == path, self.newSlug == slug else { return }
+                self.pathError = error
+            }
         }
+        pathValidationWork = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    nonisolated static func pathValidationError(path: String, slug: String, git: GitRunner) -> String? {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }  // blank path is allowed (status-only)
+        let url = URL(fileURLWithPath: trimmed)
+        guard git.isRepo(url) else { return "不是 git 仓库" }
+        guard RefValidator.isValidSlug(slug) else { return "请先填写有效的 owner/name" }
+        let remote = (try? git.remoteSlug(url)) ?? nil
+        return remote == slug ? nil : "本地仓库 origin 与 owner/name 不匹配"
     }
 
     func chooseLocalPath() {
@@ -69,17 +83,31 @@ final class WatchSettingsModel: ObservableObject {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             newLocalPath = url.path
-            validatePath()
+            schedulePathValidation()
         }
     }
 
     func addRepo() {
-        validateSlug(); validatePath()
-        guard canAddRepo else { return }
-        let path = newLocalPath.trimmingCharacters(in: .whitespaces)
+        validateSlug()
+        guard slugError == nil, !newSlug.isEmpty else { return }
+        let path = newLocalPath
+        let slug = newSlug
+        DispatchQueue.global().async { [git] in
+            let error = Self.pathValidationError(path: path, slug: slug, git: git)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.newLocalPath == path, self.newSlug == slug else { return }
+                self.pathError = error
+                guard error == nil else { return }
+                self.saveRepo(slug: slug, path: path)
+            }
+        }
+    }
+
+    private func saveRepo(slug: String, path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
         do {
             let repo = try PRStore.addRepo(
-                slug: newSlug, localPath: path.isEmpty ? nil : path, enabled: newEnabled, in: db
+                slug: slug, localPath: trimmed.isEmpty ? nil : trimmed, enabled: newEnabled, in: db
             )
             if let login = selfLogin, RefValidator.isValidLogin(login) {
                 try PRStore.addAuthor(repoId: repo.id!, login: login, in: db)
@@ -112,8 +140,9 @@ final class WatchSettingsModel: ObservableObject {
     }
 
     func seedSelfLogin() {
-        if let login = try? github.selfLogin(), !login.isEmpty {
-            selfLogin = login
+        DispatchQueue.global().async { [github] in
+            guard let login = try? github.selfLogin(), !login.isEmpty else { return }
+            DispatchQueue.main.async { [weak self] in self?.selfLogin = login }
         }
     }
 
@@ -176,7 +205,7 @@ struct WatchSettingsView: View {
             }
             HStack {
                 TextField("本地路径（可选）", text: $model.newLocalPath)
-                    .onChange(of: model.newLocalPath) { _ in model.validatePath() }
+                    .onChange(of: model.newLocalPath) { _ in model.schedulePathValidation() }
                 Button("选择…") { model.chooseLocalPath() }
             }
             if let err = model.pathError {
