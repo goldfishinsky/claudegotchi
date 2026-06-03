@@ -37,4 +37,45 @@ public enum PRStore {
     public static func allPRs(in db: DatabaseQueue) throws -> [PR] {
         try db.read { try PR.fetchAll($0) }
     }
+
+    public static func addRepo(slug: String, localPath: String?, enabled: Bool,
+                               in db: DatabaseQueue) throws -> WatchedRepo {
+        try db.write { conn in
+            var repo = WatchedRepo(id: nil, slug: slug, localPath: localPath, enabled: enabled)
+            try repo.insert(conn)
+            return repo
+        }
+    }
+
+    public static func removeRepo(id: Int64, in db: DatabaseQueue) throws {
+        try db.write { conn in
+            try conn.execute(sql: "DELETE FROM watched_author WHERE repo_id = ?", arguments: [id])
+            try conn.execute(sql: "DELETE FROM watched_repo WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public static func watchedRepos(in db: DatabaseQueue) throws -> [WatchedRepo] {
+        try db.read { try WatchedRepo.order(Column("id")).fetchAll($0) }
+    }
+
+    @discardableResult
+    public static func addAuthor(repoId: Int64, login: String, in db: DatabaseQueue) throws -> WatchedAuthor {
+        try db.write { conn in
+            var author = WatchedAuthor(id: nil, repoId: repoId, login: login)
+            try author.insert(conn)
+            return author
+        }
+    }
+
+    public static func removeAuthor(id: Int64, in db: DatabaseQueue) throws {
+        try db.write { conn in
+            try conn.execute(sql: "DELETE FROM watched_author WHERE id = ?", arguments: [id])
+        }
+    }
+
+    public static func authors(repoId: Int64, in db: DatabaseQueue) throws -> [WatchedAuthor] {
+        try db.read {
+            try WatchedAuthor.filter(Column("repo_id") == repoId).order(Column("id")).fetchAll($0)
+        }
+    }
 }

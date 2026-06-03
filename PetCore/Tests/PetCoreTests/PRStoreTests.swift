@@ -36,4 +36,30 @@ final class PRStoreTests: XCTestCase {
         try PRStore.upsertPRs([pr("o/r", 1), pr("o/r", 2), pr("o/s", 3)], in: db)
         XCTAssertEqual(try PRStore.allPRs(in: db).count, 3)
     }
+
+    func testAddAndListWatchedReposAndAuthors() throws {
+        let repo = try PRStore.addRepo(slug: "o/r", localPath: "/tmp/r", enabled: true, in: db)
+        _ = try PRStore.addRepo(slug: "o/s", localPath: nil, enabled: false, in: db)
+        try PRStore.addAuthor(repoId: repo.id!, login: "alice", in: db)
+        try PRStore.addAuthor(repoId: repo.id!, login: "bob", in: db)
+
+        XCTAssertEqual(try PRStore.watchedRepos(in: db).map(\.slug), ["o/r", "o/s"])
+        XCTAssertEqual(try PRStore.authors(repoId: repo.id!, in: db).map(\.login), ["alice", "bob"])
+    }
+
+    func testRemoveRepoCascadesAuthors() throws {
+        let repo = try PRStore.addRepo(slug: "o/r", localPath: nil, enabled: true, in: db)
+        try PRStore.addAuthor(repoId: repo.id!, login: "alice", in: db)
+        try PRStore.removeRepo(id: repo.id!, in: db)
+        XCTAssertEqual(try PRStore.watchedRepos(in: db).count, 0)
+        XCTAssertEqual(try PRStore.authors(repoId: repo.id!, in: db).count, 0)
+    }
+
+    func testRemoveAuthorDeletesOnlyThatLogin() throws {
+        let repo = try PRStore.addRepo(slug: "o/r", localPath: nil, enabled: true, in: db)
+        try PRStore.addAuthor(repoId: repo.id!, login: "alice", in: db)
+        let bob = try PRStore.addAuthor(repoId: repo.id!, login: "bob", in: db)
+        try PRStore.removeAuthor(id: bob.id!, in: db)
+        XCTAssertEqual(try PRStore.authors(repoId: repo.id!, in: db).map(\.login), ["alice"])
+    }
 }
