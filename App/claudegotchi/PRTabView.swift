@@ -86,7 +86,7 @@ enum PRTabFormat {
     }
 }
 
-struct PRTabView: View {
+struct PRWorktableTab: View {
     @ObservedObject var watcher: PRWatcher
     @ObservedObject var coordinator: FixCoordinator
     let db: DatabaseQueue
@@ -114,7 +114,8 @@ struct PRTabView: View {
             Divider()
             fixHistorySection
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(16)
         .onReceive(watcher.$snapshot) { _ in reload() }
         .onReceive(coordinator.$progress) { _ in reloadHistory() }
         .onAppear { reload() }
