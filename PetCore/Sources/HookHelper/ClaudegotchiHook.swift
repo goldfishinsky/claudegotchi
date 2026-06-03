@@ -10,6 +10,10 @@ struct ClaudegotchiHook {
             exit(2)
         }
         let type = args[1]
+        if rejectsRawType(type) {
+            FileHandle.standardError.write(Data("claudegotchi-hook: type '\(type)' is app-internal\n".utf8))
+            exit(2)
+        }
         var rawJSON: String? = nil
         if let i = args.firstIndex(of: "--json"), i + 1 < args.count {
             rawJSON = args[i + 1]
@@ -25,7 +29,8 @@ struct ClaudegotchiHook {
             tool: extras["tool"] as? String,
             tokensIn: extras["tokens_in"] as? Int,
             tokensOut: extras["tokens_out"] as? Int,
-            model: extras["model"] as? String
+            model: extras["model"] as? String,
+            cwd: extras["cwd"] as? String
         )
 
         do {
@@ -38,9 +43,17 @@ struct ClaudegotchiHook {
         }
     }
 
-    private static func parseExtras(_ raw: String?) -> [String: Any] {
+    static func parseExtras(_ raw: String?) -> [String: Any] {
         guard let raw, let data = raw.data(using: .utf8) else { return [:] }
         return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    static func cwdFromPayload(_ raw: String?) -> String? {
+        parseExtras(raw)["cwd"] as? String
+    }
+
+    static func rejectsRawType(_ type: String) -> Bool {
+        type.hasPrefix("pr_")
     }
 
     private static func spoolURL() -> URL {
