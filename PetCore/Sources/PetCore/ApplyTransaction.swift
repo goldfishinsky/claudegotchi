@@ -96,12 +96,7 @@ public final class ApplyTransaction {
     }
 
     private func localDate(fromUnixMs ts: Int64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(ts) / 1000.0)
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone.current
-        return f.string(from: date)
+        LocalDay.key(unixMs: ts, timeZone: TimeZone.current)
     }
 }
 
