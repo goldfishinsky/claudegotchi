@@ -186,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 services: services,
                 onOpenStats: { [weak self] in
                     self?.popover?.performClose(nil)
-                    self?.showWorkbench(services)
+                    self?.openStats(services, select: .overview)
                 }
             )
         )
@@ -242,32 +242,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             refreshPanels()
             pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
-    }
-
-    private func showWorkbench(_ services: AppServices) {
-        if let win = window {
-            win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let root = PRTabView(
-            watcher: services.watcher,
-            coordinator: services.coordinator,
-            db: services.db,
-            config: services.config
-        )
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false
-        )
-        win.title = "claudegotchi"
-        win.contentView = NSHostingView(rootView: root)
-        win.isReleasedWhenClosed = false
-        win.center()
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        window = win
     }
 
     private func openStats(_ services: AppServices, select tab: StatsTab) {
