@@ -72,7 +72,6 @@ final class WorkPanelModel: ObservableObject {
 
 struct WorkPanelView: View {
     @ObservedObject var model: WorkPanelModel
-    var onOpenWorktable: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -86,12 +85,6 @@ struct WorkPanelView: View {
                 .frame(maxHeight: 120)
 
             runningLine
-
-            Button(action: onOpenWorktable) {
-                Text("打开工作台").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .frame(width: 260, alignment: .leading)
         .padding(8)
