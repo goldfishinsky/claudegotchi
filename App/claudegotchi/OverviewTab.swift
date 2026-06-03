@@ -29,7 +29,7 @@ struct OverviewTab: View {
     @State private var streak: Int = 0
     @State private var peak: Int64 = 0
     @State private var ageDays: Int = 0
-    @State private var heatNowMs: Int64 = 0
+    @State private var heatNowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     @State private var heatTZ: TimeZone = .current
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)

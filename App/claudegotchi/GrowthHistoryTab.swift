@@ -10,6 +10,7 @@ struct GrowthHistoryTab: View {
     @State private var showAll = false
 
     private let inlineCap = 20
+    private let fetchCap = 500
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -101,6 +102,6 @@ struct GrowthHistoryTab: View {
 
     private func reload() {
         alive = (try? Pet.fetchAlive(from: db)) ?? nil
-        history = (try? StatsQueries.growthHistory(db, limit: inlineCap)) ?? []
+        history = (try? StatsQueries.growthHistory(db, limit: fetchCap)) ?? []
     }
 }

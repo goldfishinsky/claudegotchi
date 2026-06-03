@@ -32,6 +32,8 @@ struct HeatmapView: View {
         }
         .frame(height: cell * 7 + gap * 6 + 4)
         .onAppear(perform: reload)
+        .onChange(of: nowMs) { _ in reload() }
+        .onChange(of: tz) { _ in reload() }
     }
 
     private var weekdayGutter: some View {

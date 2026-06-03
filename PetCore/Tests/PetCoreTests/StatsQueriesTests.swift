@@ -92,4 +92,15 @@ final class StatsQueriesTests: XCTestCase {
         XCTAssertEqual(hist.map(\.species), ["cat", "frog"], "newest death first")
         XCTAssertEqual(hist.first?.diedMs, 4000)
     }
+
+    func testGrowthHistoryHonorsLimitBeyondInlineCap() throws {
+        // 25 dead pets; a limit above the inline cap (20) must return all of them
+        // so the view can drive its own 查看全部 affordance instead of the SQL LIMIT.
+        for i in 1...25 {
+            let p = try Pet.insert(.fresh(species: "frog", at: Int64(i) * 1000), into: db)
+            try Pet.markDead(id: p.id!, at: Int64(i) * 1000 + 500, in: db)
+        }
+        XCTAssertEqual(try StatsQueries.growthHistory(db, limit: 20).count, 20)
+        XCTAssertEqual(try StatsQueries.growthHistory(db, limit: 500).count, 25)
+    }
 }
