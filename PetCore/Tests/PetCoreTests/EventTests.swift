@@ -55,4 +55,29 @@ final class EventTests: XCTestCase {
         let e = try Event.parse(json)
         XCTAssertEqual(e.eventId, "a")
     }
+
+    func testOldLineWithoutCwdDecodesNil() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"session_start","session_id":"s1"}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertNil(e.cwd)
+    }
+
+    func testNewLinePreservesCwdRoundTrip() throws {
+        let e = Event(
+            schemaVersion: 1, eventId: "a", ts: 0, type: .sessionStart,
+            sessionId: "s1", tool: nil, tokensIn: nil, tokensOut: nil, model: nil,
+            cwd: "/Users/jalen/repo"
+        )
+        let decoded = try Event.parse(try e.encodeJSON())
+        XCTAssertEqual(decoded.cwd, "/Users/jalen/repo")
+    }
+
+    func testDecodesCwdFromHookPayloadKey() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"session_start","cwd":"/tmp/x"}
+        """#
+        XCTAssertEqual(try Event.parse(json).cwd, "/tmp/x")
+    }
 }

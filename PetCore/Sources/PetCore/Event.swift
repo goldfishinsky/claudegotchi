@@ -14,11 +14,13 @@ public struct Event: Codable, Equatable {
     public let tokensIn: Int?
     public let tokensOut: Int?
     public let model: String?
+    public let cwd: String?
 
     public init(
         schemaVersion: Int, eventId: String, ts: Int64, type: EventType,
         sessionId: String?, tool: String?,
-        tokensIn: Int?, tokensOut: Int?, model: String?
+        tokensIn: Int?, tokensOut: Int?, model: String?,
+        cwd: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.eventId = eventId
@@ -29,6 +31,7 @@ public struct Event: Codable, Equatable {
         self.tokensIn = tokensIn
         self.tokensOut = tokensOut
         self.model = model
+        self.cwd = cwd
     }
 
     public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
@@ -52,6 +55,7 @@ public struct Event: Codable, Equatable {
         case tokensIn = "tokens_in"
         case tokensOut = "tokens_out"
         case model
+        case cwd
     }
 
     public static func parse(_ json: String) throws -> Event {
