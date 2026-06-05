@@ -74,20 +74,22 @@ struct WorkPanelView: View {
     @ObservedObject var model: WorkPanelModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                moodSprite
-                Text("工作").font(.subheadline.bold())
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(moodEmoji).font(.callout)
+                Text("工作").font(.subheadline.weight(.semibold))
                 Spacer()
+                if model.firstPollComplete && model.pendingCount > 0 {
+                    Text("\(WorkPanelFormat.cappedCount(model.pendingCount)) 待处理")
+                        .font(.caption).foregroundColor(.orange)
+                }
             }
-
             content
-                .frame(maxHeight: 120)
-
             runningLine
         }
-        .frame(width: 260, alignment: .leading)
-        .padding(8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -97,55 +99,39 @@ struct WorkPanelView: View {
         } else if model.pendingCount == 0 {
             Text("✅ 全部清空").font(.caption).foregroundColor(.secondary)
         } else {
-            attentionHeader
             prList
-        }
-    }
-
-    private var attentionHeader: some View {
-        HStack {
-            Text("🔔 \(model.pendingCount) 个 PR 待处理").font(.caption)
-            Spacer()
-            Text(WorkPanelFormat.cappedCount(model.pendingCount))
-                .font(.caption.bold()).foregroundColor(.orange)
         }
     }
 
     private var prList: some View {
         let ordered = WorkPanelFormat.ordered(model.prs)
-        return ScrollView {
-            LazyVStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(ordered.prefix(WorkPanelFormat.rowCap)), id: \.id) { pr in
-                    HStack(spacing: 4) {
-                        Text("•").font(.caption)
-                        Text(pr.title).font(.caption)
-                            .lineLimit(1).truncationMode(.tail)
-                        Spacer(minLength: 4)
-                        Text(WorkPanelFormat.chip(for: pr))
-                            .font(.caption).foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                if ordered.count > WorkPanelFormat.rowCap {
-                    Text("… 还有 \(WorkPanelFormat.cappedCount(ordered.count - WorkPanelFormat.rowCap)) 个")
+        return VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(ordered.prefix(WorkPanelFormat.rowCap)), id: \.id) { pr in
+                HStack(spacing: 6) {
+                    Text(pr.title).font(.caption)
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 6)
+                    Text(WorkPanelFormat.chip(for: pr))
                         .font(.caption2).foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
             }
+            if ordered.count > WorkPanelFormat.rowCap {
+                Text("… 还有 \(WorkPanelFormat.cappedCount(ordered.count - WorkPanelFormat.rowCap)) 个")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
         }
-        .frame(maxHeight: 96)
     }
 
     @ViewBuilder
     private var runningLine: some View {
         if model.runningRepoCount > 0 {
-            Text("🟢 Claude 在 \(WorkPanelFormat.cappedCount(model.runningRepoCount)) 个仓库运行")
-                .font(.caption).foregroundColor(.green)
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Circle().fill(Theme.healthy).frame(width: 6, height: 6)
+                Text("Claude 在 \(WorkPanelFormat.cappedCount(model.runningRepoCount)) 个仓库运行")
+                    .font(.caption).foregroundColor(.secondary).lineLimit(1)
+            }
         }
-    }
-
-    private var moodSprite: some View {
-        Text(moodEmoji).font(.body)
     }
 
     private var moodEmoji: String {

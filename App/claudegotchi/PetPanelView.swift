@@ -3,31 +3,20 @@ import PetCore
 
 struct PetPanelView: View {
     @ObservedObject var model: PetPanelModel
-
-    private let lowThreshold: Double = 25
-    private let panelWidth: CGFloat = 276
-
-    init(model: PetPanelModel) {
-        self.model = model
-    }
+    private let lowThreshold = 25.0
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             if model.hasPet {
                 petArt
-                statBars
-                levelLine
-                todayRow
-                activityLine
+                statsCard
+                infoCard
             } else {
                 Text("🥚 孵化中…")
-                    .font(.headline)
-                    .frame(height: 96)
+                    .font(.headline).foregroundStyle(.secondary)
+                    .frame(height: 100)
             }
         }
-        .frame(width: panelWidth)
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
     }
 
     @ViewBuilder
@@ -36,80 +25,94 @@ struct PetPanelView: View {
             PixelPetView(visual: visual, species: model.species) {
                 model.handlePetClick()
             }
-            .frame(width: 96, height: 96)
+            .frame(width: 84, height: 84)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Theme.groupFill)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         } else {
-            Color.clear.frame(width: 96, height: 96)
+            Color.clear.frame(height: 84)
         }
     }
 
-    private var statBars: some View {
-        VStack(spacing: 4) {
-            statBar(icon: "🍞", label: "饱食", value: model.fullness)
-            statBar(icon: "💪", label: "体力", value: model.stamina)
-            statBar(icon: "💖", label: "亲密", value: model.intimacy)
-            wisdomBar
+    private var statsCard: some View {
+        GroupCard {
+            statRow("🍞", model.fullness)
+            RowDivider()
+            statRow("💪", model.stamina)
+            RowDivider()
+            statRow("💖", model.intimacy)
         }
     }
 
-    private func statBar(icon: String, label: String, value: Double) -> some View {
+    private func statRow(_ icon: String, _ value: Double) -> some View {
         let clamped = min(max(value, 0), 100)
-        let tint: Color = clamped < lowThreshold ? .red : .green
-        return HStack(spacing: 6) {
-            Text(icon).font(.caption)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.secondary.opacity(0.2))
-                    Capsule().fill(tint)
-                        .frame(width: geo.size.width * CGFloat(clamped / 100))
-                }
-            }
-            .frame(height: 8)
+        return HStack(spacing: 10) {
+            Text(icon).font(.system(size: 13)).frame(width: 18, alignment: .leading)
+            StatTrack(value: clamped, lowThreshold: lowThreshold)
             Text("\(Int(clamped))")
-                .font(.caption2.monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 28, alignment: .trailing)
+                .font(.callout.monospacedDigit())
+                .foregroundColor(clamped < lowThreshold ? Theme.low : Color.secondary)
+                .frame(width: 30, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+    }
+
+    private var infoCard: some View {
+        GroupCard {
+            levelRow
+            RowDivider()
+            todayRow
+            RowDivider()
+            activityRow
         }
     }
 
-    private var wisdomBar: some View {
-        HStack(spacing: 6) {
-            Text("🌟").font(.caption)
-            Text("Lv \(model.level)").font(.caption.bold())
-            Spacer()
-            Text("还需 \(model.xpToNext) xp")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-    }
-
-    private var levelLine: some View {
+    private var levelRow: some View {
         let nameZh = PixelSpeciesCatalog.def(model.species)?.nameZh ?? model.species
-        return Text("Lv \(model.level) · \(nameZh)")
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
+        return HStack(spacing: 8) {
+            Image(systemName: "star.fill").font(.system(size: 9)).foregroundStyle(.yellow)
+            Text("Lv \(model.level)").font(.callout.weight(.semibold))
+            Text(nameZh).font(.callout).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 8)
+            Text("还需 \(model.xpToNext) xp").font(.caption).foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
     }
 
     private var todayRow: some View {
         let tok = PRTabFormat.tokenLabel(Int(model.todayTokens))
-        return HStack(spacing: 6) {
-            Text("今日 \(tok.isEmpty ? "0" : tok)")
-            Text("·")
-            Text("会话 \(PRTabFormat.cappedCount(model.todaySessions))")
-            Text("·")
-            Text("工具 \(PRTabFormat.cappedCount(model.todayTools))")
+        return HStack(spacing: 0) {
+            todayMetric(tok.isEmpty ? "0" : tok, "今日")
+            Spacer()
+            todayMetric(PRTabFormat.cappedCount(model.todaySessions), "会话")
+            Spacer()
+            todayMetric(PRTabFormat.cappedCount(model.todayTools), "工具")
         }
-        .font(.caption2)
-        .foregroundColor(.secondary)
-        .lineLimit(1)
+        .padding(.horizontal, 12)
+        .frame(height: 38)
     }
 
-    private var activityLine: some View {
-        Text(model.activity)
-            .font(.caption)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private func todayMetric(_ value: String, _ label: String) -> some View {
+        HStack(spacing: 5) {
+            Text(value).font(.callout.weight(.semibold).monospacedDigit())
+            Text(label).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var activityRow: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(model.activity.contains("正在") ? Theme.healthy : Color.secondary.opacity(0.5))
+                .frame(width: 6, height: 6)
+            Text(model.activity).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 30)
     }
 }

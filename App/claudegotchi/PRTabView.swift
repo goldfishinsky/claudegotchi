@@ -2,6 +2,12 @@ import SwiftUI
 import GRDB
 import PetCore
 
+enum PRScope: String, CaseIterable {
+    case mine = "我的"
+    case all = "全部"
+    case others = "其他人"
+}
+
 struct PRStatusChip: Equatable {
     let label: String
     let symbol: String
@@ -97,15 +103,24 @@ struct PRWorktableTab: View {
     @State private var activeSlugs: Set<String> = []
     @State private var history: [FixJob] = []
     @State private var logViewerJob: FixJob?
+    @State private var scope: PRScope = .mine
+
+    private var scoped: [PR] {
+        switch scope {
+        case .mine:   return prs.filter { $0.isMine }
+        case .all:    return prs
+        case .others: return prs.filter { !$0.isMine }
+        }
+    }
 
     private var grouped: [(slug: String, rows: [PR])] {
-        let bySlug = Dictionary(grouping: prs, by: \.repoSlug)
+        let bySlug = Dictionary(grouping: scoped, by: \.repoSlug)
         return bySlug.keys.sorted().map { slug in
             (slug: slug, rows: PRTabFormat.attentionSorted(bySlug[slug] ?? []))
         }
     }
 
-    private var pendingCount: Int { PRTabFormat.pendingCount(prs) }
+    private var pendingCount: Int { PRTabFormat.pendingCount(scoped) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -128,10 +143,15 @@ struct PRWorktableTab: View {
             Text("工作台").font(.headline)
             Spacer()
             if pendingCount > 0 {
-                Text("\(PRTabFormat.cappedCount(pendingCount)) 个待处理")
+                Text("\(PRTabFormat.cappedCount(pendingCount)) 待处理")
                     .font(.caption).foregroundColor(.orange)
             }
         }
+        Picker("", selection: $scope) {
+            ForEach(PRScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
         ForEach(erroredRepos, id: \.self) { slug in
             errorBanner(slug: slug)
         }
@@ -162,10 +182,10 @@ struct PRWorktableTab: View {
     private var content: some View {
         if !watcher.snapshot.firstPollComplete && prs.isEmpty {
             loadingState
-        } else if prs.isEmpty {
+        } else if scoped.isEmpty {
             emptyState
         } else if pendingCount == 0 {
-            // All-clear: no attention PRs, but non-mine status rows may exist.
+            // All-clear: no attention PRs, but non-attention status rows may exist.
             VStack(alignment: .leading, spacing: 6) {
                 Text("✅ 全部清空").font(.subheadline).foregroundColor(.green)
                 prList
@@ -175,13 +195,21 @@ struct PRWorktableTab: View {
         }
     }
 
+    private var emptyMessage: String {
+        switch scope {
+        case .mine:   return "你当前没有 open 的 PR"
+        case .others: return "没有其他人的 PR"
+        case .all:    return "✅ 全部清空"
+        }
+    }
+
     private var loadingState: some View {
         HStack { ProgressView().controlSize(.small); Text("正在加载…").foregroundColor(.secondary) }
             .frame(maxWidth: .infinity, alignment: .center).padding()
     }
 
     private var emptyState: some View {
-        Text("✅ 全部清空").font(.title3).foregroundColor(.green)
+        Text(emptyMessage).font(.callout).foregroundColor(.secondary)
             .frame(maxWidth: .infinity, alignment: .center).padding()
     }
 

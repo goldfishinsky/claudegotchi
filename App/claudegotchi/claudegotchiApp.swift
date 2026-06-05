@@ -260,15 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             db: services.db,
             config: services.config
         )
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false
-        )
-        win.title = "claudegotchi"
-        win.contentView = NSHostingView(rootView: root)
-        win.isReleasedWhenClosed = false
-        win.center()
+        let win = Glass.window(root, size: NSSize(width: 720, height: 600), title: "claudegotchi")
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = win
@@ -286,26 +278,25 @@ private struct UnifiedDropdown: View {
     var onOpenStats: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 12) {
             PetPanelView(model: petModel)
-            Divider()
-            ScrollView {
-                WorkPanelView(model: workModel)
+            GroupCard {
+                ScrollView { WorkPanelView(model: workModel) }
+                    .frame(maxHeight: 118)
             }
-            .frame(maxHeight: 140)
-            Divider()
             footer
         }
+        .padding(14)
         .frame(width: 276)
     }
 
     private var footer: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button(action: onOpenStats) {
                 Text("打开统计").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
 
             Toggle(isOn: Binding(
                 get: { services.paused },
@@ -317,7 +308,5 @@ private struct UnifiedDropdown: View {
             .controlSize(.mini)
             .fixedSize()
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
     }
 }
