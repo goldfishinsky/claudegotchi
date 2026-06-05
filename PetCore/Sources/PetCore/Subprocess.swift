@@ -53,6 +53,11 @@ public final class SystemProcessRunner: ProcessRunner {
             process.arguments = [executable] + args
         }
         if let cwd { process.currentDirectoryURL = cwd }
+        // GUI apps launched via Finder/LaunchServices inherit a minimal PATH (no
+        // Homebrew / ~/.local bins), so `/usr/bin/env gh|git|claude` would fail to
+        // resolve. Keep the inherited env (HOME etc. for gh auth / git config) but
+        // prepend the common tool dirs to PATH.
+        process.environment = Self.environmentWithToolPath()
 
         let outPipe = Pipe()
         let errPipe = Pipe()
@@ -75,6 +80,25 @@ public final class SystemProcessRunner: ProcessRunner {
             stdout: outData,
             stderr: String(data: errData, encoding: .utf8) ?? ""
         )
+    }
+
+    /// Common tool dirs, deduped and prepended onto `base` so a Finder-launched
+    /// app (minimal PATH) still resolves Homebrew/user-installed gh/git/claude.
+    static func mergeToolPath(into base: String) -> String {
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin", "\(NSHomeDirectory())/.local/bin", "/usr/bin", "/bin"]
+        let existing = base.split(separator: ":").map(String.init)
+        var seen = Set<String>()
+        var merged: [String] = []
+        for dir in extra + existing where !dir.isEmpty && seen.insert(dir).inserted {
+            merged.append(dir)
+        }
+        return merged.joined(separator: ":")
+    }
+
+    static func environmentWithToolPath() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = mergeToolPath(into: env["PATH"] ?? "")
+        return env
     }
 
     private func waitOrKill(_ process: Process, timeout: TimeInterval?) -> Bool {

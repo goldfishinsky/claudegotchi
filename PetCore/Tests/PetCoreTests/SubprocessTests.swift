@@ -2,6 +2,22 @@ import XCTest
 @testable import PetCore
 
 final class SubprocessTests: XCTestCase {
+    func testMergeToolPathPrependsHomebrewPreservesExistingDedupes() {
+        let merged = SystemProcessRunner.mergeToolPath(into: "/custom/bin:/usr/bin")
+        let dirs = merged.split(separator: ":").map(String.init)
+        XCTAssertTrue(dirs.contains("/opt/homebrew/bin"))            // Finder-launch fix
+        XCTAssertTrue(dirs.contains("/custom/bin"))                  // existing PATH preserved
+        XCTAssertLessThan(dirs.firstIndex(of: "/opt/homebrew/bin")!,
+                          dirs.firstIndex(of: "/custom/bin")!)        // tool dirs win
+        XCTAssertEqual(dirs.filter { $0 == "/usr/bin" }.count, 1)    // deduped
+    }
+
+    func testEnvironmentWithToolPathKeepsOtherVars() {
+        let env = SystemProcessRunner.environmentWithToolPath()
+        XCTAssertTrue((env["PATH"] ?? "").contains("/opt/homebrew/bin"))
+        XCTAssertEqual(env["HOME"], ProcessInfo.processInfo.environment["HOME"])  // HOME (gh auth) preserved
+    }
+
     func testSystemRunnerCapturesStdoutAndStatus() throws {
         let r = SystemProcessRunner()
         let result = try r.run("/bin/echo", ["hello"], cwd: nil, timeout: 5)
