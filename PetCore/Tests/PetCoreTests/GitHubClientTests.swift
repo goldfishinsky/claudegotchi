@@ -38,12 +38,42 @@ final class GitHubClientTests: XCTestCase {
 
     func testDetailComputesUnresolvedAndApprovalTs() throws {
         let fake = FakeProcessRunner()
-        fake.results = [ProcessResult(status: 0, stdout: try bytes("pr-detail-approved"), stderr: "")]
+        fake.results = [
+            ProcessResult(status: 0, stdout: try bytes("pr-detail-approved"), stderr: ""),   // gh pr view
+            ProcessResult(status: 0, stdout: try bytes("pr-threads-approved"), stderr: ""),   // gh api graphql
+        ]
         let detail = try GHCLIClient(runner: fake).prDetail(slug: "jalen/app", number: 128)
         XCTAssertEqual(detail.reviewDecision, "APPROVED")
         XCTAssertEqual(detail.unresolvedCount, 1)
         XCTAssertEqual(detail.lastApprovedReviewAtMs, 1_780_395_300_000) // 2026-06-02T10:15:00Z
         XCTAssertEqual(detail.threads.filter { !$0.isResolved }.first?.path, "src/auth.ts")
+    }
+
+    func testDetailFetchesThreadsViaGraphQLNotPrView() throws {
+        let fake = FakeProcessRunner()
+        fake.results = [
+            ProcessResult(status: 0, stdout: try bytes("pr-detail-approved"), stderr: ""),
+            ProcessResult(status: 0, stdout: try bytes("pr-threads-approved"), stderr: ""),
+        ]
+        _ = try GHCLIClient(runner: fake).prDetail(slug: "jalen/app", number: 128)
+        let viewCall = fake.calls[0]
+        XCTAssertEqual(Array(viewCall.args.prefix(2)), ["pr", "view"])
+        XCTAssertFalse(viewCall.args.joined(separator: ",").contains("reviewThreads"))
+        let gqlCall = fake.calls[1]
+        XCTAssertEqual(Array(gqlCall.args.prefix(2)), ["api", "graphql"])
+        XCTAssertTrue(gqlCall.args.contains { $0.contains("reviewThreads") })
+    }
+
+    func testDetailSurvivesGraphQLFailure() throws {
+        let fake = FakeProcessRunner()
+        fake.results = [
+            ProcessResult(status: 0, stdout: try bytes("pr-detail-approved"), stderr: ""),
+            ProcessResult(status: 1, stdout: Data(), stderr: "GraphQL: denied"),
+        ]
+        let detail = try GHCLIClient(runner: fake).prDetail(slug: "jalen/app", number: 128)
+        XCTAssertEqual(detail.reviewDecision, "APPROVED")
+        XCTAssertEqual(detail.unresolvedCount, 0)
+        XCTAssertTrue(detail.threads.isEmpty)
     }
 
     func testClassifyMerged() throws {

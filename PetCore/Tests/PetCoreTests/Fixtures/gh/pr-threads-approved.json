@@ -1,0 +1,24 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "isResolved": false,
+              "path": "src/auth.ts",
+              "line": 42,
+              "comments": { "nodes": [ { "body": "Guard against nil session here.", "author": { "login": "reviewer1" } } ] }
+            },
+            {
+              "isResolved": true,
+              "path": "src/util.ts",
+              "line": 7,
+              "comments": { "nodes": [ { "body": "resolved already", "author": { "login": "reviewer1" } } ] }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

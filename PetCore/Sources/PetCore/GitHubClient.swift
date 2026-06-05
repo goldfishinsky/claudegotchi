@@ -95,18 +95,44 @@ public final class GHCLIClient: GitHubClient {
     public func prDetail(slug: String, number: Int) throws -> PRDetail {
         let r = try runner.run("gh", [
             "pr", "view", String(number), "--repo", slug,
-            "--json", "number,reviewDecision,latestReviews,reviewThreads,state,mergedAt,url",
+            "--json", "number,reviewDecision,latestReviews,state,mergedAt,url",
         ], cwd: nil, timeout: 60)
         guard r.status == 0 else {
             throw GitHubClientError.commandFailed(status: r.status, stderr: r.stderr)
         }
-        return Self.detail(from: try decode(RawView.self, r.stdout))
+        let view = try decode(RawView.self, r.stdout)
+        // `reviewThreads` is a GraphQL-only field — `gh pr view --json` rejects it
+        // ("Unknown JSON field"). Threads are fetched separately and best-effort: a
+        // graphql failure must NOT sink the whole PR (it still shows + counts via
+        // reviewDecision); it just yields an empty thread set.
+        let threads = fetchThreads(slug: slug, number: number)
+        return Self.detail(from: view, threads: threads)
+    }
+
+    private func fetchThreads(slug: String, number: Int) -> [GHReviewThread] {
+        let parts = slug.split(separator: "/", maxSplits: 1)
+        guard parts.count == 2 else { return [] }
+        let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved path line comments(first:1){nodes{body author{login}}}}}}}}"
+        guard let r = try? runner.run("gh", [
+            "api", "graphql", "-f", "query=\(query)",
+            "-f", "owner=\(parts[0])", "-f", "name=\(parts[1])", "-F", "number=\(number)",
+        ], cwd: nil, timeout: 60), r.status == 0,
+              let gql = try? JSONDecoder().decode(RawThreadsGQL.self, from: r.stdout)
+        else { return [] }
+        return gql.data.repository.pullRequest.reviewThreads.nodes.map { node in
+            let comment = node.comments.nodes.first
+            return GHReviewThread(
+                path: node.path ?? "", line: node.line,
+                author: comment?.author?.login ?? "", body: comment?.body ?? "",
+                isResolved: node.isResolved
+            )
+        }
     }
 
     public func classifyDisappeared(slug: String, number: Int) throws -> PRDisappearance {
         let r = try runner.run("gh", [
             "pr", "view", String(number), "--repo", slug,
-            "--json", "number,reviewDecision,latestReviews,reviewThreads,state,mergedAt,url",
+            "--json", "number,reviewDecision,latestReviews,state,mergedAt,url",
         ], cwd: nil, timeout: 60)
         guard r.status == 0 else { return .windowDropout }
         let view = try decode(RawView.self, r.stdout)
@@ -127,14 +153,7 @@ public final class GHCLIClient: GitHubClient {
         return value
     }
 
-    private static func detail(from view: RawView) -> PRDetail {
-        let threads = (view.reviewThreads ?? []).map { t -> GHReviewThread in
-            let first = t.comments?.first
-            return GHReviewThread(
-                path: t.path ?? "", line: t.line, author: first?.author.login ?? "",
-                body: first?.body ?? "", isResolved: t.isResolved
-            )
-        }
+    private static func detail(from view: RawView, threads: [GHReviewThread]) -> PRDetail {
         let approvals = (view.latestReviews ?? [])
             .filter { $0.state == "APPROVED" }
             .compactMap { rfc3339ms($0.submittedAt) }
@@ -172,19 +191,32 @@ private struct RawListPR: Decodable {
 }
 
 private struct RawView: Decodable {
-    struct Author: Decodable { let login: String }
     struct Review: Decodable { let state: String?; let submittedAt: String? }
-    struct Comment: Decodable { let author: Author; let body: String }
-    struct Thread: Decodable {
-        let isResolved: Bool
-        let path: String?
-        let line: Int?
-        let comments: [Comment]?
-    }
     let number: Int
     let reviewDecision: String?
     let state: String
     let mergedAt: String?
     let latestReviews: [Review]?
-    let reviewThreads: [Thread]?
+}
+
+/// `gh api graphql` reviewThreads payload (the GraphQL-only source for review
+/// threads, since `gh pr view --json` does not expose them).
+private struct RawThreadsGQL: Decodable {
+    let data: DataField
+    struct DataField: Decodable { let repository: Repo }
+    struct Repo: Decodable { let pullRequest: PullRequest }
+    struct PullRequest: Decodable { let reviewThreads: Threads }
+    struct Threads: Decodable { let nodes: [Node] }
+    struct Node: Decodable {
+        let isResolved: Bool
+        let path: String?
+        let line: Int?
+        let comments: Comments
+        struct Comments: Decodable { let nodes: [Comment] }
+        struct Comment: Decodable {
+            let body: String?
+            let author: Author?
+            struct Author: Decodable { let login: String? }
+        }
+    }
 }
