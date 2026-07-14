@@ -1,0 +1,12 @@
+name = "claudegotchi-server"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "claudegotchi"
+database_id = "REPLACE_WITH_D1_ID"
+migrations_dir = "migrations"
+
+[vars]
+GITHUB_CLIENT_ID = "REPLACE_WITH_GITHUB_CLIENT_ID"

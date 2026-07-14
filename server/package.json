@@ -1,0 +1,23 @@
+{
+  "name": "claudegotchi-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "migrate:local": "wrangler d1 migrations apply claudegotchi --local",
+    "migrate:remote": "wrangler d1 migrations apply claudegotchi --remote"
+  },
+  "dependencies": {
+    "hono": "^4.12.30"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^5.20260714.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.110.0"
+  }
+}
