@@ -36,6 +36,8 @@ final class AppServices: ObservableObject {
     let coordinator: FixCoordinator
     let midnight: MidnightDriver
     let tick: TickDriver
+    let leaderboard: LeaderboardService
+    let syncDriver: LeaderboardSyncDriver
 
     /// Thread-safe pause flag shared by both watchers (§7 pause semantics):
     /// while paused, synthetic PR nudges and hook events are still written and
@@ -92,10 +94,26 @@ final class AppServices: ObservableObject {
             config: config
         )
 
+        let resolvedLeaderboard = config.resolvedLeaderboard
+        let leaderboardClient = HTTPLeaderboardClient(
+            transport: URLSessionTransport(),
+            baseURL: URL(string: resolvedLeaderboard.baseURL)
+                ?? URL(string: ConfigYAML.placeholderLeaderboardBaseURL)!,
+            githubClientID: resolvedLeaderboard.githubClientID
+        )
+        leaderboard = leaderboardClient
+        let sync = LeaderboardSyncDriver(
+            db: db, service: leaderboardClient,
+            credentials: KeychainCredentialsStore(),
+            syncIntervalSeconds: resolvedLeaderboard.syncIntervalSeconds
+        )
+        syncDriver = sync
+
         let sharedDB2 = db
         midnight = MidnightDriver(db: db, config: config, onDeath: {
             try? HatchService.ensureAlive(sharedDB2, nowMs: Int64(Date().timeIntervalSince1970 * 1000))
             postPetDidChange()
+            Task { @MainActor in sync.syncNow() }
         })
 
         tick = TickDriver(db: db, applier: applier, config: config, pausedProvider: pausedRef)
@@ -112,10 +130,12 @@ final class AppServices: ObservableObject {
         watcher.start()
         midnight.start()
         tick.start()
+        syncDriver.start()
     }
 
     /// Spec §8: terminate every live fix child via its process group on quit.
     func terminate() {
+        syncDriver.stop()
         tick.stop()
         midnight.stop()
         watcher.stop()
@@ -257,8 +277,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             selection: holder,
             watcher: services.watcher,
             coordinator: services.coordinator,
+            syncDriver: services.syncDriver,
             db: services.db,
-            config: services.config
+            config: services.config,
+            leaderboard: services.leaderboard,
+            githubClientID: services.config.resolvedLeaderboard.githubClientID
         )
         let win = Glass.window(root, size: NSSize(width: 720, height: 600), title: "claudegotchi")
         win.makeKeyAndOrderFront(nil)
