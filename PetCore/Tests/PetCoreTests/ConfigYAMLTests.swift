@@ -45,4 +45,87 @@ final class ConfigYAMLTests: XCTestCase {
         XCTAssertEqual(cfg.work.pollIntervalSeconds, 90)
         XCTAssertEqual(cfg.work.fixPermissionMode, "acceptEdits")
     }
+
+    private func loadYAML(_ yaml: String) throws -> ConfigYAML {
+        let path = NSTemporaryDirectory() + "cfg-\(UUID()).yaml"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try yaml.write(toFile: path, atomically: true, encoding: .utf8)
+        return try ConfigYAML.load(from: URL(fileURLWithPath: path))
+    }
+
+    private var minimalConfigBody: String {
+        """
+        decay:
+          fullness_per_second: 0.0006
+          intimacy_per_second: 0.0003
+          stamina_regen_per_second: 0.0002
+        event_costs:
+          pre_tool_use_stamina: 0.5
+          pre_tool_use_stamina_sustained: 1.0
+          post_tool_use_fullness_per_2k_tokens: 1.0
+          post_tool_use_xp_per_200_tokens: 1.0
+          stop_intimacy: 0.5
+          pet_click_intimacy: 2.0
+        thresholds:
+          death_stat_low: 20
+          death_low_stats_required: 2
+          death_consecutive_days: 5
+          hibernation_after_seconds: 259200
+          pet_click_cooldown_seconds: 60
+          sustained_session_seconds: 1800
+          pre_tool_use_timeout_seconds: 300
+        spool:
+          rotate_when_bytes_exceed: 10485760
+          rotate_when_age_exceeds_seconds: 604800
+        work:
+          poll_interval_seconds: 90
+          pressure_busy_threshold: 1
+          pressure_stressed_threshold: 3
+          pr_approved_intimacy: 2.0
+          pr_merged_xp: 50
+          fix_timeout_seconds: 900
+          fix_permission_mode: acceptEdits
+          fix_allowed_tools: "Edit,Read,Write,Grep,Glob"
+          fix_disallowed_tools: "WebFetch,WebSearch"
+          fix_commit: true
+        """
+    }
+
+    func testExistingConfigWithoutLeaderboardStillDecodes() throws {
+        let cfg = try loadYAML(minimalConfigBody)
+        XCTAssertNil(cfg.leaderboard)
+        let resolved = cfg.resolvedLeaderboard
+        XCTAssertEqual(resolved.baseURL, ConfigYAML.placeholderLeaderboardBaseURL)
+        XCTAssertEqual(resolved.syncIntervalSeconds, 1800)
+        XCTAssertEqual(resolved.githubClientID, "")
+    }
+
+    func testLeaderboardSectionParsed() throws {
+        let yaml = minimalConfigBody + """
+
+        leaderboard:
+          base_url: "https://cg.example.dev"
+          sync_interval_seconds: 600
+          github_client_id: "Iv1.abc123"
+        """
+        let cfg = try loadYAML(yaml)
+        XCTAssertEqual(cfg.leaderboard?.baseURL, "https://cg.example.dev")
+        let resolved = cfg.resolvedLeaderboard
+        XCTAssertEqual(resolved.baseURL, "https://cg.example.dev")
+        XCTAssertEqual(resolved.syncIntervalSeconds, 600)
+        XCTAssertEqual(resolved.githubClientID, "Iv1.abc123")
+    }
+
+    func testLeaderboardPartialSectionUsesDefaults() throws {
+        let yaml = minimalConfigBody + """
+
+        leaderboard:
+          github_client_id: "Iv1.only"
+        """
+        let cfg = try loadYAML(yaml)
+        let resolved = cfg.resolvedLeaderboard
+        XCTAssertEqual(resolved.baseURL, ConfigYAML.placeholderLeaderboardBaseURL)
+        XCTAssertEqual(resolved.syncIntervalSeconds, 1800)
+        XCTAssertEqual(resolved.githubClientID, "Iv1.only")
+    }
 }

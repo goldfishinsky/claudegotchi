@@ -22,10 +22,49 @@ public struct GrowthEntry: Equatable {
     }
 }
 
+public struct BestSurvival: Equatable {
+    public let survivalMs: Int64
+    public let species: String
+    public let name: String?
+    public init(survivalMs: Int64, species: String, name: String?) {
+        self.survivalMs = survivalMs; self.species = species; self.name = name
+    }
+}
+
 public enum StatsQueries {
     public static func lifetimeTokens(_ db: DatabaseQueue) throws -> Int64 {
         try db.read {
             try Int64.fetchOne($0, sql: "SELECT COALESCE(SUM(tokens_in + tokens_out), 0) FROM daily_rollup") ?? 0
+        }
+    }
+
+    public static func lifetimeTokenSplit(_ db: DatabaseQueue) throws -> (tokensIn: Int64, tokensOut: Int64) {
+        try db.read { conn in
+            guard let row = try Row.fetchOne(conn, sql: """
+                SELECT COALESCE(SUM(tokens_in), 0) AS ti, COALESCE(SUM(tokens_out), 0) AS tout
+                FROM daily_rollup
+                """) else { return (0, 0) }
+            return (row["ti"], row["tout"])
+        }
+    }
+
+    public static func bestSurvivalMs(_ db: DatabaseQueue, nowMs: Int64) throws -> BestSurvival? {
+        let deadBest: BestSurvival? = try db.read { conn in
+            guard let row = try Row.fetchOne(conn, sql: """
+                SELECT species, name, (death_at - birthday) AS span
+                FROM pet WHERE death_at IS NOT NULL
+                ORDER BY span DESC LIMIT 1
+                """) else { return nil }
+            return BestSurvival(survivalMs: row["span"], species: row["species"], name: row["name"])
+        }
+        let aliveBest: BestSurvival? = try Pet.fetchAlive(from: db).map {
+            BestSurvival(survivalMs: max(0, nowMs - $0.birthday), species: $0.species, name: $0.name)
+        }
+        switch (deadBest, aliveBest) {
+        case let (d?, a?): return d.survivalMs >= a.survivalMs ? d : a
+        case let (d?, nil): return d
+        case let (nil, a?): return a
+        case (nil, nil): return nil
         }
     }
 

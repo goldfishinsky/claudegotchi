@@ -112,6 +112,42 @@ final class DatabaseTests: XCTestCase {
         XCTAssertTrue(tables.contains("model_usage"))
         XCTAssertEqual(try petColumns(db2).filter { $0 == "last_event_at" }.count, 1)
     }
+
+    func testV4AddsUidColumn() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        XCTAssertTrue(try petColumns(db).contains("uid"))
+    }
+
+    func testV4BackfillsUidOnExistingRows() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+
+        let queue = try DatabaseQueue(path: dbPath)
+        try Database.migrator.migrate(queue, upTo: "v3_pet_stats")
+        try queue.write { conn in
+            try conn.execute(sql: """
+                INSERT INTO pet (species, birthday, fullness, stamina, intimacy, xp, last_tick_at, last_event_at)
+                VALUES ('frog', 1000, 100, 100, 50, 0, 1000, 1000)
+                """)
+        }
+        XCTAssertFalse(try petColumns(queue).contains("uid"), "uid absent before v4")
+
+        try Database.migrator.migrate(queue)
+
+        let uid = try queue.read { try String.fetchOne($0, sql: "SELECT uid FROM pet") }
+        XCTAssertNotNil(uid, "existing row backfilled with a uid")
+        XCTAssertEqual(uid?.count, 26, "backfilled uid is a 26-char ULID")
+    }
+
+    func testHatchedPetHasUid() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        let pet = try HatchService.ensureAlive(db, nowMs: 1000)
+        XCTAssertEqual(pet.uid?.count, 26)
+    }
 }
 
 extension GRDB.Database {

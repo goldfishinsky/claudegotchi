@@ -93,6 +93,41 @@ final class StatsQueriesTests: XCTestCase {
         XCTAssertEqual(hist.first?.diedMs, 4000)
     }
 
+    func testLifetimeTokenSplit() throws {
+        try seedRollup("2026-06-01", tokensIn: 100, tokensOut: 200)
+        try seedRollup("2026-06-02", tokensIn: 10, tokensOut: 5)
+        let split = try StatsQueries.lifetimeTokenSplit(db)
+        XCTAssertEqual(split.tokensIn, 110)
+        XCTAssertEqual(split.tokensOut, 205)
+    }
+
+    func testLifetimeTokenSplitEmpty() throws {
+        let split = try StatsQueries.lifetimeTokenSplit(db)
+        XCTAssertEqual(split.tokensIn, 0)
+        XCTAssertEqual(split.tokensOut, 0)
+    }
+
+    func testBestSurvivalNilWhenNoPets() throws {
+        XCTAssertNil(try StatsQueries.bestSurvivalMs(db, nowMs: nowMs))
+    }
+
+    func testBestSurvivalDeadOnly() throws {
+        let dead = try Pet.insert(.fresh(species: "cat", at: 0), into: db)
+        try Pet.markDead(id: dead.id!, at: 3 * 86_400_000, in: db)
+        let best = try StatsQueries.bestSurvivalMs(db, nowMs: nowMs)
+        XCTAssertEqual(best?.survivalMs, 3 * 86_400_000)
+        XCTAssertEqual(best?.species, "cat")
+    }
+
+    func testBestSurvivalAliveBeatsDead() throws {
+        let dead = try Pet.insert(.fresh(species: "cat", at: 0), into: db)
+        try Pet.markDead(id: dead.id!, at: 2 * 86_400_000, in: db)
+        _ = try Pet.insert(.fresh(species: "frog", at: nowMs - 9 * 86_400_000), into: db)
+        let best = try StatsQueries.bestSurvivalMs(db, nowMs: nowMs)
+        XCTAssertEqual(best?.survivalMs, 9 * 86_400_000)
+        XCTAssertEqual(best?.species, "frog")
+    }
+
     func testGrowthHistoryHonorsLimitBeyondInlineCap() throws {
         // 25 dead pets; a limit above the inline cap (20) must return all of them
         // so the view can drive its own 查看全部 affordance instead of the SQL LIMIT.

@@ -8,7 +8,7 @@ public enum Database {
         return queue
     }
 
-    private static var migrator: DatabaseMigrator {
+    static var migrator: DatabaseMigrator {
         var m = DatabaseMigrator()
         m.registerMigration("v1_initial_schema") { db in
             try db.execute(sql: """
@@ -133,6 +133,13 @@ public enum Database {
                   calls INTEGER NOT NULL DEFAULT 0
                 );
                 """)
+        }
+        m.registerMigration("v4_leaderboard") { db in
+            try db.execute(sql: "ALTER TABLE pet ADD COLUMN uid TEXT;")
+            let ids = try Int64.fetchAll(db, sql: "SELECT id FROM pet WHERE uid IS NULL")
+            for id in ids {
+                try db.execute(sql: "UPDATE pet SET uid = ? WHERE id = ?", arguments: [ULID.generate(), id])
+            }
         }
         return m
     }

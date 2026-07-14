@@ -7,6 +7,7 @@ public struct ConfigYAML: Codable, Equatable {
     public let thresholds: Thresholds
     public let spool: Spool
     public let work: Work
+    public let leaderboard: Leaderboard?
 
     enum CodingKeys: String, CodingKey {
         case decay
@@ -14,6 +15,7 @@ public struct ConfigYAML: Codable, Equatable {
         case thresholds
         case spool
         case work
+        case leaderboard
     }
 
     public struct Decay: Codable, Equatable {
@@ -97,6 +99,34 @@ public struct ConfigYAML: Codable, Equatable {
         }
     }
 
+    public struct Leaderboard: Codable, Equatable {
+        public let baseURL: String?
+        public let syncIntervalSeconds: Int?
+        public let githubClientID: String?
+        enum CodingKeys: String, CodingKey {
+            case baseURL = "base_url"
+            case syncIntervalSeconds = "sync_interval_seconds"
+            case githubClientID = "github_client_id"
+        }
+    }
+
+    public struct ResolvedLeaderboard: Equatable {
+        public let baseURL: String
+        public let syncIntervalSeconds: Int
+        public let githubClientID: String
+    }
+
+    // Placeholder until the production Worker domain is provisioned; override via config.yaml.
+    public static let placeholderLeaderboardBaseURL = "https://claudegotchi-api.example.workers.dev"
+
+    public var resolvedLeaderboard: ResolvedLeaderboard {
+        ResolvedLeaderboard(
+            baseURL: leaderboard?.baseURL ?? Self.placeholderLeaderboardBaseURL,
+            syncIntervalSeconds: leaderboard?.syncIntervalSeconds ?? 1800,
+            githubClientID: leaderboard?.githubClientID ?? ""
+        )
+    }
+
     public static func load(from url: URL) throws -> ConfigYAML {
         let raw = try String(contentsOf: url)
         return try YAMLDecoder().decode(ConfigYAML.self, from: raw)
@@ -122,6 +152,7 @@ public struct ConfigYAML: Codable, Equatable {
             fixTimeoutSeconds: 900, fixPermissionMode: "acceptEdits",
             fixAllowedTools: "Edit,Read,Write,Grep,Glob",
             fixDisallowedTools: "WebFetch,WebSearch", fixCommit: true
-        )
+        ),
+        leaderboard: nil
     )
 }
