@@ -35,6 +35,13 @@ public struct DailyRollup: Equatable {
                     tokens_out = tokens_out + ?
                 WHERE date = ?
                 """, arguments: [tokensIn, tokensOut, eventDate])
+        case .stop:
+            try conn.execute(sql: """
+                UPDATE daily_rollup
+                SET tokens_in = tokens_in + ?,
+                    tokens_out = tokens_out + ?
+                WHERE date = ?
+                """, arguments: [tokensIn, tokensOut, eventDate])
         default:
             break
         }

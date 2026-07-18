@@ -55,9 +55,11 @@ public enum SessionTracker {
         var result: [ActiveSession] = []
         for (sid, rows) in grouped {
             guard let start = rows.first(where: { $0.type == "session_start" }) else { continue }
-            let stoppedAfterStart = rows.contains { $0.type == "stop" && $0.ts >= start.ts }
-            if stoppedAfterStart { continue }
-            guard let last = rows.max(by: { $0.ts < $1.ts }) else { continue }
+            // Rows arrive ts ASC, id ASC. Claude emits `stop` once per turn, so a
+            // session is closed only when its most recent event is a stop; any
+            // later tool call means it resumed.
+            guard let last = rows.last else { continue }
+            if last.type == "stop" { continue }
             if last.ts < cutoff { continue }
 
             let cwd = last.cwd ?? start.cwd

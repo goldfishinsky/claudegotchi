@@ -92,4 +92,29 @@ final class EventTests: XCTestCase {
         let e = try Event.parse(json)
         XCTAssertEqual(e.type, .prMerged)
     }
+
+    func testDecodesUserPromptSubmitTypeAndPrompt() throws {
+        let json = #"{"schema_version":1,"event_id":"a","ts":0,"type":"user_prompt_submit","session_id":"s","prompt":"修复登录按钮"}"#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.type, .userPromptSubmit)
+        XCTAssertEqual(e.prompt, "修复登录按钮")
+        XCTAssertNil(e.tokensIn)
+        XCTAssertNil(e.model)
+    }
+
+    func testPromptRoundTripsAndIsOmittedWhenNil() throws {
+        let withPrompt = Event(
+            schemaVersion: 1, eventId: "a", ts: 0, type: .userPromptSubmit,
+            sessionId: "s", tool: nil, tokensIn: nil, tokensOut: nil, model: nil,
+            cwd: nil, prompt: "标题"
+        )
+        XCTAssertEqual(try Event.parse(try withPrompt.encodeJSON()).prompt, "标题")
+
+        let noPrompt = Event(
+            schemaVersion: 1, eventId: "b", ts: 0, type: .sessionStart,
+            sessionId: "s", tool: nil, tokensIn: nil, tokensOut: nil, model: nil
+        )
+        XCTAssertFalse(try noPrompt.encodeJSON().contains("prompt"), "nil prompt is omitted from JSON")
+        XCTAssertNil(try Event.parse(try noPrompt.encodeJSON()).prompt)
+    }
 }

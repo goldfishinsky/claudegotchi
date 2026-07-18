@@ -15,6 +15,7 @@ public enum HooksInstaller {
         ("PreToolUse", "pre_tool_use"),
         ("PostToolUse", "post_tool_use"),
         ("SessionStart", "session_start"),
+        ("UserPromptSubmit", "user_prompt_submit"),
         ("Stop", "stop"),
         ("Notification", "notification"),
     ]

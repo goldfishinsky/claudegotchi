@@ -44,6 +44,20 @@ final class DailyRollupTests: XCTestCase {
         XCTAssertEqual(row.messages, 2)
     }
 
+    func testStopAccumulatesTokensWithoutTouchingCounts() throws {
+        try db.write { conn in
+            try DailyRollup.upsert(eventDate: "2026-04-30", type: .postToolUse,
+                                   tokensIn: 100, tokensOut: 50, tool: "Bash", in: conn)
+            try DailyRollup.upsert(eventDate: "2026-04-30", type: .stop,
+                                   tokensIn: 300, tokensOut: 40, tool: nil, in: conn)
+        }
+        let row = try db.read { try DailyRollup.fetch(date: "2026-04-30", from: $0) }!
+        XCTAssertEqual(row.tokensIn, 400)
+        XCTAssertEqual(row.tokensOut, 90)
+        XCTAssertEqual(row.toolsUsed, 1, "stop must not increment tool/message counts")
+        XCTAssertEqual(row.messages, 1)
+    }
+
     func testMixedTypesIncrementCorrectColumns() throws {
         try db.write { conn in
             try DailyRollup.upsert(eventDate: "2026-04-30", type: .sessionStart, tokensIn: 0, tokensOut: 0, tool: nil, in: conn)

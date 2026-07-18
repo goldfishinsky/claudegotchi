@@ -42,7 +42,7 @@ public final class ApplyTransaction {
             // applier.apply + pet.update(conn) persist the full record; sync the
             // in-memory copy so that write does not clobber last_event_at back.
             pet.lastEventAt = max(pet.lastEventAt, event.ts)
-            if event.type == .postToolUse, let model = event.model {
+            if event.type == .postToolUse || event.type == .stop, let model = event.model {
                 try ModelUsageStore.bump(
                     model: model,
                     tokensIn: event.tokensIn ?? 0,

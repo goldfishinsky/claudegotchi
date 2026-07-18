@@ -55,6 +55,19 @@ final class SessionTrackerTests: XCTestCase {
         XCTAssertTrue(sessions.isEmpty)
     }
 
+    func testResumedAfterStopStaysActive() throws {
+        try insertEvent(id: "e1", type: "session_start", ts: 1000, sessionId: "s1", cwd: "/tmp/r")
+        try insertEvent(id: "e2", type: "post_tool_use", ts: 2000, sessionId: "s1", cwd: "/tmp/r", tool: "Bash")
+        try insertEvent(id: "e3", type: "stop", ts: 3000, sessionId: "s1", cwd: "/tmp/r")
+        try insertEvent(id: "e4", type: "pre_tool_use", ts: 4000, sessionId: "s1", cwd: "/tmp/r", tool: "Read")
+        let sessions = try SessionTracker.activeSessions(
+            db: db, nowMs: 4500, windowMs: window, repoPaths: []
+        )
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions[0].lastActivityMs, 4000)
+        XCTAssertEqual(sessions[0].lastTool, "Read")
+    }
+
     func testStaleActivityOutsideWindowExcluded() throws {
         try insertEvent(id: "e1", type: "session_start", ts: 0, sessionId: "s1", cwd: "/tmp/r")
         try insertEvent(id: "e2", type: "pre_tool_use", ts: 100, sessionId: "s1", cwd: "/tmp/r", tool: "Read")

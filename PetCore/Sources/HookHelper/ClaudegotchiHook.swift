@@ -10,7 +10,8 @@ struct ClaudegotchiHook {
         exit(run(args: CommandLine.arguments, stdin: stdin))
     }
 
-    static func run(args: [String], stdin: String?, spoolURL: URL = ClaudegotchiHook.spoolURL()) -> Int32 {
+    static func run(args: [String], stdin: String?, spoolURL: URL = ClaudegotchiHook.spoolURL(),
+                    cursorDir: URL = TranscriptTokens.defaultCursorDir()) -> Int32 {
         guard args.count >= 2 else { return 0 }
         let type = args[1]
         if rejectsRawType(type) { return 0 }
@@ -21,6 +22,20 @@ struct ClaudegotchiHook {
         }
 
         let extras = parsePayload(rawJSON)
+        var tokensIn = extras["tokens_in"] as? Int
+        var tokensOut = extras["tokens_out"] as? Int
+        var model = extras["model"] as? String
+        let prompt = type == "user_prompt_submit" ? promptTitle(from: extras["prompt"] as? String) : nil
+
+        if tokensIn == nil, tokensOut == nil, type == "stop",
+           let transcript = extras["transcript_path"] as? String,
+           let sid = extras["session_id"] as? String,
+           let delta = TranscriptTokens.delta(transcriptPath: transcript, sessionId: sid, cursorDir: cursorDir) {
+            tokensIn = delta.tokensIn
+            tokensOut = delta.tokensOut
+            if model == nil { model = delta.model }
+        }
+
         let event = Event(
             schemaVersion: 1,
             eventId: ULID.generate(),
@@ -28,10 +43,11 @@ struct ClaudegotchiHook {
             type: Event.EventType(rawValue: type) ?? .notification,
             sessionId: extras["session_id"] as? String,
             tool: extras["tool"] as? String,
-            tokensIn: extras["tokens_in"] as? Int,
-            tokensOut: extras["tokens_out"] as? Int,
-            model: extras["model"] as? String,
-            cwd: extras["cwd"] as? String
+            tokensIn: tokensIn,
+            tokensOut: tokensOut,
+            model: model,
+            cwd: extras["cwd"] as? String,
+            prompt: prompt
         )
 
         if let line = try? event.encodeJSON() {
@@ -47,10 +63,16 @@ struct ClaudegotchiHook {
         var out: [String: Any] = [:]
         if let v = obj["session_id"] { out["session_id"] = v }
         if let v = obj["cwd"] { out["cwd"] = v }
+        if let v = obj["prompt"] { out["prompt"] = v }
+        if let v = obj["transcript_path"] { out["transcript_path"] = v }
         if let v = obj["tool_name"] ?? obj["tool"] { out["tool"] = v }
         if let v = obj["model"] { out["model"] = v }
-        if let v = obj["tokens_in"] { out["tokens_in"] = v }
-        if let v = obj["tokens_out"] { out["tokens_out"] = v }
+        if let tokens = obj["tokens"] as? [String: Any] {
+            if let v = tokens["input"] { out["tokens_in"] = v }
+            if let v = tokens["output"] { out["tokens_out"] = v }
+        }
+        if out["tokens_in"] == nil, let v = obj["tokens_in"] { out["tokens_in"] = v }
+        if out["tokens_out"] == nil, let v = obj["tokens_out"] { out["tokens_out"] = v }
         return out
     }
 
@@ -60,6 +82,21 @@ struct ClaudegotchiHook {
 
     static func rejectsRawType(_ type: String) -> Bool {
         type.hasPrefix("pr_") || type.hasPrefix("pet_")
+    }
+
+    static let promptTitleMaxChars = 120
+
+    static func promptTitle(from raw: String?) -> String? {
+        guard let raw else { return nil }
+        let flattened = raw
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if flattened.isEmpty { return nil }
+        return flattened.count <= promptTitleMaxChars
+            ? flattened
+            : String(flattened.prefix(promptTitleMaxChars))
     }
 
     static func spoolURL() -> URL {

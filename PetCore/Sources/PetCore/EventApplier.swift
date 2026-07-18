@@ -50,17 +50,17 @@ public final class EventApplier {
             if let sid = event.sessionId, let tool = event.tool {
                 pending.removeValue(forKey: sid + "\u{1}" + tool)
             }
-            let total = Double(event.tokensTotal)
-            let fullnessBump = min(total / 2000.0 * config.eventCosts.postToolUseFullnessPer2kTokens, 5.0)
-            p.fullness = clamp(p.fullness + fullnessBump)
-            let xpGain = Int64((total / 200.0 * config.eventCosts.postToolUseXpPer200Tokens).rounded(.down))
-            p.xp += xpGain
+            feed(&p, tokensTotal: event.tokensTotal)
 
         case .stop:
             p.intimacy = clamp(p.intimacy + config.eventCosts.stopIntimacy)
+            feed(&p, tokensTotal: event.tokensTotal)
 
         case .petClick:
             p.intimacy = clamp(p.intimacy + config.eventCosts.petClickIntimacy)
+
+        case .userPromptSubmit:
+            break
 
         case .notification:
             break
@@ -89,6 +89,13 @@ public final class EventApplier {
             pending.removeValue(forKey: p.sessionId + "\u{1}" + p.tool)
         }
         return Array(expired)
+    }
+
+    private func feed(_ p: inout Pet, tokensTotal: Int) {
+        let total = Double(tokensTotal)
+        let fullnessBump = min(total / 2000.0 * config.eventCosts.postToolUseFullnessPer2kTokens, 5.0)
+        p.fullness = clamp(p.fullness + fullnessBump)
+        p.xp += Int64((total / 200.0 * config.eventCosts.postToolUseXpPer200Tokens).rounded(.down))
     }
 
     private func isSustained(sessionId: String, eventMs: Int64) -> Bool {

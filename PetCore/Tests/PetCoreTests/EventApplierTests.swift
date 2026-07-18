@@ -39,6 +39,16 @@ final class EventApplierTests: XCTestCase {
         XCTAssertEqual(next.fullness, 100)
     }
 
+    func testUserPromptSubmitLeavesPetUntouched() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 40; pet.stamina = 60; pet.intimacy = 70; pet.xp = 12
+        let next = applier.apply(event: evt(.userPromptSubmit, sessionId: "s1", ts: 5), to: pet)
+        XCTAssertEqual(next.fullness, 40, accuracy: 1e-9)
+        XCTAssertEqual(next.stamina, 60, accuracy: 1e-9)
+        XCTAssertEqual(next.intimacy, 70, accuracy: 1e-9)
+        XCTAssertEqual(next.xp, 12)
+    }
+
     func testPreToolUseDrainsStamina() {
         var pet = Pet.fresh(species: "frog", at: 0)
         pet.stamina = 50
@@ -51,6 +61,23 @@ final class EventApplierTests: XCTestCase {
         pet.intimacy = 10
         let next = applier.apply(event: evt(.stop), to: pet)
         XCTAssertEqual(next.intimacy, 10.5, accuracy: 1e-9)
+    }
+
+    func testStopWithTokensFeedsFullnessAndXP() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 50; pet.intimacy = 10
+        let next = applier.apply(event: evt(.stop, tokensIn: 1000, tokensOut: 1000), to: pet)
+        XCTAssertEqual(next.fullness, 51, accuracy: 1e-9, "turn tokens now feed fullness on stop")
+        XCTAssertEqual(next.xp, 10)
+        XCTAssertEqual(next.intimacy, 10.5, accuracy: 1e-9, "intimacy bump preserved")
+    }
+
+    func testStopWithoutTokensLeavesFullnessAndXP() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 50
+        let next = applier.apply(event: evt(.stop), to: pet)
+        XCTAssertEqual(next.fullness, 50, accuracy: 1e-9)
+        XCTAssertEqual(next.xp, 0)
     }
 
     func testSessionStartClearsHibernation() {

@@ -39,13 +39,15 @@ final class HooksInstallerTests: XCTestCase {
         return n
     }
 
-    func testFreshInstallWritesFiveTaggedLeaves() throws {
+    func testFreshInstallWritesSixTaggedLeaves() throws {
         try HooksInstaller.install(settingsPath: settings, hookBinaryPath: bin, nowISO: nowISO)
-        XCTAssertEqual(taggedLeafCount(try loadJSON()), 5)
+        XCTAssertEqual(taggedLeafCount(try loadJSON()), 6)
         let h = try hooks()
-        for key in ["PreToolUse", "PostToolUse", "SessionStart", "Stop", "Notification"] {
+        for key in ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop", "Notification"] {
             XCTAssertNotNil(h[key], "missing \(key)")
         }
+        let ups = (h["UserPromptSubmit"] as! [[String: Any]]).first!
+        XCTAssertNil(ups["matcher"], "UserPromptSubmit is a matcher-less event")
         let pre = (h["PreToolUse"] as! [[String: Any]]).first!
         XCTAssertEqual(pre["matcher"] as? String, "*")
         let ss = (h["SessionStart"] as! [[String: Any]]).first!
@@ -70,7 +72,7 @@ final class HooksInstallerTests: XCTestCase {
         XCTAssertEqual(root["model"] as? String, "opus", "foreign top-level key kept")
         let pre = (try hooks())["PreToolUse"] as! [[String: Any]]
         XCTAssertEqual(pre.count, 2, "foreign group kept; ours appended")
-        XCTAssertEqual(taggedLeafCount(root), 5)
+        XCTAssertEqual(taggedLeafCount(root), 6)
     }
 
     func testCorruptJSONRefused() throws {
@@ -83,14 +85,14 @@ final class HooksInstallerTests: XCTestCase {
     func testIdempotentNoDuplicate() throws {
         try HooksInstaller.install(settingsPath: settings, hookBinaryPath: bin, nowISO: nowISO)
         try HooksInstaller.install(settingsPath: settings, hookBinaryPath: bin, nowISO: nowISO)
-        XCTAssertEqual(taggedLeafCount(try loadJSON()), 5, "second install must not duplicate")
+        XCTAssertEqual(taggedLeafCount(try loadJSON()), 6, "second install must not duplicate")
     }
 
     func testReinstallUpdatesCommandInPlace() throws {
         try HooksInstaller.install(settingsPath: settings, hookBinaryPath: bin, nowISO: nowISO)
         let newBin = "/new/path/claudegotchi-hook"
         try HooksInstaller.install(settingsPath: settings, hookBinaryPath: newBin, nowISO: nowISO)
-        XCTAssertEqual(taggedLeafCount(try loadJSON()), 5)
+        XCTAssertEqual(taggedLeafCount(try loadJSON()), 6)
         let leaf = (((try hooks())["Stop"] as! [[String: Any]]).first!["hooks"] as! [[String: Any]]).first!
         XCTAssertTrue((leaf["command"] as! String).hasPrefix("'\(newBin)'"))
     }

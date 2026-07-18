@@ -172,6 +172,47 @@ final class ApplyTransactionTests: XCTestCase {
         XCTAssertEqual(try Pet.fetchAlive(from: db)!.lastEventAt, 5000)
     }
 
+    func testStopWithModelBumpsModelUsageAndRollupTokens() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let line = #"{"schema_version":1,"event_id":"01H0000000000000000000000A","ts":1714500000123,"type":"stop","session_id":"s","tokens_in":199,"tokens_out":38,"model":"claude-haiku-4-5-20251001"}"#
+        try atx.process(jsonLine: line)
+        try atx.process(jsonLine: line) // dedup: must not double-bank
+        let all = try ModelUsageStore.all(in: db)
+        XCTAssertEqual(all, [ModelUsage(model: "claude-haiku-4-5-20251001", tokensIn: 199, tokensOut: 38, calls: 1)])
+        let rollup = try db.read { try DailyRollup.fetch(date: LocalDay.key(unixMs: 1714500000123, timeZone: .current), from: $0) }!
+        XCTAssertEqual(rollup.tokensIn, 199)
+        XCTAssertEqual(rollup.tokensOut, 38)
+    }
+
+    func testUserPromptSubmitIsNoOpButBumpsLastEventAt() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let xpBefore = try Pet.fetchAlive(from: db)!.xp
+        let line = #"{"schema_version":1,"event_id":"01H0000000000000000000000A","ts":7000,"type":"user_prompt_submit","session_id":"s","cwd":"/w","prompt":"修复登录按钮样式"}"#
+        try atx.process(jsonLine: line)
+
+        let p = try Pet.fetchAlive(from: db)!
+        XCTAssertEqual(p.xp, xpBefore, "prompt submit does not feed the pet")
+        XCTAssertEqual(p.fullness, 100, accuracy: 1e-9)
+        XCTAssertEqual(p.stamina, 100, accuracy: 1e-9)
+        XCTAssertEqual(p.intimacy, 50, accuracy: 1e-9)
+        XCTAssertEqual(p.lastEventAt, 7000, "last_event_at still advances")
+        XCTAssertEqual(try ModelUsageStore.all(in: db).count, 0, "no model usage banked")
+
+        let rollup = try db.read {
+            try DailyRollup.fetch(date: LocalDay.key(unixMs: 7000, timeZone: .current), from: $0)
+        }!
+        XCTAssertEqual(rollup.sessions, 0)
+        XCTAssertEqual(rollup.messages, 0)
+        XCTAssertEqual(rollup.tokensIn, 0)
+        XCTAssertEqual(rollup.tokensOut, 0)
+        XCTAssertEqual(rollup.toolsUsed, 0)
+
+        let storedPrompt = try db.read {
+            try String.fetchOne($0, sql: "SELECT json_extract(payload, '$.prompt') FROM event LIMIT 1")
+        }
+        XCTAssertEqual(storedPrompt, "修复登录按钮样式", "prompt survives in payload for the title query")
+    }
+
     func testPostToolUseWithoutModelSkipsModelUsage() throws {
         let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
         try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))
