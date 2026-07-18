@@ -3,6 +3,7 @@ import XCTest
 
 final class PixelSpriteTests: XCTestCase {
     let anims = ["idle", "happy", "sick", "sleeping"]
+    let stageIds = ["baby", "child", "adult"]
 
     func testCatalogHasFourKnownIds() {
         XCTAssertEqual(Set(PixelSpeciesCatalog.ids), ["frog", "slime", "cat", "dragon"])
@@ -16,6 +17,29 @@ final class PixelSpriteTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(frames?.count ?? 0, 1)
             }
         }
+    }
+
+    func testEveryStageHasEveryAnimation() {
+        for def in PixelSpeciesCatalog.all {
+            for stage in stageIds {
+                for anim in anims {
+                    let frames = def.frames["\(stage)/\(anim)"]
+                    XCTAssertNotNil(frames, "\(def.id) missing \(stage)/\(anim)")
+                    XCTAssertGreaterThanOrEqual(frames?.count ?? 0, 1)
+                }
+            }
+        }
+    }
+
+    /// Mirrors PixelPetView.framesFor: "<stage>/<anim>" → "<anim>" → "idle".
+    func testStageKeyFallbackChain() {
+        func lookup(_ def: PixelSpeciesDef, _ stage: String, _ anim: String) -> [PixelFrame]? {
+            def.frames["\(stage)/\(anim)"] ?? def.frames[anim] ?? def.frames["idle"]
+        }
+        let frog = PixelSpeciesCatalog.def("frog")!
+        XCTAssertNotNil(lookup(frog, "adult", "happy"), "direct stage key resolves")
+        XCTAssertNotNil(lookup(frog, "unknown-stage", "happy"), "falls back to plain anim")
+        XCTAssertNotNil(lookup(frog, "unknown-stage", "unknown-anim"), "falls back to idle")
     }
 
     func testEveryFrameIs16x16WithInRangeIndices() {
@@ -35,6 +59,11 @@ final class PixelSpriteTests: XCTestCase {
 
     func testPaletteIndexZeroIsTransparent() {
         XCTAssertEqual(PixelSpeciesCatalog.palette[0] & 0xFF00_0000, 0, "index 0 alpha = 0")
+    }
+
+    func testPaletteWithinCapAndOutlineIsWarmBrown() {
+        XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 32)
+        XCTAssertEqual(PixelSpeciesCatalog.palette[1], 0xFF3A_2E28, "index 1 warm-brown outline")
     }
 
     func testDefLookupAndUnknownNil() {
