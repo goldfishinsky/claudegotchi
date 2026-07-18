@@ -17,6 +17,20 @@ final class PetPanelModel: ObservableObject {
     @Published private(set) var activity: String = "空闲"
     @Published private(set) var hasPet: Bool = false
 
+    // Theater inputs, refreshed alongside the vitals; the theater clock itself
+    // runs per-frame client-side. Ages are stamped against `nowMs` at read time.
+    private var workingCount = 0
+    private var lastTokenStopMs: Int64?
+    private var lastTokenStopTokens: Int64 = 0
+    private var lastPrEventMs: Int64?
+    private var lastClickMs: Int64?
+    private var lastEventMs: Int64?
+    private var hungry = false
+    private var isSick = false
+    private var isHibernating = false
+
+    var systemMemPressure: (@MainActor () -> MemPressureTier?)?
+
     private let db: DatabaseQueue
     private let config: ConfigYAML
     private let sessionWindowMs: Int64
@@ -69,7 +83,28 @@ final class PetPanelModel: ObservableObject {
         let recent = sessions.max(by: { $0.lastActivityMs < $1.lastActivityMs })
 
         let tier = WorkPressure.tier((try? PRStore.allPRs(in: db)) ?? [], config: config)
-        visual = PetMood.derive(pet: pet, pressure: tier)
+        let base = PetMood.derive(pet: pet, pressure: tier)
+
+        workingCount = sessions.filter {
+            $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
+        }.count
+        let tokenStop = try? TheaterQueries.latestTokenStop(db, sinceMs: nowMs - PetTheater.eatWindowMs)
+        lastTokenStopMs = (tokenStop ?? nil)?.ts
+        lastTokenStopTokens = (tokenStop ?? nil)?.tokens ?? 0
+        lastPrEventMs = (try? TheaterQueries.latestPRCelebrationMs(db, sinceMs: nowMs - 120_000)) ?? nil
+        lastClickMs = (try? TheaterQueries.latestClickMs(db)) ?? nil
+        lastEventMs = (try? TheaterQueries.latestEventMs(db)) ?? nil
+        hungry = pet.fullness < 30
+        isSick = base.animation == .sick
+        isHibernating = pet.hibernationSince != nil
+        if let mem = systemMemPressure?() {
+            visual = PetVisual(
+                stage: base.stage, animation: base.animation,
+                overlay: SystemMood.combine(base: base.overlay, mem: mem)
+            )
+        } else {
+            visual = base
+        }
 
         if pet.hibernationSince != nil {
             activity = "💤 休眠中"
@@ -78,6 +113,23 @@ final class PetPanelModel: ObservableObject {
         } else {
             activity = "空闲"
         }
+    }
+
+    func makeSignals(memPressureHigh: Bool) -> TheaterSignals {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let drop = lastTokenStopMs.map { TokenDrop(tokens: lastTokenStopTokens, ageMs: nowMs - $0) }
+        let idleSeconds = lastEventMs.map { Double(max(0, nowMs - $0)) / 1000 } ?? .greatestFiniteMagnitude
+        return TheaterSignals(
+            workingAgentCount: workingCount,
+            recentTokenDrop: drop,
+            prCelebration: lastPrEventMs != nil,
+            idleSeconds: idleSeconds,
+            hibernating: isHibernating,
+            sick: isSick,
+            hungry: hungry,
+            memPressureHigh: memPressureHigh,
+            recentClickAgeMs: lastClickMs.map { nowMs - $0 }
+        )
     }
 
     func handlePetClick() {

@@ -94,39 +94,43 @@ final class HooksInstallModel: ObservableObject {
 struct HooksInstallView: View {
     @StateObject private var model = HooksInstallModel()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let t = WarmTheme(scheme: scheme)
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("Claude Code 钩子")
-                    .font(.headline)
+                    .font(WFont.title).foregroundStyle(t.inkStrong)
                 Spacer()
                 Text(model.statusText)
-                    .font(.caption)
-                    .foregroundStyle(model.status == .installed ? .green : .secondary)
+                    .font(WFont.caption)
+                    .foregroundStyle(model.status == .installed ? t.good : t.inkFaint)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
 
             Text("安装后，Claude Code 的使用会喂养宠物。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(WFont.body)
+                .foregroundStyle(t.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 Button(model.status == .notInstalled ? "安装钩子" : "重新安装") {
                     model.install()
                 }
+                .buttonStyle(WarmButtonStyle(prominent: true))
                 .disabled(!model.helperAvailable)
 
                 Button("卸载") { model.uninstall() }
+                    .buttonStyle(WarmButtonStyle())
                     .disabled(model.status == .notInstalled)
             }
 
             if let err = model.lastError {
                 Text(err)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
+                    .font(WFont.caption)
+                    .foregroundStyle(t.danger)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -134,11 +138,13 @@ struct HooksInstallView: View {
             HStack {
                 Spacer()
                 Button("完成") { dismiss() }
+                    .buttonStyle(WarmButtonStyle())
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
         .frame(width: 320)
+        .background(t.windowFill.ignoresSafeArea())
         .onAppear { model.refresh() }
     }
 }

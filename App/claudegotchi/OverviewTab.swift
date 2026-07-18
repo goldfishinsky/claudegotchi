@@ -3,18 +3,27 @@ import GRDB
 import PetCore
 
 private struct MetricCard: View {
+    let symbol: String
+    let colors: [Color]
     let title: String
     let value: String
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundColor(.secondary)
-                .lineLimit(1).truncationMode(.tail)
-            Text(value).font(.title3.monospacedDigit().weight(.semibold))
-                .lineLimit(1).minimumScaleFactor(0.6)
+        let t = WarmTheme(scheme: scheme)
+        return SoftCard(fill: t.cardFill, cornerRadius: 16, padding: 12, shadow: t.cardShadow) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    CandyIcon(symbol: symbol, colors: colors, size: 14)
+                        .frame(width: 18, alignment: .center)
+                    Text(title).font(WFont.section).foregroundStyle(t.ink)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                Text(value).font(WFont.metric).monospacedDigit().foregroundStyle(t.inkStrong)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+            }
+            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
     }
 }
 
@@ -31,24 +40,26 @@ struct OverviewTab: View {
     @State private var ageDays: Int = 0
     @State private var heatNowMs: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
     @State private var heatTZ: TimeZone = .current
+    @Environment(\.colorScheme) private var scheme
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+        let t = WarmTheme(scheme: scheme)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
                 LazyVGrid(columns: columns, spacing: 10) {
-                    MetricCard(title: "总token", value: TokenFormat.compact(lifetime))
-                    MetricCard(title: "今日token", value: TokenFormat.compact(todayTokens))
-                    MetricCard(title: "今日会话", value: PRTabFormat.cappedCount(todaySessions))
-                    MetricCard(title: "今日工具", value: PRTabFormat.cappedCount(todayTools))
-                    MetricCard(title: "当前等级", value: "Lv \(level)")
-                    MetricCard(title: "活跃天数", value: "\(streak)")
-                    MetricCard(title: "单日峰值token", value: TokenFormat.compact(peak))
-                    MetricCard(title: "宠物年龄(天)", value: "\(ageDays)")
+                    MetricCard(symbol: "infinity", colors: Candy.amber, title: "总token", value: TokenFormat.compact(lifetime))
+                    MetricCard(symbol: "bolt.fill", colors: Candy.amber, title: "今日token", value: TokenFormat.compact(todayTokens))
+                    MetricCard(symbol: "bubble.left.and.bubble.right.fill", colors: Candy.sky, title: "今日会话", value: PRTabFormat.cappedCount(todaySessions))
+                    MetricCard(symbol: "wrench.and.screwdriver.fill", colors: Candy.teal, title: "今日工具", value: PRTabFormat.cappedCount(todayTools))
+                    MetricCard(symbol: "star.fill", colors: Candy.xp, title: "当前等级", value: "Lv \(level)")
+                    MetricCard(symbol: "flame.fill", colors: Candy.coral, title: "活跃天数", value: "\(streak)")
+                    MetricCard(symbol: "chart.line.uptrend.xyaxis", colors: Candy.violet, title: "单日峰值token", value: TokenFormat.compact(peak))
+                    MetricCard(symbol: "birthday.cake.fill", colors: Candy.rose, title: "宠物年龄(天)", value: "\(ageDays)")
                 }
 
-                Text("贡献热力图").font(.caption).foregroundColor(.secondary)
+                Text("贡献热力图").font(WFont.section).foregroundStyle(t.ink)
                 HeatmapView(db: db, weeks: 53, nowMs: heatNowMs, tz: heatTZ)
             }
             .padding(16)

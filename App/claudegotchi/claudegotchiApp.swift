@@ -38,6 +38,7 @@ final class AppServices: ObservableObject {
     let tick: TickDriver
     let leaderboard: LeaderboardService
     let syncDriver: LeaderboardSyncDriver
+    let systemStats: SystemStatsDriver
 
     /// Thread-safe pause flag shared by both watchers (§7 pause semantics):
     /// while paused, synthetic PR nudges and hook events are still written and
@@ -117,6 +118,8 @@ final class AppServices: ObservableObject {
         })
 
         tick = TickDriver(db: db, applier: applier, config: config, pausedProvider: pausedRef)
+
+        systemStats = SystemStatsDriver()
     }
 
     /// Order matters: reconcile stale/queued fix jobs (and clean their worktrees)
@@ -161,9 +164,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var statsSelection: StatsSelection?
     private var statusItem: NSStatusItem?
-    private var popover: NSPopover?
+    private var dropdown: MenuDropdownController?
     private var workPanelModel: WorkPanelModel?
     private var petPanelModel: PetPanelModel?
+    private var agentActivityModel: AgentActivityModel?
     private var panelRefreshTimer: Timer?
     private var iconTimer: Timer?
     private var petChangeObserver: NSObjectProtocol?
@@ -179,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelRefreshTimer?.invalidate()
         iconTimer?.invalidate()
         if let petChangeObserver { NotificationCenter.default.removeObserver(petChangeObserver) }
+        dropdown?.hide()
         services?.terminate()
     }
 
@@ -188,29 +193,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let model = WorkPanelModel(db: services.db, config: services.config)
         workPanelModel = model
         let petModel = PetPanelModel(db: services.db, config: services.config)
+        let statsDriver = services.systemStats
+        petModel.systemMemPressure = { [weak statsDriver] in
+            guard let statsDriver, statsDriver.isRunning else { return nil }
+            return statsDriver.snapshot?.memPressure
+        }
         petPanelModel = petModel
+        let agentModel = AgentActivityModel(db: services.db)
+        agentActivityModel = agentModel
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = ""
-        item.button?.action = #selector(togglePopover(_:))
+        item.button?.action = #selector(toggleDropdown(_:))
         item.button?.target = self
         statusItem = item
 
-        let pop = NSPopover()
-        pop.behavior = .transient
-        pop.contentSize = NSSize(width: 276, height: 460)
-        pop.contentViewController = NSHostingController(
-            rootView: UnifiedDropdown(
+        dropdown = MenuDropdownController(driver: statsDriver) {
+            AnyView(DropdownCard(
                 petModel: petModel,
                 workModel: model,
+                agentModel: agentModel,
                 services: services,
+                driver: statsDriver,
                 onOpenStats: { [weak self] in
-                    self?.popover?.performClose(nil)
+                    self?.dropdown?.hide()
                     self?.openStats(services, select: .overview)
                 }
-            )
-        )
-        popover = pop
+            ))
+        }
 
         refreshPanels()
         redrawStatusIcon()
@@ -242,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let services = services else { return }
         workPanelModel?.refresh(firstPollComplete: services.watcher.snapshot.firstPollComplete)
         petPanelModel?.refresh()
+        agentActivityModel?.refresh()
     }
 
     private func redrawStatusIcon() {
@@ -254,14 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.button?.image = image
     }
 
-    @objc private func togglePopover(_ sender: Any?) {
-        guard let pop = popover, let button = statusItem?.button else { return }
-        if pop.isShown {
-            pop.performClose(sender)
-        } else {
-            refreshPanels()
-            pop.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        }
+    @objc private func toggleDropdown(_ sender: Any?) {
+        guard let dropdown, let button = statusItem?.button else { return }
+        if !dropdown.isVisible { refreshPanels() }
+        dropdown.toggle(relativeTo: button)
     }
 
     private func openStats(_ services: AppServices, select tab: StatsTab) {
@@ -287,49 +294,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = win
-    }
-}
-
-/// The unified menu-bar dropdown: pet status panel on top, the existing work
-/// section (scroll-capped so NSPopover's hard clip can't hide it), and a pinned
-/// footer outside the scroll holding the single open affordance + the §7 pause
-/// toggle (the thing that mutates `AppServices.paused`, read via `pausedProvider`).
-private struct UnifiedDropdown: View {
-    @ObservedObject var petModel: PetPanelModel
-    @ObservedObject var workModel: WorkPanelModel
-    @ObservedObject var services: AppServices
-    var onOpenStats: () -> Void
-
-    var body: some View {
-        VStack(spacing: 12) {
-            PetPanelView(model: petModel)
-            GroupCard {
-                ScrollView { WorkPanelView(model: workModel) }
-                    .frame(maxHeight: 118)
-            }
-            footer
-        }
-        .padding(14)
-        .frame(width: 276)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Button(action: onOpenStats) {
-                Text("打开统计").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-
-            Toggle(isOn: Binding(
-                get: { services.paused },
-                set: { services.setPaused($0) }
-            )) {
-                Text("暂停").font(.caption)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .fixedSize()
-        }
     }
 }

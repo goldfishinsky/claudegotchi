@@ -3,7 +3,7 @@ import AppKit
 import GRDB
 import PetCore
 
-private enum PixelPalette {
+enum PixelPalette {
     static func rgba(_ argb: UInt32) -> (r: Double, g: Double, b: Double, a: Double) {
         let a = Double((argb >> 24) & 0xFF) / 255.0
         let r = Double((argb >> 16) & 0xFF) / 255.0
@@ -21,26 +21,31 @@ private enum PixelPalette {
 
 private func framesFor(visual: PetVisual, species: String) -> [PixelFrame]? {
     guard let def = PixelSpeciesCatalog.def(species) else { return nil }
-    return def.frames[visual.animation.rawValue] ?? def.frames["idle"]
+    let anim = visual.animation.rawValue
+    return def.frames["\(visual.stage)/\(anim)"] ?? def.frames[anim] ?? def.frames["idle"]
 }
 
 struct PixelPetView: View {
     let visual: PetVisual
     let species: String
+    let animationSpeed: Double
     var onTap: (() -> Void)?
 
     @State private var frameIndex = 0
 
-    init(visual: PetVisual, species: String, onTap: (() -> Void)? = nil) {
+    init(visual: PetVisual, species: String, animationSpeed: Double = 1.0, onTap: (() -> Void)? = nil) {
         self.visual = visual
         self.species = species
+        self.animationSpeed = animationSpeed
         self.onTap = onTap
     }
 
     private var frames: [PixelFrame]? { framesFor(visual: visual, species: species) }
 
+    private var frameInterval: Double { 0.8 / max(0.1, animationSpeed) }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.8)) { context in
+        TimelineView(.periodic(from: .now, by: frameInterval)) { context in
             Canvas { ctx, size in
                 draw(in: &ctx, size: size, tickCount: tickCount(context.date))
             }
@@ -50,7 +55,7 @@ struct PixelPetView: View {
     }
 
     private func tickCount(_ date: Date) -> Int {
-        Int(date.timeIntervalSinceReferenceDate / 0.8)
+        Int(date.timeIntervalSinceReferenceDate / frameInterval)
     }
 
     private func draw(in ctx: inout GraphicsContext, size: CGSize, tickCount: Int) {

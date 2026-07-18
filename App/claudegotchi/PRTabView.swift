@@ -104,6 +104,7 @@ struct PRWorktableTab: View {
     @State private var history: [FixJob] = []
     @State private var logViewerJob: FixJob?
     @State private var scope: PRScope = .mine
+    @Environment(\.colorScheme) private var scheme
 
     private var scoped: [PR] {
         switch scope {
@@ -123,10 +124,9 @@ struct PRWorktableTab: View {
     private var pendingCount: Int { PRTabFormat.pendingCount(scoped) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             header
             content
-            Divider()
             fixHistorySection
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -139,19 +139,16 @@ struct PRWorktableTab: View {
 
     @ViewBuilder
     private var header: some View {
+        let t = WarmTheme(scheme: scheme)
         HStack {
-            Text("工作台").font(.headline)
+            Text("工作台").font(WFont.title).foregroundStyle(t.inkStrong)
             Spacer()
             if pendingCount > 0 {
                 Text("\(PRTabFormat.cappedCount(pendingCount)) 待处理")
-                    .font(.caption).foregroundColor(.orange)
+                    .font(WFont.section).foregroundStyle(t.accent)
             }
         }
-        Picker("", selection: $scope) {
-            ForEach(PRScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        WarmSegmented(selection: $scope, items: PRScope.allCases.map { ($0, $0.rawValue) })
         ForEach(erroredRepos, id: \.self) { slug in
             errorBanner(slug: slug)
         }
@@ -165,29 +162,33 @@ struct PRWorktableTab: View {
 
     @ViewBuilder
     private func errorBanner(slug: String) -> some View {
+        let t = WarmTheme(scheme: scheme)
         let status = watcher.snapshot.perRepoStatus[slug]
-        HStack(spacing: 6) {
-            Text("⚠️").font(.caption)
-            if watcher.snapshot.ghUnavailable {
-                Text("gh 未安装或未登录").font(.caption)
-            } else {
-                Text("\(slug)：\(PRTabFormat.lastUpdatedLabel(status?.lastSuccessAtMs))")
-                    .font(.caption).lineLimit(1).truncationMode(.middle)
+        SoftCard(fill: t.highlight, cornerRadius: 10, padding: 8, shadow: .clear) {
+            HStack(spacing: 6) {
+                Text("⚠️").font(WFont.caption)
+                if watcher.snapshot.ghUnavailable {
+                    Text("gh 未安装或未登录").font(WFont.caption).foregroundStyle(t.inkStrong)
+                } else {
+                    Text("\(slug)：\(PRTabFormat.lastUpdatedLabel(status?.lastSuccessAtMs))")
+                        .font(WFont.caption).foregroundStyle(t.inkStrong)
+                        .lineLimit(1).truncationMode(.middle)
+                }
             }
         }
-        .padding(.vertical, 2)
     }
 
     @ViewBuilder
     private var content: some View {
+        let t = WarmTheme(scheme: scheme)
         if !watcher.snapshot.firstPollComplete && prs.isEmpty {
             loadingState
         } else if scoped.isEmpty {
             emptyState
         } else if pendingCount == 0 {
             // All-clear: no attention PRs, but non-attention status rows may exist.
-            VStack(alignment: .leading, spacing: 6) {
-                Text("✅ 全部清空").font(.subheadline).foregroundColor(.green)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("✅ 全部清空").font(WFont.title).foregroundStyle(t.good)
                 prList
             }
         } else {
@@ -204,27 +205,30 @@ struct PRWorktableTab: View {
     }
 
     private var loadingState: some View {
-        HStack { ProgressView().controlSize(.small); Text("正在加载…").foregroundColor(.secondary) }
+        let t = WarmTheme(scheme: scheme)
+        return HStack { ProgressView().controlSize(.small); Text("正在加载…").font(WFont.body).foregroundStyle(t.inkFaint) }
             .frame(maxWidth: .infinity, alignment: .center).padding()
     }
 
     private var emptyState: some View {
-        Text(emptyMessage).font(.callout).foregroundColor(.secondary)
+        let t = WarmTheme(scheme: scheme)
+        return Text(emptyMessage).font(WFont.body).foregroundStyle(t.inkFaint)
             .frame(maxWidth: .infinity, alignment: .center).padding()
     }
 
     private var prList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
+        let t = WarmTheme(scheme: scheme)
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
                 ForEach(grouped, id: \.slug) { group in
-                    Text(group.slug).font(.caption.bold()).foregroundColor(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
+                    Text(group.slug).font(WFont.section).foregroundStyle(t.ink)
+                        .lineLimit(1).truncationMode(.middle).padding(.top, 2)
                     ForEach(Array(group.rows.prefix(PRTabFormat.rowWindowCap)), id: \.id) { pr in
-                        prRow(pr)
+                        prRow(pr, t)
                     }
                     if group.rows.count > PRTabFormat.rowWindowCap {
                         Text("… 还有 \(group.rows.count - PRTabFormat.rowWindowCap) 个")
-                            .font(.caption).foregroundColor(.secondary)
+                            .font(WFont.caption).foregroundStyle(t.inkFaint)
                     }
                 }
             }
@@ -234,17 +238,20 @@ struct PRWorktableTab: View {
     }
 
     @ViewBuilder
-    private func prRow(_ pr: PR) -> some View {
+    private func prRow(_ pr: PR, _ t: WarmTheme) -> some View {
         let chip = PRStatusChip.from(isDraft: pr.isDraft, reviewDecision: pr.reviewDecision, state: pr.state)
-        HStack(spacing: 8) {
-            Text("#\(pr.number)").font(.caption.monospaced()).foregroundColor(.secondary)
-            Text(pr.title).lineLimit(1).truncationMode(.tail)
-            Spacer()
-            Text("\(chip.symbol) \(chip.label)").font(.caption)
-            if pr.unresolvedCount > 0 {
-                Text("💬\(PRTabFormat.cappedCount(pr.unresolvedCount))").font(.caption)
+        SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            HStack(spacing: 8) {
+                Text("#\(pr.number)").font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                Text(pr.title).font(WFont.label).foregroundStyle(t.inkStrong)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer()
+                Text("\(chip.symbol) \(chip.label)").font(WFont.caption).foregroundStyle(t.ink)
+                if pr.unresolvedCount > 0 {
+                    Text("💬\(PRTabFormat.cappedCount(pr.unresolvedCount))").font(WFont.caption).foregroundStyle(t.accent)
+                }
+                fixButton(pr)
             }
-            fixButton(pr)
         }
     }
 
@@ -252,7 +259,7 @@ struct PRWorktableTab: View {
     private func fixButton(_ pr: PR) -> some View {
         let disabledReason = fixDisabledReason(pr)
         Button("修复") { startFix(pr) }
-            .controlSize(.small)
+            .buttonStyle(WarmButtonStyle())
             .disabled(disabledReason != nil)
             .help(disabledReason ?? "运行 Claude 修复评审反馈")
     }
@@ -286,14 +293,15 @@ struct PRWorktableTab: View {
 
     @ViewBuilder
     private var fixHistorySection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("修复任务").font(.caption.bold()).foregroundColor(.secondary)
+        let t = WarmTheme(scheme: scheme)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("修复任务").font(WFont.section).foregroundStyle(t.ink)
             if history.isEmpty {
-                Text("暂无修复任务").font(.caption).foregroundColor(.secondary)
+                Text("暂无修复任务").font(WFont.body).foregroundStyle(t.inkFaint)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(history, id: \.id) { job in fixJobRow(job) }
+                        ForEach(history, id: \.id) { job in fixJobRow(job, t) }
                     }
                     .padding(.vertical, 2)
                 }
@@ -303,49 +311,51 @@ struct PRWorktableTab: View {
     }
 
     @ViewBuilder
-    private func fixJobRow(_ job: FixJob) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text(PRTabFormat.jobStateChip(job.state)).font(.caption)
-                Text("#\(job.prNumber)").font(.caption.monospaced()).foregroundColor(.secondary)
-                Text(job.repoSlug).font(.caption).foregroundColor(.secondary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer()
-                if job.state == .running, let id = job.id, let p = coordinator.progress[id] {
-                    if let tool = p.tool {
-                        Text(tool).font(.caption2).lineLimit(1).truncationMode(.tail)
-                    }
-                    let tok = PRTabFormat.tokenLabel(p.tokens)
-                    if !tok.isEmpty { Text(tok).font(.caption2).foregroundColor(.secondary) }
-                    Button("取消") { coordinator.cancel(jobId: id) }.controlSize(.mini)
-                }
-                if job.logPath != nil {
-                    Button("log") { logViewerJob = job }.controlSize(.mini)
-                }
-            }
-            HStack(spacing: 8) {
-                Text("开始：\(PRTabFormat.timeLabel(job.startedAt))")
-                    .font(.caption2).foregroundColor(.secondary)
-                if let ended = job.endedAt {
-                    Text("结束：\(PRTabFormat.timeLabel(ended))")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-            }
-            if job.state == .succeeded {
-                if let sha = job.commitSha {
-                    Text("提交 \(sha.prefix(8))").font(.caption2).foregroundColor(.secondary)
-                }
-                Text(FixRunner.integrationCommand(number: job.prNumber, headBranch: branch(for: job)))
-                    .font(.caption2.monospaced()).foregroundColor(.secondary)
-                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                if let wt = job.worktreePath {
-                    Text(wt).font(.caption2).foregroundColor(.secondary)
+    private func fixJobRow(_ job: FixJob, _ t: WarmTheme) -> some View {
+        SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(PRTabFormat.jobStateChip(job.state)).font(WFont.caption).foregroundStyle(t.ink)
+                    Text("#\(job.prNumber)").font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                    Text(job.repoSlug).font(WFont.caption).foregroundStyle(t.inkFaint)
                         .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    if job.state == .running, let id = job.id, let p = coordinator.progress[id] {
+                        if let tool = p.tool {
+                            Text(tool).font(WFont.caption).foregroundStyle(t.ink).lineLimit(1).truncationMode(.tail)
+                        }
+                        let tok = PRTabFormat.tokenLabel(p.tokens)
+                        if !tok.isEmpty { Text(tok).font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint) }
+                        Button("取消") { coordinator.cancel(jobId: id) }.controlSize(.mini)
+                    }
+                    if job.logPath != nil {
+                        Button("log") { logViewerJob = job }.controlSize(.mini)
+                    }
                 }
-            }
-            if let err = job.error {
-                Text(LogRedactor.redact(err)).font(.caption2).foregroundColor(.red)
-                    .lineLimit(2).truncationMode(.tail)
+                HStack(spacing: 8) {
+                    Text("开始：\(PRTabFormat.timeLabel(job.startedAt))")
+                        .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                    if let ended = job.endedAt {
+                        Text("结束：\(PRTabFormat.timeLabel(ended))")
+                            .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                    }
+                }
+                if job.state == .succeeded {
+                    if let sha = job.commitSha {
+                        Text("提交 \(sha.prefix(8))").font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                    }
+                    Text(FixRunner.integrationCommand(number: job.prNumber, headBranch: branch(for: job)))
+                        .font(.system(size: 9.5, design: .monospaced)).foregroundStyle(t.inkFaint)
+                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                    if let wt = job.worktreePath {
+                        Text(wt).font(WFont.caption).foregroundStyle(t.inkFaint)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                if let err = job.error {
+                    Text(LogRedactor.redact(err)).font(WFont.caption).foregroundStyle(t.danger)
+                        .lineLimit(2).truncationMode(.tail)
+                }
             }
         }
     }
@@ -376,24 +386,29 @@ struct PRWorktableTab: View {
 private struct LogViewer: View {
     let job: FixJob
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
     @State private var contents: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let t = WarmTheme(scheme: scheme)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("修复日志 #\(job.prNumber)").font(.headline)
+                Text("修复日志 #\(job.prNumber)").font(WFont.title).foregroundStyle(t.inkStrong)
                 Spacer()
-                Button("关闭") { dismiss() }
+                Button("关闭") { dismiss() }.buttonStyle(WarmButtonStyle())
             }
             ScrollView {
                 Text(contents.isEmpty ? "（无日志内容）" : contents)
-                    .font(.caption.monospaced())
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(t.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
             .frame(minWidth: 480, maxHeight: 360)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(t.cardFill))
         }
-        .padding()
+        .padding(16)
+        .background(t.windowFill.ignoresSafeArea())
         .onAppear { load() }
     }
 

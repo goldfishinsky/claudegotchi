@@ -24,42 +24,40 @@ struct StatsWindowView: View {
 
     @State private var showHooks = false
     @State private var showLeaderboardSettings = false
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $selection.tab) {
-                Text("Overview").tag(StatsTab.overview)
-                Text("Models").tag(StatsTab.models)
-                Text("成长史").tag(StatsTab.growth)
-                Text("工作台").tag(StatsTab.work)
-                Text("排行榜").tag(StatsTab.leaderboard)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+        let t = WarmTheme(scheme: scheme)
+        return VStack(spacing: 0) {
+            WarmSegmented(selection: $selection.tab, items: [
+                (.overview, "Overview"),
+                (.models, "Models"),
+                (.growth, "成长史"),
+                (.work, "工作台"),
+                (.leaderboard, "排行榜"),
+            ])
+            // Top inset clears the native traffic lights under the transparent titlebar.
+            .padding(.top, 30)
             .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 8)
+            .padding(.bottom, 10)
 
-            Divider().opacity(0.4)
-
-            // A plain switch (not TabView) so the window's vibrancy shows through;
-            // SwiftUI's TabView paints an opaque background.
+            // A plain switch (not TabView) so the warm surface shows through;
+            // SwiftUI's TabView paints its own opaque background.
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider().opacity(0.4)
-
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Spacer()
                 Button("排行榜设置") { showLeaderboardSettings = true }
-                    .controlSize(.small)
+                    .buttonStyle(WarmButtonStyle())
                 Button("钩子设置") { showHooks = true }
-                    .controlSize(.small)
+                    .buttonStyle(WarmButtonStyle())
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.vertical, 12)
         }
         .frame(minWidth: 680, minHeight: 560)
+        .background { t.windowFill.ignoresSafeArea() }
         .sheet(isPresented: $showHooks) { HooksInstallView() }
         .sheet(isPresented: $showLeaderboardSettings) {
             LeaderboardSettingsView(driver: syncDriver, service: leaderboard, githubClientID: githubClientID)

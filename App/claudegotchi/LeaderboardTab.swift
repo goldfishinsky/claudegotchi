@@ -18,6 +18,7 @@ struct LeaderboardTab: View {
     @State private var modelRows: [GlobalModelStat] = []
     @State private var state: LoadState = .loading
     @State private var reloadToken = 0
+    @Environment(\.colorScheme) private var scheme
 
     private var boardString: String {
         switch board {
@@ -33,13 +34,11 @@ struct LeaderboardTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("", selection: $board) {
-                Text("生存天数").tag(Board.survival)
-                Text("Token 消耗").tag(Board.tokens)
-                Text("全球模型").tag(Board.models)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            WarmSegmented(selection: $board, items: [
+                (.survival, "生存天数"),
+                (.tokens, "Token 消耗"),
+                (.models, "全球模型"),
+            ])
 
             if board != .models { controls }
 
@@ -58,14 +57,13 @@ struct LeaderboardTab: View {
 
     @ViewBuilder
     private var controls: some View {
+        let t = WarmTheme(scheme: scheme)
         HStack {
             if board == .survival {
-                Picker("", selection: $survivalMode) {
-                    Text("现役").tag(SurvivalMode.current)
-                    Text("历史最佳").tag(SurvivalMode.best)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                WarmSegmented(selection: $survivalMode, items: [
+                    (.current, "现役"),
+                    (.best, "历史最佳"),
+                ])
                 .fixedSize()
             }
             Spacer()
@@ -75,6 +73,7 @@ struct LeaderboardTab: View {
             } label: {
                 Label(platform == .all ? "全部平台" : "Claude Code",
                       systemImage: "line.3.horizontal.decrease.circle")
+                    .font(WFont.section).foregroundStyle(t.ink)
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -82,33 +81,34 @@ struct LeaderboardTab: View {
     }
 
     private var loggedOutBanner: some View {
-        HStack(spacing: 8) {
-            Text("登录后可上榜并查看自己的排名")
-                .font(.caption).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.tail)
-            Spacer()
-            Button("登录") { openSettings() }.controlSize(.small)
+        let t = WarmTheme(scheme: scheme)
+        return SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            HStack(spacing: 8) {
+                Text("登录后可上榜并查看自己的排名")
+                    .font(WFont.caption).foregroundStyle(t.ink)
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer()
+                Button("登录") { openSettings() }.buttonStyle(WarmButtonStyle(prominent: true))
+            }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.groupFill))
     }
 
     @ViewBuilder
     private var content: some View {
+        let t = WarmTheme(scheme: scheme)
         switch state {
         case .loading:
             stateMessage {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在加载…").foregroundStyle(.secondary)
+                    Text("正在加载…").font(WFont.body).foregroundStyle(t.inkFaint)
                 }
             }
         case .failed:
             stateMessage {
-                VStack(spacing: 8) {
-                    Text("加载失败").foregroundStyle(.secondary)
-                    Button("重试") { reloadToken += 1 }.controlSize(.small)
+                VStack(spacing: 10) {
+                    Text("加载失败").font(WFont.body).foregroundStyle(t.inkFaint)
+                    Button("重试") { reloadToken += 1 }.buttonStyle(WarmButtonStyle())
                 }
             }
         case .loaded:
@@ -134,34 +134,31 @@ struct LeaderboardTab: View {
 
     @ViewBuilder
     private func leaderRow(_ row: LeaderboardRow) -> some View {
+        let t = WarmTheme(scheme: scheme)
         let own = isOwnRow(row)
-        HStack(spacing: 10) {
-            Text("\(row.rank)")
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 34, alignment: .trailing)
-            LeaderboardAvatar(url: row.avatarUrl, size: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("@\(row.login)")
-                    .font(.callout)
-                    .lineLimit(1).truncationMode(.tail)
-                if let label = petLabel(row.pet) {
-                    Text(label)
-                        .font(.caption).foregroundStyle(.secondary)
+        SoftCard(fill: own ? t.highlight : t.cardFill, cornerRadius: 12, padding: 9, shadow: t.cardShadow) {
+            HStack(spacing: 10) {
+                Text("\(row.rank)")
+                    .font(WFont.value).monospacedDigit()
+                    .foregroundStyle(own ? t.accent : t.inkFaint)
+                    .frame(minWidth: 30, alignment: .trailing)
+                LeaderboardAvatar(url: row.avatarUrl, size: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("@\(row.login)")
+                        .font(WFont.label).foregroundStyle(t.inkStrong)
                         .lineLimit(1).truncationMode(.tail)
+                    if let label = petLabel(row.pet) {
+                        Text(label)
+                            .font(WFont.caption).foregroundStyle(t.inkFaint)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                 }
+                Spacer()
+                Text(valueText(row))
+                    .font(WFont.value).monospacedDigit()
+                    .foregroundStyle(own ? t.accent : t.ink)
             }
-            Spacer()
-            Text(valueText(row))
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(own ? Color.accentColor.opacity(0.15) : Color.clear)
-        )
     }
 
     private var modelList: some View {
@@ -178,27 +175,31 @@ struct LeaderboardTab: View {
 
     @ViewBuilder
     private func modelStatRow(_ model: GlobalModelStat) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Text(model.model).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Text(TokenFormat.compact(model.tokensIn + model.tokensOut) + " tok")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                Text("\(TokenFormat.compact(model.calls)) 次调用")
-                    .font(.caption2).foregroundStyle(.secondary)
-                if let users = model.users {
-                    Text("\(TokenFormat.compact(Int64(users))) 人使用")
-                        .font(.caption2).foregroundStyle(.secondary)
+        let t = WarmTheme(scheme: scheme)
+        SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(model.model).font(WFont.label).foregroundStyle(t.inkStrong)
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Text(TokenFormat.compact(model.tokensIn + model.tokensOut) + " tok")
+                        .font(WFont.value).monospacedDigit().foregroundStyle(t.ink)
                 }
-                Spacer()
+                HStack(spacing: 8) {
+                    Text("\(TokenFormat.compact(model.calls)) 次调用")
+                        .font(WFont.caption).foregroundStyle(t.inkFaint)
+                    if let users = model.users {
+                        Text("\(TokenFormat.compact(Int64(users))) 人使用")
+                            .font(WFont.caption).foregroundStyle(t.inkFaint)
+                    }
+                    Spacer()
+                }
             }
         }
-        .padding(.horizontal, 8)
     }
 
     private var myRankCard: some View {
+        let t = WarmTheme(scheme: scheme)
         let entry: RankEntry?
         switch board {
         case .tokens: entry = driver.snapshot.me?.ranks.tokens
@@ -207,18 +208,18 @@ struct LeaderboardTab: View {
             : driver.snapshot.me?.ranks.survivalBest
         case .models: entry = nil
         }
-        return HStack(spacing: 8) {
-            Text("我的排名").font(.caption.bold()).foregroundStyle(.secondary)
-            Spacer()
-            Text(LeaderboardFormat.rank(entry)).font(.callout.monospacedDigit())
+        return SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            HStack(spacing: 8) {
+                Text("我的排名").font(WFont.section).foregroundStyle(t.ink)
+                Spacer()
+                Text(LeaderboardFormat.rank(entry)).font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+            }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.groupFill))
     }
 
     private var emptyState: some View {
-        Text("暂无数据").font(.callout).foregroundStyle(.secondary)
+        let t = WarmTheme(scheme: scheme)
+        return Text("暂无数据").font(WFont.body).foregroundStyle(t.inkFaint)
             .frame(maxWidth: .infinity, alignment: .center).padding(.vertical, 24)
     }
 

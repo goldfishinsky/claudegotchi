@@ -8,14 +8,14 @@ struct GrowthHistoryTab: View {
     @State private var alive: Pet?
     @State private var history: [GrowthEntry] = []
     @State private var showAll = false
+    @Environment(\.colorScheme) private var scheme
 
     private let inlineCap = 20
     private let fetchCap = 500
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             currentStageSection
-            Divider()
             memorialSection
         }
         .padding(16)
@@ -28,49 +28,59 @@ struct GrowthHistoryTab: View {
 
     @ViewBuilder
     private var currentStageSection: some View {
+        let t = WarmTheme(scheme: scheme)
         if let pet = alive {
             let def = PixelSpeciesCatalog.def(pet.species)
             let stageId = PixelSpeciesCatalog.stage(id: pet.species, xp: pet.xp)
             let nextMinXp = def?.stages
                 .first { Int64($0.minXp) > pet.xp }
                 .map { Int64($0.minXp) }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(def?.nameZh ?? pet.species).font(.headline)
-                    Text("· \(stageId)").font(.subheadline).foregroundColor(.secondary)
-                    Spacer()
-                    Text("XP \(TokenFormat.compactXP(pet.xp))").font(.caption).foregroundColor(.secondary)
-                }
-                if let next = nextMinXp, next > pet.xp {
-                    ProgressView(value: Double(pet.xp), total: Double(next))
-                    Text("距下一阶段 \(TokenFormat.compactXP(next - pet.xp))")
-                        .font(.caption2).foregroundColor(.secondary)
-                } else {
-                    Text("已达最终阶段").font(.caption).foregroundColor(.secondary)
+            SoftCard(fill: t.cardFill, cornerRadius: 16, padding: 14, shadow: t.cardShadow) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        CandyIcon(symbol: "sparkles", colors: Candy.xp, size: 14)
+                        Text(def?.nameZh ?? pet.species).font(WFont.title).foregroundStyle(t.inkStrong)
+                            .lineLimit(1).truncationMode(.tail)
+                        Text("· \(stageId)").font(WFont.section).foregroundStyle(t.ink)
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer()
+                        Text("XP \(TokenFormat.compactXP(pet.xp))")
+                            .font(WFont.value).monospacedDigit().foregroundStyle(t.ink)
+                    }
+                    if let next = nextMinXp, next > pet.xp {
+                        SoftBar(fraction: Double(pet.xp) / Double(next), colors: Candy.xp, track: t.track, height: 8)
+                        Text("距下一阶段 \(TokenFormat.compactXP(next - pet.xp))")
+                            .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                    } else {
+                        Text("已达最终阶段").font(WFont.caption).foregroundStyle(t.inkFaint)
+                    }
                 }
             }
         } else {
-            Text("暂无存活宠物").font(.subheadline).foregroundColor(.secondary)
+            SoftCard(fill: t.cardFill, cornerRadius: 16, padding: 14, shadow: t.cardShadow, alignment: .center) {
+                Text("暂无存活宠物").font(WFont.body).foregroundStyle(t.inkFaint)
+            }
         }
     }
 
     @ViewBuilder
     private var memorialSection: some View {
-        Text("成长史").font(.caption.bold()).foregroundColor(.secondary)
+        let t = WarmTheme(scheme: scheme)
+        Text("成长史").font(WFont.section).foregroundStyle(t.ink)
         if history.isEmpty {
-            Text("还没有逝去的宠物").font(.caption).foregroundColor(.secondary)
+            Text("还没有逝去的宠物").font(WFont.body).foregroundStyle(t.inkFaint)
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(visibleHistory.indices, id: \.self) { i in entryRow(visibleHistory[i]) }
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(visibleHistory.indices, id: \.self) { i in entryRow(visibleHistory[i], t) }
                     if history.count > inlineCap {
                         Button(showAll ? "收起" : "查看全部 (\(history.count))") { showAll.toggle() }
-                            .buttonStyle(.link).font(.caption)
+                            .buttonStyle(.plain).font(WFont.section).foregroundStyle(t.accent).padding(.top, 2)
                     }
                 }
                 .padding(.vertical, 2)
             }
-            .frame(maxHeight: 160)
+            .frame(maxHeight: 260)
         }
     }
 
@@ -79,18 +89,22 @@ struct GrowthHistoryTab: View {
     }
 
     @ViewBuilder
-    private func entryRow(_ e: GrowthEntry) -> some View {
+    private func entryRow(_ e: GrowthEntry, _ t: WarmTheme) -> some View {
         let label = PixelSpeciesCatalog.def(e.species)?.nameZh ?? e.species
-        HStack(spacing: 8) {
-            Text(label).lineLimit(1).truncationMode(.middle)
-            if let name = e.name, !name.isEmpty {
-                Text("「\(name)」").font(.caption).foregroundColor(.secondary)
-                    .lineLimit(1).truncationMode(.tail)
+        SoftCard(fill: t.cardFill, cornerRadius: 12, padding: 10, shadow: t.cardShadow) {
+            HStack(spacing: 8) {
+                Text(label).font(WFont.label).foregroundStyle(t.inkStrong)
+                    .lineLimit(1).truncationMode(.middle)
+                if let name = e.name, !name.isEmpty {
+                    Text("「\(name)」").font(WFont.caption).foregroundStyle(t.ink)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                Spacer()
+                Text(Self.dateLabel(e.bornMs) + (e.diedMs.map { " – " + Self.dateLabel($0) } ?? " – 在世"))
+                    .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                Text("XP \(TokenFormat.compactXP(e.xp))")
+                    .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
             }
-            Spacer()
-            Text(Self.dateLabel(e.bornMs) + (e.diedMs.map { " – " + Self.dateLabel($0) } ?? " – 在世"))
-                .font(.caption2).foregroundColor(.secondary)
-            Text("XP \(TokenFormat.compactXP(e.xp))").font(.caption2.monospacedDigit()).foregroundColor(.secondary)
         }
     }
 

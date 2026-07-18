@@ -14,6 +14,7 @@ struct HeatmapView: View {
 
     @State private var tokensByDay: [String: Int64] = [:]
     @State private var maxTokens: Int64 = 0
+    @Environment(\.colorScheme) private var scheme
 
     private var gridWidth: CGFloat {
         CGFloat(weeks) * cell + CGFloat(max(0, weeks - 1)) * gap
@@ -37,10 +38,11 @@ struct HeatmapView: View {
     }
 
     private var weekdayGutter: some View {
-        VStack(spacing: gap) {
+        let t = WarmTheme(scheme: scheme)
+        return VStack(spacing: gap) {
             ForEach(0..<7, id: \.self) { row in
                 Text(["日","一","二","三","四","五","六"][row])
-                    .font(.system(size: 6)).foregroundColor(.secondary)
+                    .font(.system(size: 6, design: .rounded)).foregroundStyle(t.inkFaint)
                     .frame(width: gutter - 4, height: cell, alignment: .trailing)
             }
         }
@@ -82,14 +84,16 @@ struct HeatmapView: View {
         return cal.component(.weekday, from: date) - 1
     }
 
+    // Warm single-hue ramp: faint cream (empty) → light amber → saturated coral.
     private func color(for tokens: Int64) -> Color {
-        guard tokens > 0, maxTokens > 0 else { return Color.secondary.opacity(0.12) }
+        let empty = scheme == .dark ? rgb(0.25, 0.22, 0.19) : rgb(0.92, 0.88, 0.82)
+        guard tokens > 0, maxTokens > 0 else { return empty }
         let q = Double(tokens) / Double(maxTokens)
         switch q {
-        case ..<0.25: return Color.green.opacity(0.30)
-        case ..<0.50: return Color.green.opacity(0.50)
-        case ..<0.75: return Color.green.opacity(0.70)
-        default:      return Color.green.opacity(0.95)
+        case ..<0.25: return rgb(1.0, 0.86, 0.58)
+        case ..<0.50: return rgb(1.0, 0.74, 0.42)
+        case ..<0.75: return rgb(1.0, 0.58, 0.34)
+        default:      return rgb(0.98, 0.42, 0.34)
         }
     }
 
