@@ -9,22 +9,29 @@ public struct AgentActivity: Equatable {
 
     public let sessionId: String
     public let repoName: String
+    public let repoLabel: String
     public let state: State
     public let sessionTokens: Int64
     public let ratePerMin: Int64
     public let model: String?
     public let title: String?
+    public let currentTool: String?
+    public let currentToolStartedMs: Int64?
 
     public init(sessionId: String, repoName: String, state: State,
                 sessionTokens: Int64, ratePerMin: Int64, model: String?,
-                title: String? = nil) {
+                title: String? = nil, repoLabel: String? = nil,
+                currentTool: String? = nil, currentToolStartedMs: Int64? = nil) {
         self.sessionId = sessionId
         self.repoName = repoName
+        self.repoLabel = repoLabel ?? repoName
         self.state = state
         self.sessionTokens = sessionTokens
         self.ratePerMin = ratePerMin
         self.model = model
         self.title = title
+        self.currentTool = currentTool
+        self.currentToolStartedMs = currentToolStartedMs
     }
 
     /// Codex sessions are namespaced `codex-<uuid>` by the hook helper at spool time.
@@ -50,8 +57,9 @@ public enum AgentActivityTracker {
         let rateCutoff = nowMs - rateWindowMs
         let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
 
-        let (totals, rates, models, titles) = try db.read {
-            conn -> ([String: Int64], [String: Int64], [String: String], [String: String]) in
+        let (totals, rates, models, titles, actions) = try db.read {
+            conn -> ([String: Int64], [String: Int64], [String: String], [String: String],
+                     [String: (tool: String, ts: Int64)]) in
             var totals: [String: Int64] = [:]
             var rates: [String: Int64] = [:]
             let tokenArgs: [any DatabaseValueConvertible] =
@@ -98,10 +106,23 @@ public enum AgentActivityTracker {
                 if let p: String = r["prompt"] { prompts[sid, default: []].append(p) }
             }
             let titles = prompts.compactMapValues(pickTitle)
-            return (totals, rates, models, titles)
+
+            var actions: [String: (tool: String, ts: Int64)] = [:]
+            let actionCursor = try GRDB.Row.fetchCursor(conn, sql: """
+                SELECT session_id, json_extract(payload, '$.tool') AS tool, ts
+                FROM event
+                WHERE type IN ('pre_tool_use', 'post_tool_use') AND session_id IN (\(placeholders))
+                  AND json_extract(payload, '$.tool') IS NOT NULL
+                ORDER BY ts ASC, id ASC
+                """, arguments: StatementArguments(ids))
+            while let r = try actionCursor.next() {
+                let sid: String = r["session_id"]
+                if let tool: String = r["tool"] { actions[sid] = (tool, r["ts"]) }
+            }
+            return (totals, rates, models, titles, actions)
         }
 
-        return sessions
+        let ordered = sessions
             .filter { !filter.hides(cwd: $0.cwd, title: titles[$0.sessionId]) }
             .sorted { a, b in
                 let aw = a.lastActivityMs >= nowMs - workingWindowMs
@@ -109,18 +130,23 @@ public enum AgentActivityTracker {
                 if aw != bw { return aw }
                 return a.lastActivityMs > b.lastActivityMs
             }
-            .map { s in
-                let working = s.lastActivityMs >= nowMs - workingWindowMs
-                return AgentActivity(
-                    sessionId: s.sessionId,
-                    repoName: repoName(cwd: s.cwd),
-                    state: working ? .working : .idle,
-                    sessionTokens: totals[s.sessionId] ?? 0,
-                    ratePerMin: rates[s.sessionId] ?? 0,
-                    model: models[s.sessionId].map(shortModel),
-                    title: titles[s.sessionId]
-                )
-            }
+        let labels = SessionRepo.labels(cwds: ordered.map(\.cwd))
+        return ordered.enumerated().map { idx, s in
+            let working = s.lastActivityMs >= nowMs - workingWindowMs
+            let action = working ? actions[s.sessionId] : nil
+            return AgentActivity(
+                sessionId: s.sessionId,
+                repoName: repoName(cwd: s.cwd),
+                state: working ? .working : .idle,
+                sessionTokens: totals[s.sessionId] ?? 0,
+                ratePerMin: rates[s.sessionId] ?? 0,
+                model: models[s.sessionId].map(shortModel),
+                title: titles[s.sessionId],
+                repoLabel: labels[idx],
+                currentTool: action?.tool,
+                currentToolStartedMs: action?.ts
+            )
+        }
     }
 
     // Harness-injected prompts (task notifications, slash-command wrappers,

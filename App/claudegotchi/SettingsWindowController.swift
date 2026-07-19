@@ -5,8 +5,12 @@ import SwiftUI
 final class SettingsWindowController {
     private var window: NSWindow?
     private let store: SettingsStore
+    private let sound: SoundController
 
-    init(store: SettingsStore) { self.store = store }
+    init(store: SettingsStore, sound: SoundController) {
+        self.store = store
+        self.sound = sound
+    }
 
     func show() {
         store.refreshLaunchAtLogin()
@@ -15,9 +19,10 @@ final class SettingsWindowController {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let win = Glass.window(SettingsView(store: store),
-                               size: NSSize(width: 520, height: 640), title: "设置")
-        win.minSize = NSSize(width: 480, height: 420)
+        let size = NSSize(width: 640, height: 480)
+        let win = Glass.window(SettingsView(store: store, sound: sound), size: size, title: "设置")
+        win.minSize = size
+        win.maxSize = size
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = win

@@ -375,7 +375,7 @@ struct DropdownCard: View {
                     Circle()
                         .fill(a.state == .working ? rgb(0.46, 0.85, 0.45) : t.inkFaint.opacity(0.55))
                         .frame(width: 6, height: 6)
-                    Text(a.repoName).font(WFont.vLabel).foregroundStyle(t.ink)
+                    Text(a.repoLabel).font(WFont.vLabel).foregroundStyle(t.ink)
                         .lineLimit(1).truncationMode(.middle).layoutPriority(1)
                     if a.isCodex {
                         Text("codex").font(WFont.caption)
@@ -394,6 +394,16 @@ struct DropdownCard: View {
                     Text(title).font(WFont.caption).foregroundStyle(t.inkFaint)
                         .lineLimit(1).truncationMode(.tail)
                         .padding(.leading, 12)
+                }
+                if a.state == .working, let tool = a.currentTool, let started = a.currentToolStartedMs {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        let secs = max(0, Int((ctx.date.timeIntervalSince1970 * 1000 - Double(started)) / 1000))
+                        Text("正在 \(tool) · \(secs)s")
+                            .font(WFont.caption).monospacedDigit()
+                            .foregroundStyle(t.accent)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    .padding(.leading, 12)
                 }
             }
             Spacer(minLength: 8)

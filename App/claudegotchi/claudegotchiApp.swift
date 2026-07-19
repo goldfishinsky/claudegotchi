@@ -177,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var islandModel: IslandModel?
     private var islandController: NotchIslandController?
     private var settings: SettingsStore?
+    private var sound: SoundController?
     private var settingsWindow: SettingsWindowController?
     private var panelRefreshTimer: Timer?
     private var iconTimer: Timer?
@@ -214,7 +215,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         petPanelModel = petModel
         let settingsStore = SettingsStore()
         settings = settingsStore
-        settingsWindow = SettingsWindowController(store: settingsStore)
+        let soundController = SoundController(settings: settingsStore)
+        sound = soundController
+        settingsWindow = SettingsWindowController(store: settingsStore, sound: soundController)
 
         let agentModel = AgentActivityModel(db: services.db)
         agentModel.filterProvider = { [weak settingsStore] in settingsStore?.sessionFilter ?? .empty }
@@ -263,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let dropdown {
             let controller = NotchIslandController(
                 dropdown: dropdown, petModel: petModel, agentModel: agentModel, island: island,
-                db: services.db, settings: settingsStore
+                db: services.db, settings: settingsStore, sound: soundController
             )
             islandController = controller
             controller.start()
@@ -301,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         petPanelModel?.refresh()
         agentActivityModel?.refresh()
         islandController?.refresh()
+        if let agents = agentActivityModel?.agents { sound?.observeSessions(agents.map(\.sessionId)) }
+        if let level = petPanelModel?.level { sound?.observeLevel(level) }
     }
 
     private func redrawStatusIcon() {

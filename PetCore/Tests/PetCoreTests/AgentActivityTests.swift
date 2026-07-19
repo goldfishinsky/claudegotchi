@@ -21,12 +21,13 @@ final class AgentActivityTests: XCTestCase {
 
     private func insert(id: String, type: String, ts: Int64, sessionId: String?,
                         cwd: String?, tokensIn: Int? = nil, tokensOut: Int? = nil,
-                        model: String? = nil, prompt: String? = nil) throws {
+                        model: String? = nil, prompt: String? = nil, tool: String? = nil) throws {
         var obj: [String: Any] = ["type": type, "ts": ts]
         if let tokensIn { obj["tokens_in"] = tokensIn }
         if let tokensOut { obj["tokens_out"] = tokensOut }
         if let model { obj["model"] = model }
         if let prompt { obj["prompt"] = prompt }
+        if let tool { obj["tool"] = tool }
         let data = try JSONSerialization.data(withJSONObject: obj)
         let payload = String(data: data, encoding: .utf8)
         try db.write { conn in
@@ -285,6 +286,49 @@ final class AgentActivityTests: XCTestCase {
         let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
         XCTAssertEqual(agents[0].platform, "claude-code")
         XCTAssertFalse(agents[0].isCodex)
+    }
+
+    func testCurrentActionIsLatestToolWhenWorking() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 60_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "pre_tool_use", ts: now - 30_000, sessionId: "s1", cwd: "/tmp/r",
+                   tool: "Grep")
+        try insert(id: "e3", type: "pre_tool_use", ts: now - 12_000, sessionId: "s1", cwd: "/tmp/r",
+                   tool: "Edit")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].currentTool, "Edit", "latest tool-use wins")
+        XCTAssertEqual(agents[0].currentToolStartedMs, now - 12_000)
+    }
+
+    func testCurrentActionNilWhenIdle() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 300_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "pre_tool_use", ts: now - 130_000, sessionId: "s1", cwd: "/tmp/r",
+                   tool: "Edit")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].state, .idle)
+        XCTAssertNil(agents[0].currentTool, "idle sessions show no live action")
+    }
+
+    func testRepoLabelUsesWorktreeSuffix() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 5_000, sessionId: "s1",
+                   cwd: "/Users/jalen/code/phoenix/.claude/worktrees/feat-x")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].repoName, "feat-x", "single-cwd basename is unchanged")
+        XCTAssertEqual(agents[0].repoLabel, "phoenix ⌥ feat-x")
+    }
+
+    func testRepoLabelDisambiguatesCollidingBasenames() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "a1", type: "session_start", ts: now - 5_000, sessionId: "a",
+                   cwd: "/Users/jalen/daoai/phoenix")
+        try insert(id: "b1", type: "session_start", ts: now - 4_000, sessionId: "b",
+                   cwd: "/Users/jalen/code/phoenix")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        let labels = Dictionary(uniqueKeysWithValues: agents.map { ($0.sessionId, $0.repoLabel) })
+        XCTAssertEqual(labels["a"], "daoai/phoenix")
+        XCTAssertEqual(labels["b"], "code/phoenix")
     }
 
     func testFilterKeepsRealSessionWithNoisyLaterPrompt() throws {

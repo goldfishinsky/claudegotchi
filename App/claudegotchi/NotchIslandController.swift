@@ -297,6 +297,7 @@ final class NotchIslandController {
     private let island: IslandModel
     private let db: DatabaseQueue
     private let settings: SettingsStore
+    private let sound: SoundController
 
     private var panel: NSPanel?
     private var geometry: NotchGeometry?
@@ -318,13 +319,14 @@ final class NotchIslandController {
 
     init(dropdown: MenuDropdownController, petModel: PetPanelModel,
          agentModel: AgentActivityModel, island: IslandModel,
-         db: DatabaseQueue, settings: SettingsStore) {
+         db: DatabaseQueue, settings: SettingsStore, sound: SoundController) {
         self.dropdown = dropdown
         self.petModel = petModel
         self.agentModel = agentModel
         self.island = island
         self.db = db
         self.settings = settings
+        self.sound = sound
     }
 
     var isPresent: Bool { panel != nil }
@@ -355,13 +357,23 @@ final class NotchIslandController {
 
     // MARK: completion reveal
 
+    /// Native-approval mode, a quiet scene, or already looking at the terminal all
+    /// keep the strip collapsed (badge-only) and mute the alert sound.
     private func updatePermissionSuppression() {
         guard let req = island.pendingPermission else {
-            island.setPermissionStripSuppressed(false); return
+            island.setPermissionStripSuppressed(false)
+            sound.permissionCleared()
+            return
         }
-        let suppressed = settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: req.cwd)
+        let suppressed = settings.nativeApprovalsEnabled
+            || QuietSceneInspector.isActive(settings: settings)
+            || (settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: req.cwd))
         island.setPermissionStripSuppressed(suppressed)
-        if suppressed { clearCompletion() }
+        if suppressed {
+            clearCompletion()
+        } else {
+            sound.permissionAppeared(sessionId: req.sessionId)
+        }
     }
 
     private func detectCompletions(filter: SessionFilter) {
@@ -370,11 +382,12 @@ final class NotchIslandController {
         let newly = completionDetector.newlyCompleted(stops)
         guard settings.completionRevealEnabled,
               island.pendingPermission == nil,
-              !FocusInspector.screenIsLocked(),
+              !QuietSceneInspector.isActive(settings: settings),
               let latest = newly.max(by: { $0.tsMs < $1.tsMs }) else { return }
         if settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: latest.cwd) { return }
         island.setCompletion(CompletionReveal(
             sessionId: latest.sessionId, repoName: latest.repoName, cwd: latest.cwd))
+        sound.taskComplete()
         startCompletionDwell()
         installEscMonitor()
     }

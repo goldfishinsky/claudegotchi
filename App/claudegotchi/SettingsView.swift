@@ -1,73 +1,159 @@
 import SwiftUI
 import PetCore
 
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general, notifications, sound, filters
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "通用"
+        case .notifications: return "通知"
+        case .sound: return "音效"
+        case .filters: return "会话过滤"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape.fill"
+        case .notifications: return "bell.fill"
+        case .sound: return "speaker.wave.2.fill"
+        case .filters: return "line.3.horizontal.decrease.circle.fill"
+        }
+    }
+    var colors: [Color] {
+        switch self {
+        case .general: return Candy.violet
+        case .notifications: return Candy.coral
+        case .sound: return Candy.lime
+        case .filters: return Candy.teal
+        }
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
+    let sound: SoundController
     @Environment(\.colorScheme) private var scheme
+    @State private var tab: SettingsTab = .general
 
     var body: some View {
         let t = WarmTheme(scheme: scheme)
+        HStack(spacing: 0) {
+            sidebar(t)
+            Divider().overlay(t.track)
+            content(t)
+        }
+        .frame(width: 640, height: 480)
+        .background { t.windowFill.ignoresSafeArea() }
+    }
+
+    // MARK: sidebar
+
+    private func sidebar(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(SettingsTab.allCases) { item in
+                sidebarRow(t, item)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 36)
+        .padding(.bottom, 12)
+        .frame(width: 172, alignment: .leading)
+        .background(t.pillTrack.opacity(0.5).ignoresSafeArea())
+    }
+
+    private func sidebarRow(_ t: WarmTheme, _ item: SettingsTab) -> some View {
+        let active = tab == item
+        return HStack(spacing: 10) {
+            CandyIcon(symbol: item.symbol, colors: item.colors, size: 13)
+                .frame(width: 20)
+            Text(item.title)
+                .font(WFont.label.weight(active ? .semibold : .medium))
+                .foregroundStyle(active ? t.inkStrong : t.ink)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(active ? t.pillActive : Color.clear)
+                .shadow(color: active ? t.pillShadow : .clear, radius: 4, x: 0, y: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture { withAnimation(.easeOut(duration: 0.14)) { tab = item } }
+    }
+
+    // MARK: content
+
+    private func content(_ t: WarmTheme) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                header(t)
-                generalSection(t)
-                notificationSection(t)
-                filterSection(t)
+            VStack(alignment: .leading, spacing: 20) {
+                pageHeader(t)
+                switch tab {
+                case .general: generalTab(t)
+                case .notifications: notificationTab(t)
+                case .sound: soundTab(t)
+                case .filters: filterTab(t)
+                }
             }
             .padding(.horizontal, 22)
             .padding(.top, 34)
             .padding(.bottom, 26)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background { t.windowFill.ignoresSafeArea() }
     }
 
-    private func header(_ t: WarmTheme) -> some View {
+    private func pageHeader(_ t: WarmTheme) -> some View {
         HStack(spacing: 10) {
-            CandyIcon(symbol: "gearshape.fill", colors: Candy.amber, size: 18)
-            Text("设置").font(WFont.title).foregroundStyle(t.inkStrong)
+            CandyIcon(symbol: tab.symbol, colors: tab.colors, size: 18)
+            Text(tab.title).font(WFont.title).foregroundStyle(t.inkStrong)
         }
     }
 
     // MARK: 通用
 
-    private func generalSection(_ t: WarmTheme) -> some View {
-        settingsCard(t, "通用", "gearshape.fill", Candy.violet) {
-            SettingsToggleRow(
-                t: t, title: "登录时启动", subtitle: "开机后自动运行 claudegotchi",
-                isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
-            Divider().overlay(t.track)
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    settingLabel(t, "悬停展开延时", "指向灵动岛后延迟多久展开面板")
-                    Spacer(minLength: 8)
-                    Text(String(format: "%.2fs", store.hoverDelay))
-                        .font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
-                }
-                Slider(value: $store.hoverDelay, in: 0.1...1.0, step: 0.05)
-                    .tint(t.accent)
+    private func generalTab(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            group(t, "系统") {
+                SettingsToggleRow(
+                    t: t, title: "登录时启动", subtitle: "开机后自动运行 claudegotchi",
+                    isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
             }
-            .padding(.vertical, 4)
-            Divider().overlay(t.track)
-            SettingsToggleRow(
-                t: t, title: "鼠标移开自动收起", subtitle: "指针离开后自动收起悬停展开的面板",
-                isOn: $store.autoCollapseOnLeave)
-            Divider().overlay(t.track)
-            SettingsToggleRow(
-                t: t, title: "无活跃会话时隐藏灵动岛", subtitle: "没有会话时淡出灵动岛，宠物仅留在下拉面板",
-                isOn: $store.autoHideWhenNoSessions)
+            group(t, "展开与显示") {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        settingLabel(t, "悬停展开延时", "指向灵动岛后延迟多久展开面板")
+                        Spacer(minLength: 8)
+                        Text(String(format: "%.2fs", store.hoverDelay))
+                            .font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+                    }
+                    Slider(value: $store.hoverDelay, in: 0.1...1.0, step: 0.05).tint(t.accent)
+                }
+                .padding(.vertical, 4)
+                Divider().overlay(t.track)
+                SettingsToggleRow(
+                    t: t, title: "鼠标移开自动收起", subtitle: "指针离开后自动收起悬停展开的面板",
+                    isOn: $store.autoCollapseOnLeave)
+                Divider().overlay(t.track)
+                SettingsToggleRow(
+                    t: t, title: "无活跃会话时隐藏灵动岛", subtitle: "没有会话时淡出灵动岛，宠物仅留在下拉面板",
+                    isOn: $store.autoHideWhenNoSessions)
+            }
         }
     }
 
     // MARK: 通知
 
-    private func notificationSection(_ t: WarmTheme) -> some View {
-        settingsCard(t, "通知", "bell.fill", Candy.coral) {
-            VStack(alignment: .leading, spacing: 8) {
+    private func notificationTab(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            group(t, "完成提醒") {
                 SettingsToggleRow(
                     t: t, title: "完成时展开提醒", subtitle: "会话完成一轮时，灵动岛短暂展开绿色提示条",
                     isOn: $store.completionRevealEnabled)
                 if store.completionRevealEnabled {
+                    Divider().overlay(t.track)
                     HStack {
                         settingLabel(t, "停留时长", "提示条自动收起前的停留秒数，按 ESC 可提前关闭")
                         Spacer(minLength: 8)
@@ -78,43 +164,118 @@ struct SettingsView: View {
                         }
                         .fixedSize()
                     }
-                    .padding(.leading, 4)
+                    .padding(.vertical, 4)
                 }
             }
-            Divider().overlay(t.track)
-            SettingsToggleRow(
-                t: t, title: "专注抑制",
-                subtitle: "正盯着该会话的终端窗口时不自动展开（需已授权辅助功能，否则不生效）",
-                isOn: $store.focusSuppressionEnabled)
+            group(t, "静默场景") {
+                SettingsToggleRow(
+                    t: t, title: "专注抑制",
+                    subtitle: "正盯着该会话的终端窗口时不自动展开（需已授权辅助功能，否则不生效）",
+                    isOn: $store.focusSuppressionEnabled)
+                Divider().overlay(t.track)
+                SettingsToggleRow(
+                    t: t, title: "锁屏或休眠时静默", subtitle: "屏幕锁定或休眠期间不自动展开、不播放音效",
+                    isOn: $store.quietOnLock)
+                Divider().overlay(t.track)
+                SettingsToggleRow(
+                    t: t, title: "录屏或共享时静默", subtitle: "检测到屏幕录制或共享时不自动展开、不播放音效",
+                    isOn: $store.quietOnCapture)
+            }
+            group(t, "审批") {
+                SettingsToggleRow(
+                    t: t, title: "使用 Claude Code 原生审批",
+                    subtitle: "开启后权限请求不再展开灵动岛，只在原生终端里处理（同时适用于 Codex）",
+                    isOn: $store.nativeApprovalsEnabled)
+            }
         }
+    }
+
+    // MARK: 音效
+
+    private func soundTab(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            group(t, "总开关") {
+                SettingsToggleRow(
+                    t: t, title: "启用音效", subtitle: "为会话与宠物事件播放 8-bit 芯片音效",
+                    isOn: $store.soundEnabled)
+                Divider().overlay(t.track)
+                HStack(spacing: 10) {
+                    settingLabel(t, "音量", "所有音效的播放音量")
+                    Spacer(minLength: 8)
+                    Image(systemName: "speaker.fill").font(.system(size: 10)).foregroundStyle(t.inkFaint)
+                    Slider(value: $store.soundVolume, in: 0.0...1.0).tint(t.accent).frame(width: 150)
+                    Text("\(Int((store.soundVolume * 100).rounded()))%")
+                        .font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+                        .frame(width: 42, alignment: .trailing)
+                }
+                .padding(.vertical, 4)
+                .disabled(!store.soundEnabled)
+                .opacity(store.soundEnabled ? 1 : 0.4)
+            }
+            group(t, "事件音效") {
+                soundRow(t, "会话开始", "新的 Claude / Codex 会话启动", .sessionStart, $store.soundSessionStart)
+                Divider().overlay(t.track)
+                soundRow(t, "任务完成", "会话完成一轮工作", .taskComplete, $store.soundTaskComplete)
+                Divider().overlay(t.track)
+                soundRow(t, "请求权限", "会话等待你的批准", .permission, $store.soundPermission)
+                Divider().overlay(t.track)
+                soundRow(t, "宠物升级", "宠物等级提升时的号角", .levelUp, $store.soundLevelUp)
+            }
+            .disabled(!store.soundEnabled)
+            .opacity(store.soundEnabled ? 1 : 0.5)
+        }
+    }
+
+    private func soundRow(
+        _ t: WarmTheme, _ title: String, _ subtitle: String,
+        _ event: ChiptuneEvent, _ isOn: Binding<Bool>
+    ) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(WFont.label.weight(.semibold)).foregroundStyle(t.inkStrong)
+                Text(subtitle).font(WFont.caption).foregroundStyle(t.inkFaint)
+            }
+            Spacer(minLength: 8)
+            Button { sound.preview(event) } label: {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(LinearGradient(colors: Candy.lime, startPoint: .top, endPoint: .bottom))
+            }
+            .buttonStyle(.plain)
+            .help("试听")
+            Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).tint(t.accent)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: 会话过滤
 
-    private func filterSection(_ t: WarmTheme) -> some View {
-        settingsCard(t, "会话过滤", "line.3.horizontal.decrease.circle.fill", Candy.teal) {
-            filterGroup(
-                t, title: "目录包含", kind: .directory,
-                hint: "工作目录包含该文本的会话将被隐藏",
-                placeholder: "例如 /experiments",
-                userPatterns: store.userDirectoryPatterns)
-            Divider().overlay(t.track).padding(.vertical, 2)
-            filterGroup(
-                t, title: "首条消息前缀", kind: .promptPrefix,
-                hint: "首条消息以该前缀开头的会话将被隐藏",
-                placeholder: "例如 <task-notification>",
-                userPatterns: store.userPromptPrefixPatterns)
+    private func filterTab(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            group(t, "目录包含") {
+                filterGroup(
+                    t, kind: .directory,
+                    hint: "工作目录包含该文本的会话将被隐藏",
+                    placeholder: "例如 /experiments",
+                    userPatterns: store.userDirectoryPatterns)
+            }
+            group(t, "首条消息前缀") {
+                filterGroup(
+                    t, kind: .promptPrefix,
+                    hint: "首条消息以该前缀开头的会话将被隐藏",
+                    placeholder: "例如 <task-notification>",
+                    userPatterns: store.userPromptPrefixPatterns)
+            }
         }
     }
 
     @ViewBuilder
     private func filterGroup(
-        _ t: WarmTheme, title: String, kind: SessionFilterPreset.Kind,
+        _ t: WarmTheme, kind: SessionFilterPreset.Kind,
         hint: String, placeholder: String, userPatterns: [String]
     ) -> some View {
         let presets = SessionFilterPresets.all.filter { $0.kind == kind }
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(WFont.label.weight(.semibold)).foregroundStyle(t.inkStrong)
             Text(hint).font(WFont.caption).foregroundStyle(t.inkFaint)
             PatternAddField(t: t, placeholder: placeholder) { store.addUserPattern($0, kind: kind) }
             ScrollView {
@@ -164,16 +325,12 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func settingsCard<Content: View>(
-        _ t: WarmTheme, _ title: String, _ symbol: String, _ colors: [Color],
-        @ViewBuilder content: () -> Content
+    private func group<Content: View>(
+        _ t: WarmTheme, _ title: String, @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                CandyIcon(symbol: symbol, colors: colors, size: 13)
-                Text(title).font(WFont.section).foregroundStyle(t.inkStrong)
-                    .textCase(nil).kerning(0.4)
-            }
+            Text(title).font(WFont.section).foregroundStyle(t.inkStrong)
+                .textCase(nil).kerning(0.4)
             SoftCard(fill: t.cardFill, cornerRadius: 18, padding: 14, shadow: t.cardShadow) {
                 VStack(alignment: .leading, spacing: 6) { content() }
             }
