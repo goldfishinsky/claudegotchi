@@ -186,6 +186,44 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(agents[0].title, "第一个任务：修复登录", "first prompt wins, not the latest")
     }
 
+    func testTitleSkipsSystemInjectedPrompts() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 100_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "user_prompt_submit", ts: now - 90_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "<task-notification>agent finished</task-notification>")
+        try insert(id: "e3", type: "user_prompt_submit", ts: now - 80_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "  <command-name>/init</command-name>")
+        try insert(id: "e4", type: "user_prompt_submit", ts: now - 70_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "修复真正的 bug")
+
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].title, "修复真正的 bug", "harness noise is skipped in favor of the human prompt")
+    }
+
+    func testTitleFallsBackToFirstWhenAllNoise() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 100_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "user_prompt_submit", ts: now - 90_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "<local-command-caveat>caveat</local-command-caveat>")
+        try insert(id: "e3", type: "user_prompt_submit", ts: now - 80_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "<system-reminder>be nice</system-reminder>")
+
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].title, "<local-command-caveat>caveat</local-command-caveat>",
+                       "when every prompt is noise, the first is used anyway")
+    }
+
+    func testPickTitleUnit() {
+        XCTAssertNil(AgentActivityTracker.pickTitle([]))
+        XCTAssertEqual(AgentActivityTracker.pickTitle(["hello"]), "hello")
+        XCTAssertEqual(
+            AgentActivityTracker.pickTitle(["<task-notification>x", "real task"]), "real task")
+        XCTAssertEqual(
+            AgentActivityTracker.pickTitle(["<system-reminder>x", "  <command-name>/y", "done"]), "done")
+        XCTAssertEqual(
+            AgentActivityTracker.pickTitle(["<system>only noise"]), "<system>only noise")
+    }
+
     func testTitleNilWhenNoUserPromptSubmit() throws {
         let now: Int64 = 1_000_000
         try insert(id: "e1", type: "session_start", ts: now - 30_000, sessionId: "s1", cwd: "/tmp/r")

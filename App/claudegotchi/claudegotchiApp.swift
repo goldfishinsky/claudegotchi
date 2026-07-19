@@ -39,6 +39,7 @@ final class AppServices: ObservableObject {
     let leaderboard: LeaderboardService
     let syncDriver: LeaderboardSyncDriver
     let systemStats: SystemStatsDriver
+    let claudeUsage: ClaudeUsageDriver
 
     /// Thread-safe pause flag shared by both watchers (§7 pause semantics):
     /// while paused, synthetic PR nudges and hook events are still written and
@@ -120,6 +121,7 @@ final class AppServices: ObservableObject {
         tick = TickDriver(db: db, applier: applier, config: config, pausedProvider: pausedRef)
 
         systemStats = SystemStatsDriver()
+        claudeUsage = ClaudeUsageDriver()
     }
 
     /// Order matters: reconcile stale/queued fix jobs (and clean their worktrees)
@@ -208,13 +210,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.target = self
         statusItem = item
 
-        dropdown = MenuDropdownController(driver: statsDriver) {
+        let usageDriver = services.claudeUsage
+        dropdown = MenuDropdownController(driver: statsDriver, usageDriver: usageDriver) {
             AnyView(DropdownCard(
                 petModel: petModel,
                 workModel: model,
                 agentModel: agentModel,
                 services: services,
                 driver: statsDriver,
+                usageDriver: usageDriver,
                 onOpenStats: { [weak self] in
                     self?.dropdown?.hide()
                     self?.openStats(services, select: .overview)

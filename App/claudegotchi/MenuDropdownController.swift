@@ -2,6 +2,14 @@ import AppKit
 import SwiftUI
 import PetCore
 
+// Opts out of the menu-bar clamp so the card's transparent glow margin may
+// overlap the menu bar and the visible card hang flush beneath it.
+private final class DropdownPanel: NSPanel {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+        frameRect
+    }
+}
+
 // Anchors the dreamy card under the status-item button as a borderless,
 // non-activating panel (transparent so the warm glow spills past the card).
 // Dismisses on any click outside the panel; runs the system-stats sampler only
@@ -9,6 +17,7 @@ import PetCore
 @MainActor
 final class MenuDropdownController {
     private let driver: SystemStatsDriver
+    private let usageDriver: ClaudeUsageDriver
     private let makeRoot: () -> AnyView
 
     private var panel: NSPanel?
@@ -18,8 +27,9 @@ final class MenuDropdownController {
     // item both dismisses (via the monitor) and re-toggles the panel.
     private var closedAt = Date.distantPast
 
-    init(driver: SystemStatsDriver, root: @escaping () -> AnyView) {
+    init(driver: SystemStatsDriver, usageDriver: ClaudeUsageDriver, root: @escaping () -> AnyView) {
         self.driver = driver
+        self.usageDriver = usageDriver
         self.makeRoot = root
     }
 
@@ -33,12 +43,13 @@ final class MenuDropdownController {
         guard panel == nil else { return }
         guard Date().timeIntervalSince(closedAt) > 0.15 else { return }
         driver.start()
+        usageDriver.start()
 
         let hosting = NSHostingController(rootView: makeRoot())
         hosting.view.layoutSubtreeIfNeeded()
         let size = hosting.view.fittingSize
 
-        let panel = NSPanel(
+        let panel = DropdownPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
         )
@@ -68,6 +79,7 @@ final class MenuDropdownController {
         panel = nil
         closedAt = Date()
         driver.stop()
+        usageDriver.stop()
     }
 
     private func position(_ panel: NSPanel, under button: NSStatusBarButton, size: NSSize) {
@@ -78,13 +90,25 @@ final class MenuDropdownController {
         let cardW = DropdownCard.cardWidth
         let cardH = size.height - margin * 2
 
-        let cardTop = min(buttonRect.minY, vf.maxY) - 2
+        // Work in the visual card's own frame, then inset by `margin` for the
+        // window: the transparent glow border is 30pt on every side, so the
+        // window sits that far below/left of the card's visible bottom-left.
         let cardRight = min(buttonRect.maxX, vf.maxX - 6)
         let cardLeft = max(vf.minX + 6, cardRight - cardW)
-        // Keep the footer (primary actions) on-screen even on short displays by
-        // never letting the card bottom fall below the visible frame.
-        let originY = max(cardTop - cardH - margin, vf.minY + 6 - margin)
-        panel.setFrameOrigin(NSPoint(x: cardLeft - margin, y: originY))
+
+        // Menu-bar bottom off the physical frame, not visibleFrame: a non-notch
+        // aware app gets a visibleFrame shrunk below the notch, so on notched
+        // displays trust safeAreaInsets.top. Card top hangs 4pt under it; clamp
+        // up only if too tall, so the footer stays on-screen.
+        let scr = buttonWindow.screen ?? NSScreen.main
+        let frame = scr?.frame ?? vf
+        let safeTop = scr?.safeAreaInsets.top ?? 0
+        let menuBarBottom = frame.maxY - (safeTop > 0 ? safeTop : frame.maxY - vf.maxY)
+        let cardTop = max(menuBarBottom - 4, vf.minY + 6 + cardH)
+
+        let originX = cardLeft - margin
+        let originY = (cardTop - cardH) - margin
+        panel.setFrameOrigin(NSPoint(x: originX, y: originY))
     }
 
     private func installMonitors() {

@@ -12,6 +12,7 @@ struct DropdownCard: View {
     @ObservedObject var agentModel: AgentActivityModel
     @ObservedObject var services: AppServices
     @ObservedObject var driver: SystemStatsDriver
+    @ObservedObject var usageDriver: ClaudeUsageDriver
     var onOpenStats: () -> Void
 
     @Environment(\.colorScheme) private var scheme
@@ -29,6 +30,7 @@ struct DropdownCard: View {
             systemPanel(t)
             workPanel(t)
             agentPanel(t)
+            usageStrip(t)
             footer(t)
         }
         .padding(16)
@@ -46,101 +48,63 @@ struct DropdownCard: View {
         .frame(width: Self.totalWidth)
     }
 
-    // MARK: system metrics
+    // MARK: system metrics (compact icon grid)
+
+    private struct MetricCell: Identifiable {
+        let id: String
+        let symbol: String
+        let colors: [Color]
+        let value: String
+        let valueColor: Color
+    }
 
     private func systemPanel(_ t: WarmTheme) -> some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .leading), count: 3),
+            alignment: .leading, spacing: 7
+        ) {
+            ForEach(metricCells(t)) { c in
+                HStack(spacing: 6) {
+                    CandyIcon(symbol: c.symbol, colors: c.colors, size: 13)
+                    Text(c.value).font(WFont.value).monospacedDigit()
+                        .foregroundStyle(c.valueColor)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(t.panelFill))
+    }
+
+    private func metricCells(_ t: WarmTheme) -> [MetricCell] {
         let s = driver.snapshot
-        return SoftPanel(fill: t.panelFill) {
-            VStack(spacing: 12) {
-                HStack(alignment: .top, spacing: 16) {
-                    memCell(t, s)
-                    cpuCell(t, s)
-                }
-                HStack(spacing: 16) {
-                    netCell(t, "arrow.down.circle.fill", Candy.netDown, "下行", s?.downBytesPerSec)
-                    netCell(t, "arrow.up.circle.fill", Candy.netUp, "上行", s?.upBytesPerSec)
-                }
-                HStack(spacing: 16) {
-                    diskCell(t, s)
-                    if let bat = s?.battery { batteryCell(t, bat) }
-                }
-            }
+        let memFrac: Double? = {
+            guard let s, s.memTotalBytes > 0 else { return nil }
+            return Double(s.memUsedBytes) / Double(s.memTotalBytes)
+        }()
+        var cells: [MetricCell] = [
+            MetricCell(id: "mem", symbol: "memorychip.fill", colors: Candy.memory,
+                       value: pctText(memFrac), valueColor: memTierInk(t, s?.memPressure ?? .normal)),
+            MetricCell(id: "cpu", symbol: "cpu.fill",
+                       colors: (s?.cpuUsage ?? 0) >= 0.8 ? Candy.cpuHot : Candy.cpu,
+                       value: pctText(s.map(\.cpuUsage)), valueColor: t.inkStrong),
+        ]
+        if let bat = s?.battery {
+            cells.append(MetricCell(id: "bat", symbol: batterySymbol(bat.percent), colors: Candy.battery,
+                                    value: "\(min(100, max(0, bat.percent)))%", valueColor: t.inkStrong))
         }
-    }
-
-    private func barCell(_ t: WarmTheme, _ symbol: String, _ iconColors: [Color], _ label: String,
-                         _ frac: Double, _ barColors: [Color], _ valueText: String) -> some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                CandyIcon(symbol: symbol, colors: iconColors, size: 15)
-                    .frame(width: 18, alignment: .center)
-                Text(label).font(WFont.label).foregroundStyle(t.ink)
-                Spacer(minLength: 4)
-                Text(valueText).font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
-            }
-            SoftBar(fraction: frac, colors: barColors, track: t.track)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func memCell(_ t: WarmTheme, _ s: SystemSnapshot?) -> some View {
-        let used = s?.memUsedBytes ?? 0
-        let total = s?.memTotalBytes ?? 0
-        let frac = total > 0 ? Double(used) / Double(total) : 0
-        return VStack(spacing: 6) {
-            barCell(t, "memorychip.fill", Candy.memory, "内存", frac,
-                    memTierColors(s?.memPressure ?? .normal), pctText(s == nil ? nil : frac))
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                Text(s == nil ? "— / —" : "\(ByteFormat.size(used)) / \(ByteFormat.size(total))")
-                    .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint).lineLimit(1)
-            }
-        }
-    }
-
-    private func cpuCell(_ t: WarmTheme, _ s: SystemSnapshot?) -> some View {
-        let cpu = s?.cpuUsage ?? 0
-        return barCell(t, "cpu.fill", Candy.cpu, "CPU", cpu,
-                       cpu >= 0.8 ? Candy.cpuHot : Candy.cpu, pctText(s == nil ? nil : cpu))
-    }
-
-    private func netCell(_ t: WarmTheme, _ symbol: String, _ colors: [Color], _ label: String, _ bps: Double?) -> some View {
-        HStack(spacing: 8) {
-            CandyIcon(symbol: symbol, colors: colors, size: 15)
-                .frame(width: 18, alignment: .center)
-            Text(label).font(WFont.label).foregroundStyle(t.ink)
-            Spacer(minLength: 4)
-            Text(bps == nil ? "—" : ByteFormat.speed(bps!)).font(WFont.value).monospacedDigit()
-                .foregroundStyle(t.inkStrong).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func diskCell(_ t: WarmTheme, _ s: SystemSnapshot?) -> some View {
-        HStack(spacing: 8) {
-            CandyIcon(symbol: "internaldrive.fill", colors: Candy.disk, size: 15)
-                .frame(width: 18, alignment: .center)
-            Text("磁盘可用").font(WFont.label).foregroundStyle(t.ink)
-            Spacer(minLength: 4)
-            Text(s == nil ? "—" : ByteFormat.size(s!.diskFreeBytes)).font(WFont.value).monospacedDigit()
-                .foregroundStyle(t.inkStrong).lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func batteryCell(_ t: WarmTheme, _ bat: (percent: Int, charging: Bool)) -> some View {
-        let pct = min(100, max(0, bat.percent))
-        return HStack(spacing: 8) {
-            CandyIcon(symbol: batterySymbol(pct), colors: Candy.battery, size: 15)
-                .frame(width: 18, alignment: .center)
-            Text("电量").font(WFont.label).foregroundStyle(t.ink)
-            Spacer(minLength: 4)
-            if bat.charging {
-                CandyIcon(symbol: "bolt.fill", colors: Candy.bolt, size: 10)
-            }
-            Text("\(pct)%").font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
-        }
-        .frame(maxWidth: .infinity)
+        cells.append(contentsOf: [
+            MetricCell(id: "down", symbol: "arrow.down.circle.fill", colors: Candy.netDown,
+                       value: speedText(s?.downBytesPerSec), valueColor: t.inkStrong),
+            MetricCell(id: "up", symbol: "arrow.up.circle.fill", colors: Candy.netUp,
+                       value: speedText(s?.upBytesPerSec), valueColor: t.inkStrong),
+            MetricCell(id: "disk", symbol: "internaldrive.fill", colors: Candy.disk,
+                       value: s.map { ByteFormat.size($0.diskFreeBytes) } ?? "—", valueColor: t.inkStrong),
+        ])
+        return cells
     }
 
     // MARK: work / PR section
@@ -269,6 +233,42 @@ struct DropdownCard: View {
         }
     }
 
+    // MARK: claude subscription usage
+
+    @ViewBuilder
+    private func usageStrip(_ t: WarmTheme) -> some View {
+        if let u = usageDriver.usage {
+            HStack(spacing: 14) {
+                CandyIcon(symbol: "speedometer", colors: Candy.amber, size: 13)
+                    .frame(width: 16)
+                usageSeg(t, "5h", u.fiveHourPct)
+                usageSeg(t, "周", u.weeklyPct)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(t.panelFill))
+        }
+    }
+
+    private func usageSeg(_ t: WarmTheme, _ label: String, _ pct: Double) -> some View {
+        let clamped = min(100, max(0, pct))
+        return HStack(spacing: 7) {
+            Text(label).font(WFont.caption).foregroundStyle(t.ink)
+                .frame(width: 16, alignment: .leading)
+            SoftBar(fraction: clamped / 100, colors: usageColors(clamped), track: t.track, height: 5)
+            Text("\(Int(clamped.rounded()))%").font(WFont.vValue).monospacedDigit()
+                .foregroundStyle(t.inkStrong).frame(width: 34, alignment: .trailing)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func usageColors(_ pct: Double) -> [Color] {
+        if pct >= 80 { return Candy.coral }
+        if pct >= 50 { return Candy.memElevated }
+        return Candy.amber
+    }
+
     // MARK: footer actions
 
     private func footer(_ t: WarmTheme) -> some View {
@@ -302,11 +302,16 @@ struct DropdownCard: View {
         return "\(min(100, max(0, Int((frac * 100).rounded()))))%"
     }
 
-    private func memTierColors(_ tier: MemPressureTier) -> [Color] {
+    private func speedText(_ bps: Double?) -> String {
+        guard let bps else { return "—" }
+        return ByteFormat.speed(bps)
+    }
+
+    private func memTierInk(_ t: WarmTheme, _ tier: MemPressureTier) -> Color {
         switch tier {
-        case .normal: return Candy.memNormal
-        case .elevated: return Candy.memElevated
-        case .critical: return Candy.memCritical
+        case .normal: return t.good
+        case .elevated: return rgb(1.0, 0.60, 0.28)
+        case .critical: return t.danger
         }
     }
 

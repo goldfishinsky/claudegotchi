@@ -80,7 +80,7 @@ public enum AgentActivityTracker {
                 if let m: String = r["model"] { models[sid] = m }
             }
 
-            var titles: [String: String] = [:]
+            var prompts: [String: [String]] = [:]
             let titleCursor = try GRDB.Row.fetchCursor(conn, sql: """
                 SELECT session_id, json_extract(payload, '$.prompt') AS prompt
                 FROM event
@@ -90,8 +90,9 @@ public enum AgentActivityTracker {
                 """, arguments: StatementArguments(ids))
             while let r = try titleCursor.next() {
                 let sid: String = r["session_id"]
-                if titles[sid] == nil, let p: String = r["prompt"] { titles[sid] = p }
+                if let p: String = r["prompt"] { prompts[sid, default: []].append(p) }
             }
+            let titles = prompts.compactMapValues(pickTitle)
             return (totals, rates, models, titles)
         }
 
@@ -114,6 +115,21 @@ public enum AgentActivityTracker {
                     title: titles[s.sessionId]
                 )
             }
+    }
+
+    // Harness-injected prompts (task notifications, slash-command wrappers,
+    // system reminders) precede the human's first prompt; skip them for titles.
+    static let titleNoisePrefixes = [
+        "<task-notification>", "<local-command-caveat>", "<command-name>", "<system",
+    ]
+
+    static func pickTitle(_ prompts: [String]) -> String? {
+        guard let first = prompts.first else { return nil }
+        for p in prompts {
+            let trimmed = p.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !titleNoisePrefixes.contains(where: trimmed.hasPrefix) { return p }
+        }
+        return first
     }
 
     static func repoName(cwd: String?) -> String {
