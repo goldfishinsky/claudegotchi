@@ -92,4 +92,20 @@ final class LeaderboardPayloadTests: XCTestCase {
         XCTAssertEqual(payload.models["claude-sonnet-4-5"], SyncPayload.ModelCounts(in: 100, out: 40, calls: 2))
         XCTAssertEqual(payload.models["claude-opus-4-1"], SyncPayload.ModelCounts(in: 5, out: 2, calls: 1))
     }
+
+    func testDominantPlatformIsCodexWhenCodexTokensLead() throws {
+        _ = try Pet.insert(.fresh(species: "frog", at: nowMs - day), into: db)
+        try db.write { try ModelUsageStore.bump(model: "gpt-5-codex", tokensIn: 300, tokensOut: 50, in: $0) }
+        try db.write { try ModelUsageStore.bump(model: "claude-sonnet-4-5", tokensIn: 60, tokensOut: 30, in: $0) }
+        let payload = try XCTUnwrap(try LeaderboardPayload.build(db: db, nowMs: nowMs))
+        XCTAssertEqual(payload.platform, "codex")
+    }
+
+    func testDominantPlatformTieResolvesToClaudeCode() throws {
+        _ = try Pet.insert(.fresh(species: "frog", at: nowMs - day), into: db)
+        try db.write { try ModelUsageStore.bump(model: "gpt-5-codex", tokensIn: 50, tokensOut: 0, in: $0) }
+        try db.write { try ModelUsageStore.bump(model: "claude-opus-4-1", tokensIn: 50, tokensOut: 0, in: $0) }
+        let payload = try XCTUnwrap(try LeaderboardPayload.build(db: db, nowMs: nowMs))
+        XCTAssertEqual(payload.platform, "claude-code")
+    }
 }

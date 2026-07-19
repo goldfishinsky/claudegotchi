@@ -26,6 +26,10 @@ public struct AgentActivity: Equatable {
         self.model = model
         self.title = title
     }
+
+    /// Codex sessions are namespaced `codex-<uuid>` by the hook helper at spool time.
+    public var isCodex: Bool { sessionId.hasPrefix("codex-") }
+    public var platform: String { isCodex ? "codex" : "claude-code" }
 }
 
 public enum AgentActivityTracker {

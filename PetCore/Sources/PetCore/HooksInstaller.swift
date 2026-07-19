@@ -10,51 +10,84 @@ public enum HooksInstallerError: Error, Equatable {
 
 public enum HooksInstaller {
     private static let tagKey = "_claudegotchi"
-    private static let matcherEvents = ["PreToolUse", "PostToolUse"]
-    private static let eventArg: [(event: String, arg: String)] = [
-        ("PreToolUse", "pre_tool_use"),
-        ("PostToolUse", "post_tool_use"),
-        ("SessionStart", "session_start"),
-        ("UserPromptSubmit", "user_prompt_submit"),
-        ("Stop", "stop"),
-        ("Notification", "notification"),
-    ]
+
+    public enum Platform: Equatable {
+        case claude, codex
+    }
+
+    private struct Entry {
+        let event: String
+        let arg: String
+        let matcher: String?
+        let timeout: Int?
+    }
+
+    private static func entries(for platform: Platform) -> [Entry] {
+        switch platform {
+        case .claude:
+            return [
+                Entry(event: "PreToolUse", arg: "pre_tool_use", matcher: "*", timeout: nil),
+                Entry(event: "PostToolUse", arg: "post_tool_use", matcher: "*", timeout: nil),
+                Entry(event: "SessionStart", arg: "session_start", matcher: nil, timeout: nil),
+                Entry(event: "UserPromptSubmit", arg: "user_prompt_submit", matcher: nil, timeout: nil),
+                Entry(event: "Stop", arg: "stop", matcher: nil, timeout: nil),
+                Entry(event: "Notification", arg: "notification", matcher: nil, timeout: nil),
+            ]
+        case .codex:
+            return [
+                Entry(event: "SessionStart", arg: "codex_session_start", matcher: nil, timeout: 5),
+                Entry(event: "UserPromptSubmit", arg: "codex_user_prompt_submit", matcher: nil, timeout: 5),
+                Entry(event: "PreToolUse", arg: "codex_pre_tool_use", matcher: "", timeout: 5),
+                Entry(event: "PostToolUse", arg: "codex_post_tool_use", matcher: "", timeout: 5),
+                Entry(event: "Stop", arg: "codex_stop", matcher: nil, timeout: 5),
+                Entry(event: "PermissionRequest", arg: "codex_permission_request", matcher: nil, timeout: 5),
+            ]
+        }
+    }
 
     public static func install(settingsPath: URL, hookBinaryPath: String, nowISO: String) throws {
+        try install(platform: .claude, settingsPath: settingsPath, hookBinaryPath: hookBinaryPath, nowISO: nowISO)
+    }
+
+    public static func install(platform: Platform, settingsPath: URL, hookBinaryPath: String, nowISO: String) throws {
         var root = try readRoot(settingsPath)
         var hooks = (root["hooks"] as? [String: Any]) ?? [:]
         let command = shellQuoted(hookBinaryPath)
 
-        for (event, arg) in eventArg {
-            var groups = (hooks[event] as? [[String: Any]]) ?? []
-            let fullCommand = "\(command) \(arg)"
-            let wantsMatcher = matcherEvents.contains(event)
+        for entry in entries(for: platform) {
+            var groups = (hooks[entry.event] as? [[String: Any]]) ?? []
+            let fullCommand = "\(command) \(entry.arg)"
 
             if let gi = indexOfTaggedGroup(in: groups) {
                 var group = groups[gi]
                 var leaves = (group["hooks"] as? [[String: Any]]) ?? []
                 if let li = leaves.firstIndex(where: { $0[tagKey] as? Bool == true }) {
                     leaves[li]["command"] = fullCommand
+                    if let timeout = entry.timeout { leaves[li]["timeout"] = timeout }
                 } else {
-                    leaves.append(taggedLeaf(fullCommand))
+                    leaves.append(taggedLeaf(fullCommand, timeout: entry.timeout))
                 }
                 group["hooks"] = leaves
                 groups[gi] = group
             } else {
-                var group: [String: Any] = ["hooks": [taggedLeaf(fullCommand)]]
-                if wantsMatcher { group["matcher"] = "*" }
+                var group: [String: Any] = ["hooks": [taggedLeaf(fullCommand, timeout: entry.timeout)]]
+                if let matcher = entry.matcher { group["matcher"] = matcher }
                 groups.append(group)
             }
-            hooks[event] = groups
+            hooks[entry.event] = groups
         }
         root["hooks"] = hooks
         try writeAtomically(root, to: settingsPath, nowISO: nowISO)
     }
 
     public static func uninstall(settingsPath: URL) throws {
+        try uninstall(platform: .claude, settingsPath: settingsPath)
+    }
+
+    public static func uninstall(platform: Platform, settingsPath: URL) throws {
         var root = try readRoot(settingsPath)
         guard var hooks = root["hooks"] as? [String: Any] else { return }
-        for event in eventArg.map(\.event) {
+        for event in entries(for: platform).map(\.event) {
             guard var groups = hooks[event] as? [[String: Any]] else { continue }
             for gi in groups.indices {
                 var leaves = (groups[gi]["hooks"] as? [[String: Any]]) ?? []
@@ -69,11 +102,16 @@ public enum HooksInstaller {
     }
 
     public static func status(settingsPath: URL) throws -> HookInstallStatus {
+        try status(platform: .claude, settingsPath: settingsPath)
+    }
+
+    public static func status(platform: Platform, settingsPath: URL) throws -> HookInstallStatus {
         guard FileManager.default.fileExists(atPath: settingsPath.path) else { return .notInstalled }
         let root = try readRoot(settingsPath)
         let hooks = (root["hooks"] as? [String: Any]) ?? [:]
+        let events = entries(for: platform)
         var found = 0
-        for event in eventArg.map(\.event) {
+        for event in events.map(\.event) {
             for g in (hooks[event] as? [[String: Any]]) ?? [] {
                 if ((g["hooks"] as? [[String: Any]]) ?? []).contains(where: { $0[tagKey] as? Bool == true }) {
                     found += 1
@@ -81,7 +119,7 @@ public enum HooksInstaller {
             }
         }
         if found == 0 { return .notInstalled }
-        if found == eventArg.count { return .installed }
+        if found == events.count { return .installed }
         return .partiallyInstalled
     }
 
@@ -93,8 +131,10 @@ public enum HooksInstaller {
         }
     }
 
-    private static func taggedLeaf(_ command: String) -> [String: Any] {
-        ["type": "command", "command": command, tagKey: true]
+    private static func taggedLeaf(_ command: String, timeout: Int? = nil) -> [String: Any] {
+        var leaf: [String: Any] = ["type": "command", "command": command, tagKey: true]
+        if let timeout { leaf["timeout"] = timeout }
+        return leaf
     }
 
     private static func shellQuoted(_ path: String) -> String {

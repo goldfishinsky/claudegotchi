@@ -42,6 +42,27 @@ final class PermissionWatchTests: XCTestCase {
         XCTAssertFalse(PermissionWatch.isPermissionRequest(notificationType: nil, message: nil))
     }
 
+    func testCodexApprovalRequestIsPermissionUnit() {
+        XCTAssertTrue(PermissionWatch.isPermissionRequest(
+            notificationType: "approval_request", message: nil))
+        XCTAssertTrue(PermissionWatch.isPermissionRequest(
+            notificationType: "approval_request", message: "Codex 请求权限"))
+    }
+
+    func testCodexApprovalPendingSurfaces() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 20_000, sessionId: "codex-s1",
+                   cwd: "/Users/jalen/code/claudegotchi")
+        try insert(id: "e2", type: "notification", ts: now - 3_000, sessionId: "codex-s1",
+                   cwd: "/Users/jalen/code/claudegotchi",
+                   message: "Codex 请求权限", notificationType: "approval_request")
+        let pending = try PermissionWatch.pending(db: db, nowMs: now)
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending[0].sessionId, "codex-s1")
+        XCTAssertEqual(pending[0].message, "Codex 请求权限")
+        XCTAssertEqual(pending[0].repoName, "claudegotchi")
+    }
+
     func testPendingRequestSurfacesWhenLatestEvent() throws {
         let now: Int64 = 1_000_000
         try insert(id: "e1", type: "session_start", ts: now - 20_000, sessionId: "s1",

@@ -13,8 +13,11 @@ struct ClaudegotchiHook {
     static func run(args: [String], stdin: String?, spoolURL: URL = ClaudegotchiHook.spoolURL(),
                     cursorDir: URL = TranscriptTokens.defaultCursorDir()) -> Int32 {
         guard args.count >= 2 else { return 0 }
-        let type = args[1]
-        if rejectsRawType(type) { return 0 }
+        let rawArg = args[1]
+        if rejectsRawType(rawArg) { return 0 }
+
+        let isCodex = isCodexArg(rawArg)
+        let type = internalType(forArg: rawArg)
 
         var rawJSON = stdin
         if let i = args.firstIndex(of: "--json"), i + 1 < args.count {
@@ -26,25 +29,44 @@ struct ClaudegotchiHook {
         var tokensOut = extras["tokens_out"] as? Int
         var model = extras["model"] as? String
         let prompt = type == "user_prompt_submit" ? promptTitle(from: extras["prompt"] as? String) : nil
+
         let isNotification = type == "notification"
-        let message = isNotification ? notificationMessage(from: extras["message"] as? String) : nil
-        let notificationType = isNotification ? extras["notification_type"] as? String : nil
+        var message: String?
+        var notificationType: String?
+        if isNotification {
+            if isCodex {
+                notificationType = "approval_request"
+                message = notificationMessage(from: extras["message"] as? String) ?? codexApprovalFallback
+            } else {
+                message = notificationMessage(from: extras["message"] as? String)
+                notificationType = extras["notification_type"] as? String
+            }
+        }
 
         if tokensIn == nil, tokensOut == nil, type == "stop",
-           let transcript = extras["transcript_path"] as? String,
-           let sid = extras["session_id"] as? String,
-           let delta = TranscriptTokens.delta(transcriptPath: transcript, sessionId: sid, cursorDir: cursorDir) {
-            tokensIn = delta.tokensIn
-            tokensOut = delta.tokensOut
-            if model == nil { model = delta.model }
+           let transcript = extras["transcript_path"] as? String {
+            if isCodex {
+                if let delta = CodexTokens.delta(rolloutPath: transcript) {
+                    tokensIn = delta.tokensIn
+                    tokensOut = delta.tokensOut
+                }
+            } else if let sid = extras["session_id"] as? String,
+                      let delta = TranscriptTokens.delta(transcriptPath: transcript, sessionId: sid, cursorDir: cursorDir) {
+                tokensIn = delta.tokensIn
+                tokensOut = delta.tokensOut
+                if model == nil { model = delta.model }
+            }
         }
+
+        var sessionId = extras["session_id"] as? String
+        if isCodex, let sid = sessionId { sessionId = "codex-" + sid }
 
         let event = Event(
             schemaVersion: 1,
             eventId: ULID.generate(),
             ts: Int64(Date().timeIntervalSince1970 * 1000),
             type: Event.EventType(rawValue: type) ?? .notification,
-            sessionId: extras["session_id"] as? String,
+            sessionId: sessionId,
             tool: extras["tool"] as? String,
             tokensIn: tokensIn,
             tokensOut: tokensOut,
@@ -52,7 +74,8 @@ struct ClaudegotchiHook {
             cwd: extras["cwd"] as? String,
             prompt: prompt,
             message: message,
-            notificationType: notificationType
+            notificationType: notificationType,
+            platform: isCodex ? "codex" : nil
         )
 
         if let line = try? event.encodeJSON() {
@@ -89,6 +112,19 @@ struct ClaudegotchiHook {
 
     static func rejectsRawType(_ type: String) -> Bool {
         type.hasPrefix("pr_") || type.hasPrefix("pet_")
+    }
+
+    static let codexArgPrefix = "codex_"
+    static let codexApprovalFallback = "Codex 请求权限"
+
+    static func isCodexArg(_ arg: String) -> Bool {
+        arg.hasPrefix(codexArgPrefix)
+    }
+
+    static func internalType(forArg arg: String) -> String {
+        guard arg.hasPrefix(codexArgPrefix) else { return arg }
+        let codexEvent = String(arg.dropFirst(codexArgPrefix.count))
+        return codexEvent == "permission_request" ? "notification" : codexEvent
     }
 
     static let promptTitleMaxChars = 120

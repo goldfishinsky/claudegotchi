@@ -2,8 +2,6 @@ import Foundation
 import GRDB
 
 public enum LeaderboardPayload {
-    public static let platform = "claude-code"
-
     public static func build(db: DatabaseQueue, nowMs: Int64) throws -> SyncPayload? {
         let petCount = try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM pet") ?? 0 }
         guard petCount > 0 else { return nil }
@@ -30,10 +28,12 @@ public enum LeaderboardPayload {
         }
         let totals = SyncPayload.Totals(tokensIn: tokensIn, tokensOut: tokensOut, sessions: sessions, toolsUsed: tools)
 
+        let usages = try ModelUsageStore.all(in: db)
         var models: [String: SyncPayload.ModelCounts] = [:]
-        for usage in try ModelUsageStore.all(in: db) {
+        for usage in usages {
             models[usage.model] = SyncPayload.ModelCounts(in: usage.tokensIn, out: usage.tokensOut, calls: usage.calls)
         }
+        let platform = ModelPlatform.dominant(models: usages)
 
         return SyncPayload(platform: platform, totals: totals, pet: petSnapshot, best: best, models: models)
     }

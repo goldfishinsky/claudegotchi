@@ -266,6 +266,27 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(agents.map(\.sessionId), ["human"], "task-notification-only session is hidden")
     }
 
+    func testCodexSessionExposesPlatform() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 30_000, sessionId: "codex-uuid1",
+                   cwd: "/tmp/r", model: "gpt-5-codex")
+        try insert(id: "e2", type: "stop", ts: now - 5_000, sessionId: "codex-uuid1", cwd: "/tmp/r",
+                   tokensIn: 100, tokensOut: 20, model: "gpt-5-codex")
+        try insert(id: "e3", type: "pre_tool_use", ts: now - 1_000, sessionId: "codex-uuid1", cwd: "/tmp/r")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        let codex = try XCTUnwrap(agents.first { $0.isCodex })
+        XCTAssertEqual(codex.platform, "codex")
+        XCTAssertEqual(codex.sessionTokens, 120, "stop-carried codex tokens count toward the session")
+    }
+
+    func testClaudeSessionPlatformIsClaudeCode() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 5_000, sessionId: "plain-uuid", cwd: "/tmp/r")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents[0].platform, "claude-code")
+        XCTAssertFalse(agents[0].isCodex)
+    }
+
     func testFilterKeepsRealSessionWithNoisyLaterPrompt() throws {
         let now: Int64 = 1_000_000
         try insert(id: "e1", type: "session_start", ts: now - 6_000, sessionId: "s1", cwd: "/tmp/r")

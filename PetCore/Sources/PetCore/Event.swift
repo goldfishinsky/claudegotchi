@@ -18,13 +18,16 @@ public struct Event: Codable, Equatable {
     public let prompt: String?
     public let message: String?
     public let notificationType: String?
+    /// Absent means Claude Code (full back-compat with old spool lines / DB rows).
+    public let platform: String?
 
     public init(
         schemaVersion: Int, eventId: String, ts: Int64, type: EventType,
         sessionId: String?, tool: String?,
         tokensIn: Int?, tokensOut: Int?, model: String?,
         cwd: String? = nil, prompt: String? = nil,
-        message: String? = nil, notificationType: String? = nil
+        message: String? = nil, notificationType: String? = nil,
+        platform: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.eventId = eventId
@@ -39,6 +42,7 @@ public struct Event: Codable, Equatable {
         self.prompt = prompt
         self.message = message
         self.notificationType = notificationType
+        self.platform = platform
     }
 
     public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
@@ -70,6 +74,7 @@ public struct Event: Codable, Equatable {
         case prompt
         case message
         case notificationType = "notification_type"
+        case platform
     }
 
     public static func parse(_ json: String) throws -> Event {

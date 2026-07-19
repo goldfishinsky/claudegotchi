@@ -26,10 +26,12 @@ public struct PermissionRequest: Equatable {
 public enum PermissionWatch {
     public static let messagePrefix = "Claude needs your permission"
     public static let permissionNotificationType = "permission_prompt"
+    public static let codexApprovalNotificationType = "approval_request"
     public static let defaultMaxAgeMs: Int64 = 10 * 60 * 1000
 
     public static func isPermissionRequest(notificationType: String?, message: String?) -> Bool {
         if notificationType == permissionNotificationType { return true }
+        if notificationType == codexApprovalNotificationType { return true }
         if let message, message.hasPrefix(messagePrefix) { return true }
         return false
     }

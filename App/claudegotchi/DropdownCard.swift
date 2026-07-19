@@ -377,6 +377,14 @@ struct DropdownCard: View {
                         .frame(width: 6, height: 6)
                     Text(a.repoName).font(WFont.vLabel).foregroundStyle(t.ink)
                         .lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                    if a.isCodex {
+                        Text("codex").font(WFont.caption)
+                            .foregroundStyle(rgb(0.55, 0.45, 0.95))
+                            .padding(.horizontal, 4).padding(.vertical, 0.5)
+                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(rgb(0.72, 0.57, 1.0).opacity(0.18)))
+                            .fixedSize()
+                    }
                     if let model = a.model {
                         Text(model).font(WFont.caption).foregroundStyle(t.inkFaint)
                             .lineLimit(1).fixedSize()

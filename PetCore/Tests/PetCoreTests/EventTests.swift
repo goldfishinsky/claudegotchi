@@ -117,4 +117,26 @@ final class EventTests: XCTestCase {
         XCTAssertFalse(try noPrompt.encodeJSON().contains("prompt"), "nil prompt is omitted from JSON")
         XCTAssertNil(try Event.parse(try noPrompt.encodeJSON()).prompt)
     }
+
+    func testPlatformRoundTripsAndIsOmittedWhenNil() throws {
+        let codex = Event(
+            schemaVersion: 1, eventId: "a", ts: 0, type: .stop,
+            sessionId: "codex-1", tool: nil, tokensIn: 1, tokensOut: 2, model: "gpt-5-codex",
+            platform: "codex"
+        )
+        let encoded = try codex.encodeJSON()
+        XCTAssertTrue(encoded.contains("\"platform\":\"codex\""))
+        XCTAssertEqual(try Event.parse(encoded).platform, "codex")
+
+        let claude = Event(
+            schemaVersion: 1, eventId: "b", ts: 0, type: .stop,
+            sessionId: "s", tool: nil, tokensIn: nil, tokensOut: nil, model: nil
+        )
+        XCTAssertFalse(try claude.encodeJSON().contains("platform"), "nil platform omitted (back-compat)")
+    }
+
+    func testOldLineWithoutPlatformDecodesNil() throws {
+        let json = #"{"schema_version":1,"event_id":"a","ts":0,"type":"stop","session_id":"s1"}"#
+        XCTAssertNil(try Event.parse(json).platform)
+    }
 }
