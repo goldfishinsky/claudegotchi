@@ -4,40 +4,111 @@ import GRDB
 import PetCore
 
 enum IslandMetric {
-    static let pillWidth: CGFloat = 56
-    static let stripWidth: CGFloat = 150
-    static let corner: CGFloat = 10
+    static let lobeWidth: CGFloat = 54
+    static let stripWidth: CGFloat = 158
+    static let topFlare: CGFloat = 7
+    static let bottomCorner: CGFloat = 10
+    static let bottomExtend: CGFloat = 4
+}
+
+// MARK: - notch shape
+
+// The wrapping-island silhouette: top corners flare concavely into the menu-bar
+// surface, bottom corners curve convexly (matching the physical notch). Ported
+// from boring.notch / DynamicNotchKit.
+private struct NotchShape: Shape {
+    var topCornerRadius: CGFloat = IslandMetric.topFlare
+    var bottomCornerRadius: CGFloat = IslandMetric.bottomCorner
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let top = topCornerRadius, bottom = bottomCornerRadius
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + top, y: rect.minY + top),
+            control: CGPoint(x: rect.minX + top, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + top, y: rect.maxY - bottom))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + top + bottom, y: rect.maxY),
+            control: CGPoint(x: rect.minX + top, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - top - bottom, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - top, y: rect.maxY - bottom),
+            control: CGPoint(x: rect.maxX - top, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - top, y: rect.minY + top))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY),
+            control: CGPoint(x: rect.maxX - top, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+        return path
+    }
 }
 
 // MARK: - notch geometry
 
 struct NotchGeometry {
     let screen: NSScreen
-    let islandFrame: NSRect
+    let notchRect: NSRect
+    let notchCenterX: CGFloat
+    let islandHeight: CGFloat
+
+    var notchWidth: CGFloat { notchRect.width }
 
     /// The built-in notched display, if any: `safeAreaInsets.top > 0` is present
-    /// only on the notched built-in panel (external displays never have a notch).
-    /// The pill hugs the notch's right edge, top flush with the screen top,
-    /// height = the menu-bar band.
-    static func builtInNotch(pillWidth: CGFloat = IslandMetric.pillWidth) -> NotchGeometry? {
+    /// only on the notched built-in panel. The physical cutout spans from the
+    /// left auxiliary area's right edge to the right auxiliary area's left edge.
+    static func builtInNotch() -> NotchGeometry? {
         for screen in NSScreen.screens {
             let menuBarHeight = screen.safeAreaInsets.top
-            guard menuBarHeight > 0, let auxRight = screen.auxiliaryTopRightArea else { continue }
-            let frame = NSRect(
-                x: auxRight.minX, y: screen.frame.maxY - menuBarHeight,
-                width: pillWidth, height: menuBarHeight
-            )
-            return NotchGeometry(screen: screen, islandFrame: frame)
+            guard menuBarHeight > 0,
+                  let auxLeft = screen.auxiliaryTopLeftArea,
+                  let auxRight = screen.auxiliaryTopRightArea else { continue }
+            let notchLeft = auxLeft.maxX
+            let notchWidth = auxRight.minX - notchLeft
+            guard notchWidth > 0 else { continue }
+            let notchRect = NSRect(
+                x: notchLeft, y: screen.frame.maxY - menuBarHeight,
+                width: notchWidth, height: menuBarHeight)
+            return NotchGeometry(
+                screen: screen, notchRect: notchRect, notchCenterX: notchRect.midX,
+                islandHeight: menuBarHeight + IslandMetric.bottomExtend)
         }
         return nil
+    }
+
+    /// The wrapping window frame: lobes flank the physical cutout and the island
+    /// bottom hangs `bottomExtend` below the notch. The left lobe collapses when
+    /// no agents are active; the alert strip extends the island rightward.
+    func frame(leftLobe: Bool, alert: Bool) -> NSRect {
+        let lc = leftLobe ? IslandMetric.lobeWidth : 0
+        let strip = alert ? IslandMetric.stripWidth : 0
+        return NSRect(
+            x: notchRect.minX - lc, y: notchRect.maxY - islandHeight,
+            width: lc + notchRect.width + IslandMetric.lobeWidth + strip,
+            height: islandHeight)
+    }
+
+    /// Anchor rect that centres the dropdown card under the notch: the card's
+    /// right edge lands at `notchCenterX + cardWidth/2` (position() flush-rights).
+    var dropdownAnchor: NSRect {
+        NSRect(x: notchCenterX - DropdownCard.cardWidth / 2, y: notchRect.minY,
+               width: DropdownCard.cardWidth, height: islandHeight)
     }
 }
 
 // MARK: - model
 
+struct CompletionReveal: Equatable {
+    let sessionId: String
+    let repoName: String
+    let cwd: String?
+}
+
 @MainActor
 final class IslandModel: ObservableObject {
     @Published private(set) var pendingPermission: PermissionRequest?
+    @Published private(set) var permissionStripSuppressed = false
+    @Published private(set) var completion: CompletionReveal?
     @Published private(set) var enabled: Bool
 
     let notchAvailable: Bool
@@ -59,12 +130,29 @@ final class IslandModel: ObservableObject {
         UserDefaults.standard.set(value, forKey: Self.enabledKey)
     }
 
+    /// A pending permission expands the strip (pet still wobbles); a completion
+    /// expands the strip only when no permission is competing. Permission always
+    /// wins. Suppression hides the permission strip while keeping the wobble.
+    var showPermissionStrip: Bool { pendingPermission != nil && !permissionStripSuppressed }
+    var showCompletionStrip: Bool { pendingPermission == nil && completion != nil }
+    var showsStrip: Bool { showPermissionStrip || showCompletionStrip }
+    var hasActiveAlertState: Bool { pendingPermission != nil || completion != nil }
+
     /// Freshest unanswered permission request ≤ `alertWindowMs` old; nil clears
     /// the strip (superseded, or aged past the auto-dismiss window).
-    func refresh() {
+    func refresh(filter: SessionFilter) {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        let next = (try? PermissionWatch.pending(db: db, nowMs: nowMs, maxAgeMs: alertWindowMs))?.first
+        let next = (try? PermissionWatch.pending(
+            db: db, nowMs: nowMs, maxAgeMs: alertWindowMs, filter: filter))?.first
         if next != pendingPermission { pendingPermission = next }
+    }
+
+    func setPermissionStripSuppressed(_ value: Bool) {
+        if value != permissionStripSuppressed { permissionStripSuppressed = value }
+    }
+
+    func setCompletion(_ value: CompletionReveal?) {
+        if value != completion { completion = value }
     }
 }
 
@@ -74,50 +162,65 @@ struct NotchIslandView: View {
     @ObservedObject var petModel: PetPanelModel
     @ObservedObject var agentModel: AgentActivityModel
     @ObservedObject var island: IslandModel
+    let notchWidth: CGFloat
     let height: CGFloat
     var onHover: (Bool) -> Void
     var onClick: () -> Void
     var onAlertClick: (PermissionRequest) -> Void
+    var onCompletionClick: (CompletionReveal) -> Void
 
     private var theme: WarmTheme { WarmTheme(scheme: .dark) }
+    private var hasLeftLobe: Bool { agentModel.agents.count > 0 }
+    private let coral = rgb(1.0, 0.62, 0.46)
+    private let mint = rgb(0.52, 0.86, 0.56)
+
+    private var shape: NotchShape { NotchShape() }
 
     var body: some View {
-        HStack(spacing: 0) {
-            pill
-            if let req = island.pendingPermission { strip(req) }
+        ZStack(alignment: .topLeading) {
+            shape.fill(Color.black).frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                badgeLobe.frame(width: hasLeftLobe ? IslandMetric.lobeWidth : 0)
+                Color.clear.frame(width: notchWidth).allowsHitTesting(false)
+                petLobe.frame(width: IslandMetric.lobeWidth)
+                if island.showPermissionStrip, let req = island.pendingPermission {
+                    alertStrip(req).frame(width: IslandMetric.stripWidth)
+                } else if island.showCompletionStrip, let comp = island.completion {
+                    completionStrip(comp).frame(width: IslandMetric.stripWidth)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         }
         .frame(height: height)
-        .background(
-            UnevenRoundedRectangle(
-                bottomLeadingRadius: IslandMetric.corner, bottomTrailingRadius: IslandMetric.corner,
-                style: .continuous
-            )
-            .fill(Color.black)
-        )
-        .clipShape(UnevenRoundedRectangle(
-            bottomLeadingRadius: IslandMetric.corner, bottomTrailingRadius: IslandMetric.corner,
-            style: .continuous
-        ))
+        .contentShape(shape)
         .onHover { onHover($0) }
+        .onTapGesture { onClick() }
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: hasLeftLobe)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: island.pendingPermission)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: island.showsStrip)
+        .animation(.spring(response: 0.34, dampingFraction: 0.82), value: island.completion)
     }
 
-    private var pill: some View {
-        ZStack {
-            miniTheater
-            if agentModel.agents.count > 0 { badge }
-        }
-        .frame(width: IslandMetric.pillWidth, height: height)
-        .contentShape(Rectangle())
-        .onTapGesture { onClick() }
+    private var badgeLobe: some View {
+        let count = agentModel.agents.count
+        return Text(count > 9 ? "9+" : "\(count)")
+            .font(.system(size: 11, weight: .heavy, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5)
+            .frame(minWidth: 22, minHeight: 20)
+            .background(Capsule().fill(
+                LinearGradient(colors: Candy.violet, startPoint: .top, endPoint: .bottom)))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .opacity(hasLeftLobe ? 1 : 0)
     }
 
     @ViewBuilder
-    private var miniTheater: some View {
-        let alert = island.pendingPermission != nil
+    private var petLobe: some View {
+        let shaking = island.pendingPermission != nil
         Group {
             if let visual = petModel.visual {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { ctx in
-                    let wobble = alert ? sin(ctx.date.timeIntervalSince1970 * 18) * 1.6 : 0
+                    let wobble = shaking ? sin(ctx.date.timeIntervalSince1970 * 18) * 1.6 : 0
                     TheaterPetView(
                         visual: visual, species: petModel.species,
                         signals: petModel.makeSignals(memPressureHigh: false), theme: theme,
@@ -126,49 +229,53 @@ struct NotchIslandView: View {
                     .offset(x: wobble)
                 }
             } else {
-                Text("🥚").font(.system(size: 14))
+                Text("🥚").font(.system(size: 15))
             }
         }
-        .frame(width: IslandMetric.pillWidth - 6, height: height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var badge: some View {
-        let count = agentModel.agents.count
-        return Text(count > 9 ? "9+" : "\(count)")
-            .font(.system(size: 8, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 3)
-            .frame(minWidth: 12, minHeight: 12)
-            .background(Circle().fill(LinearGradient(colors: Candy.violet, startPoint: .top, endPoint: .bottom)))
-            .overlay(Circle().stroke(Color.black, lineWidth: 1))
-            .offset(x: IslandMetric.pillWidth / 2 - 8, y: -height / 2 + 8)
-    }
-
-    private func strip(_ req: PermissionRequest) -> some View {
-        HStack(spacing: 5) {
+    private func alertStrip(_ req: PermissionRequest) -> some View {
+        HStack(spacing: 6) {
             Circle().fill(LinearGradient(colors: Candy.coral, startPoint: .top, endPoint: .bottom))
                 .frame(width: 6, height: 6)
                 .shadow(color: Candy.coral[1].opacity(0.7), radius: 2)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(req.repoName)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(1).truncationMode(.middle)
-                Text("请求权限")
-                    .font(.system(size: 8.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(rgb(1.0, 0.62, 0.46))
-            }
-            Spacer(minLength: 0)
+            Text("\(req.repoName) · 请求权限")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(coral)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 2)
             Image(systemName: "arrow.up.forward.app.fill")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(rgb(1.0, 0.62, 0.46))
+                .foregroundStyle(coral)
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 8)
-        .frame(width: IslandMetric.stripWidth, height: height)
-        .background(Color.white.opacity(0.06))
+        .padding(.leading, 8).padding(.trailing, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { onAlertClick(req) }
+        .transition(.opacity)
+    }
+
+    private func completionStrip(_ comp: CompletionReveal) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(LinearGradient(colors: Candy.stam, startPoint: .top, endPoint: .bottom))
+                .shadow(color: Candy.stam[0].opacity(0.7), radius: 2)
+            Text("\(comp.repoName) · 完成")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(mint)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 2)
+            Image(systemName: "arrow.up.forward.app.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(mint)
+        }
+        .padding(.leading, 8).padding(.trailing, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { onCompletionClick(comp) }
+        .transition(.opacity)
     }
 }
 
@@ -176,6 +283,7 @@ struct NotchIslandView: View {
 
 private final class IslandPanel: NSPanel {
     override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
@@ -187,10 +295,14 @@ final class NotchIslandController {
     private let petModel: PetPanelModel
     private let agentModel: AgentActivityModel
     private let island: IslandModel
+    private let db: DatabaseQueue
+    private let settings: SettingsStore
 
     private var panel: NSPanel?
     private var geometry: NotchGeometry?
-    private var lastHasAlert = false
+    private var lastLeftLobe = false
+    private var lastHasStrip = false
+    private var currentlyVisible = true
 
     private var expandWork: DispatchWorkItem?
     private var watchdog: Timer?
@@ -200,12 +312,19 @@ final class NotchIslandController {
     private var globalClickMon: Any?
     private var localClickMon: Any?
 
+    private var completionDetector = CompletionDetector()
+    private var completionTimer: Timer?
+    private var escMonitor: Any?
+
     init(dropdown: MenuDropdownController, petModel: PetPanelModel,
-         agentModel: AgentActivityModel, island: IslandModel) {
+         agentModel: AgentActivityModel, island: IslandModel,
+         db: DatabaseQueue, settings: SettingsStore) {
         self.dropdown = dropdown
         self.petModel = petModel
         self.agentModel = agentModel
         self.island = island
+        self.db = db
+        self.settings = settings
     }
 
     var isPresent: Bool { panel != nil }
@@ -224,11 +343,72 @@ final class NotchIslandController {
     }
 
     /// Piggybacks on the app's refresh cycles (petDidChange + the 5s timer);
-    /// a fast 3s poll runs only while an alert is showing.
+    /// a fast 3s poll runs only while an alert/completion is showing.
     func refresh() {
         guard panel != nil else { return }
-        island.refresh()
-        syncAlertState()
+        let filter = settings.sessionFilter
+        island.refresh(filter: filter)
+        updatePermissionSuppression()
+        detectCompletions(filter: filter)
+        layout(animated: true)
+    }
+
+    // MARK: completion reveal
+
+    private func updatePermissionSuppression() {
+        guard let req = island.pendingPermission else {
+            island.setPermissionStripSuppressed(false); return
+        }
+        let suppressed = settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: req.cwd)
+        island.setPermissionStripSuppressed(suppressed)
+        if suppressed { clearCompletion() }
+    }
+
+    private func detectCompletions(filter: SessionFilter) {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let stops = (try? CompletionWatch.recentCompletions(db: db, nowMs: nowMs, filter: filter)) ?? []
+        let newly = completionDetector.newlyCompleted(stops)
+        guard settings.completionRevealEnabled,
+              island.pendingPermission == nil,
+              !FocusInspector.screenIsLocked(),
+              let latest = newly.max(by: { $0.tsMs < $1.tsMs }) else { return }
+        if settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: latest.cwd) { return }
+        island.setCompletion(CompletionReveal(
+            sessionId: latest.sessionId, repoName: latest.repoName, cwd: latest.cwd))
+        startCompletionDwell()
+        installEscMonitor()
+    }
+
+    private func startCompletionDwell() {
+        completionTimer?.invalidate()
+        let timer = Timer(timeInterval: TimeInterval(settings.completionDwellSeconds), repeats: false) {
+            [weak self] _ in MainActor.assumeIsolated { self?.clearCompletion() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        completionTimer = timer
+    }
+
+    private func clearCompletion() {
+        completionTimer?.invalidate(); completionTimer = nil
+        removeEscMonitor()
+        if island.completion != nil {
+            island.setCompletion(nil)
+            layout(animated: true)
+        }
+    }
+
+    private func installEscMonitor() {
+        removeEscMonitor()
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            MainActor.assumeIsolated { self?.clearCompletion() }
+            return nil
+        }
+    }
+
+    private func removeEscMonitor() {
+        if let escMonitor { NSEvent.removeMonitor(escMonitor) }
+        escMonitor = nil
     }
 
     // MARK: panel
@@ -236,54 +416,85 @@ final class NotchIslandController {
     private func buildPanel(_ geo: NotchGeometry) {
         let root = NotchIslandView(
             petModel: petModel, agentModel: agentModel, island: island,
-            height: geo.islandFrame.height,
+            notchWidth: geo.notchWidth, height: geo.islandHeight,
             onHover: { [weak self] in self?.islandHover($0) },
             onClick: { [weak self] in self?.islandClick() },
-            onAlertClick: { [weak self] in self?.alertClick($0) }
+            onAlertClick: { [weak self] in self?.alertClick($0) },
+            onCompletionClick: { [weak self] in self?.completionClick($0) }
         )
         let hosting = NSHostingController(rootView: AnyView(root))
         let panel = IslandPanel(
-            contentRect: NSRect(origin: .zero, size: geo.islandFrame.size),
+            contentRect: NSRect(origin: .zero, size: geo.frame(leftLobe: false, alert: false).size),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
         )
         panel.contentViewController = hosting
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        // isFloatingPanel forces NSFloatingWindowLevel (3), which sits *behind*
-        // the menu bar (24); set the level last so the pill draws over it.
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        // statusBar+1 draws over the menu bar (24); set last so nothing lowers it.
         panel.becomesKeyOnlyIfNeeded = true
         panel.hidesOnDeactivate = false
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.acceptsMouseMovedEvents = true
         panel.isReleasedWhenClosed = false
-        panel.setFrame(geo.islandFrame, display: true)
         panel.orderFrontRegardless()
         self.panel = panel
-        lastHasAlert = false
-        island.refresh()
-        syncAlertState()
+        lastLeftLobe = false
+        lastHasStrip = false
+        currentlyVisible = true
+        island.refresh(filter: settings.sessionFilter)
+        layout(animated: false)
     }
 
     private func teardown() {
         collapse()
+        clearCompletion()
         alertTimer?.invalidate(); alertTimer = nil
         panel?.orderOut(nil)
         panel = nil
         geometry = nil
     }
 
-    /// Widen the window for the alert strip and drive the 3s alert poll.
-    private func syncAlertState() {
+    /// Resize the wrapping window to match the current lobe/strip state and drive
+    /// the 3s poll. The SwiftUI content is leading-anchored, so a rightward grow
+    /// reveals the strip while the pet/badge stay put. Auto-hide fades the whole
+    /// island out when no post-filter session (or alert) remains.
+    private func layout(animated: Bool) {
         guard let panel, let geo = geometry else { return }
-        let hasAlert = island.pendingPermission != nil
-        guard hasAlert != lastHasAlert else { return }
-        lastHasAlert = hasAlert
-        var frame = geo.islandFrame
-        frame.size.width = geo.islandFrame.width + (hasAlert ? IslandMetric.stripWidth : 0)
-        panel.setFrame(frame, display: true)
-        if hasAlert { startAlertPoll() } else { stopAlertPoll() }
+        let leftLobe = agentModel.agents.count > 0
+        let hasStrip = island.showsStrip
+        let poll = island.hasActiveAlertState
+        if poll != (alertTimer != nil) {
+            if poll { startAlertPoll() } else { stopAlertPoll() }
+        }
+        applyVisibility(animated: animated)
+        let changed = leftLobe != lastLeftLobe || hasStrip != lastHasStrip
+        lastLeftLobe = leftLobe
+        lastHasStrip = hasStrip
+        let frame = geo.frame(leftLobe: leftLobe, alert: hasStrip)
+        guard changed || panel.frame != frame else { return }
+        panel.setFrame(frame, display: true, animate: animated && changed)
+    }
+
+    private func islandShouldBeVisible() -> Bool {
+        if !settings.autoHideWhenNoSessions { return true }
+        return agentModel.agents.count > 0 || island.hasActiveAlertState
+    }
+
+    private func applyVisibility(animated: Bool) {
+        guard let panel else { return }
+        let visible = islandShouldBeVisible()
+        guard visible != currentlyVisible else { return }
+        currentlyVisible = visible
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                panel.animator().alphaValue = visible ? 1 : 0
+            }
+        } else {
+            panel.alphaValue = visible ? 1 : 0
+        }
     }
 
     private func startAlertPoll() {
@@ -305,7 +516,7 @@ final class NotchIslandController {
             guard !dropdown.isVisible else { return }
             let work = DispatchWorkItem { [weak self] in self?.expand(pinned: false) }
             expandWork?.cancel(); expandWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + settings.hoverDelay, execute: work)
         } else {
             expandWork?.cancel(); expandWork = nil
         }
@@ -324,14 +535,21 @@ final class NotchIslandController {
         SessionJumper.shared.jump(cwd: req.cwd ?? "")
     }
 
+    private func completionClick(_ comp: CompletionReveal) {
+        clearCompletion()
+        SessionJumper.shared.jump(cwd: comp.cwd ?? "")
+    }
+
     private func expand(pinned: Bool) {
         guard let geo = geometry else { return }
         self.pinned = pinned
         if !dropdown.isVisible {
-            dropdown.show(anchorRect: geo.islandFrame, on: geo.screen, autoDismiss: false)
+            dropdown.show(anchorRect: geo.dropdownAnchor, on: geo.screen, autoDismiss: false)
         }
         startWatchdog()
-        if pinned { installClickMonitors() }
+        // Without hover auto-collapse, a hover-open panel dismisses on outside
+        // click instead (mouse-leave alone can't close it).
+        if pinned || !settings.autoCollapseOnLeave { installClickMonitors() }
     }
 
     private func collapse() {
@@ -359,7 +577,7 @@ final class NotchIslandController {
 
     private func watchdogTick() {
         guard dropdown.isVisible else { collapse(); return }
-        if pinned { return }
+        if pinned || !settings.autoCollapseOnLeave { return }
         if cursorInsideIslandOrCard() { outsideSince = nil; return }
         if let since = outsideSince {
             if Date().timeIntervalSince(since) >= 0.4 { collapse() }
@@ -399,7 +617,7 @@ final class NotchIslandController {
     }
 
     private func dismissIfOutside() {
-        guard pinned, dropdown.isVisible else { return }
+        guard dropdown.isVisible else { return }
         if !cursorInsideIslandOrCard() { collapse() }
     }
 }
