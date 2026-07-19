@@ -16,10 +16,22 @@ struct DropdownCard: View {
     var onOpenStats: () -> Void
 
     @Environment(\.colorScheme) private var scheme
+    @State private var hoverTarget: HoverTarget?
+    @State private var pendingHover: DispatchWorkItem?
 
     static let cardWidth: CGFloat = 400
     static let glowMargin: CGFloat = 30
     static let totalWidth: CGFloat = cardWidth + glowMargin * 2
+    private static let cardSpace = "dropdownCard"
+
+    enum HoverTarget: Hashable { case cpu, mem }
+
+    struct CellAnchorKey: PreferenceKey {
+        static var defaultValue: [HoverTarget: Anchor<CGRect>] = [:]
+        static func reduce(value: inout Value, nextValue: () -> Value) {
+            value.merge(nextValue()) { $1 }
+        }
+    }
 
     private var theme: WarmTheme { WarmTheme(scheme: scheme) }
 
@@ -35,6 +47,10 @@ struct DropdownCard: View {
         }
         .padding(16)
         .frame(width: Self.cardWidth)
+        .coordinateSpace(name: Self.cardSpace)
+        .overlayPreferenceValue(CellAnchorKey.self) { anchors in
+            popoverOverlay(t, anchors)
+        }
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(LinearGradient(colors: [t.surfaceTop, t.surfaceBottom],
@@ -60,23 +76,67 @@ struct DropdownCard: View {
 
     private func systemPanel(_ t: WarmTheme) -> some View {
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .leading), count: 3),
+            columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .topLeading), count: 3),
             alignment: .leading, spacing: 7
         ) {
             ForEach(metricCells(t)) { c in
-                HStack(spacing: 6) {
-                    CandyIcon(symbol: c.symbol, colors: c.colors, size: 13)
-                    Text(c.value).font(WFont.value).monospacedDigit()
-                        .foregroundStyle(c.valueColor)
-                        .lineLimit(1).minimumScaleFactor(0.7)
-                    Spacer(minLength: 0)
-                }
+                metricCell(t, c)
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(t.panelFill))
+    }
+
+    @ViewBuilder
+    private func metricCell(_ t: WarmTheme, _ c: MetricCell) -> some View {
+        switch c.id {
+        case "cpu": cpuCell(t, c)
+        case "mem": hoverable(.mem, metricRow(t, c))
+        default: metricRow(t, c)
+        }
+    }
+
+    private func metricRow(_ t: WarmTheme, _ c: MetricCell) -> some View {
+        HStack(spacing: 6) {
+            CandyIcon(symbol: c.symbol, colors: c.colors, size: 13)
+            Text(c.value).font(WFont.value).monospacedDigit()
+                .foregroundStyle(c.valueColor)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func cpuCell(_ t: WarmTheme, _ c: MetricCell) -> some View {
+        let cores = driver.perCoreUsage
+        return hoverable(.cpu, VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                CandyIcon(symbol: c.symbol, colors: c.colors, size: 13)
+                Text(c.value).font(WFont.value).monospacedDigit()
+                    .foregroundStyle(c.valueColor)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+                if driver.thermal.isElevated {
+                    Circle().fill(LinearGradient(colors: Candy.cpuHot, startPoint: .top, endPoint: .bottom))
+                        .frame(width: 5, height: 5)
+                        .shadow(color: Candy.cpuHot[1].opacity(0.7), radius: 2)
+                }
+                Spacer(minLength: 0)
+            }
+            if !cores.isEmpty {
+                CoreBar(cores: cores,
+                        colors: (driver.snapshot?.cpuUsage ?? 0) >= 0.8 ? Candy.cpuHot : Candy.cpu,
+                        track: t.track)
+            }
+        })
+    }
+
+    private func hoverable<V: View>(_ target: HoverTarget, _ content: V) -> some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .anchorPreference(key: CellAnchorKey.self, value: .bounds) { [target: $0] }
+            .onHover { scheduleHover(target, $0) }
     }
 
     private func metricCells(_ t: WarmTheme) -> [MetricCell] {
@@ -105,6 +165,111 @@ struct DropdownCard: View {
                        value: s.map { ByteFormat.size($0.diskFreeBytes) } ?? "—", valueColor: t.inkStrong),
         ])
         return cells
+    }
+
+    // MARK: hover popovers
+
+    private func scheduleHover(_ target: HoverTarget, _ hovering: Bool) {
+        pendingHover?.cancel()
+        let work: DispatchWorkItem
+        if hovering {
+            work = DispatchWorkItem { withAnimation(.easeOut(duration: 0.12)) { hoverTarget = target } }
+        } else {
+            work = DispatchWorkItem {
+                if hoverTarget == target { withAnimation(.easeOut(duration: 0.12)) { hoverTarget = nil } }
+            }
+        }
+        pendingHover = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (hovering ? 0.3 : 0.2), execute: work)
+    }
+
+    @ViewBuilder
+    private func popoverOverlay(_ t: WarmTheme, _ anchors: [HoverTarget: Anchor<CGRect>]) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                if let target = hoverTarget, let anchor = anchors[target] {
+                    let rect = proxy[anchor]
+                    let popW: CGFloat = 220
+                    let x = min(max(0, rect.minX - 6), max(0, proxy.size.width - popW))
+                    popoverContent(t, target)
+                        .frame(width: popW)
+                        .offset(x: x, y: rect.maxY + 6)
+                        .onHover { scheduleHover(target, $0) }
+                        .transition(.opacity)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func popoverContent(_ t: WarmTheme, _ target: HoverTarget) -> some View {
+        switch target {
+        case .cpu: cpuPopover(t)
+        case .mem: memPopover(t)
+        }
+    }
+
+    private func cpuPopover(_ t: WarmTheme) -> some View {
+        MetricPopover(theme: t) {
+            popoverHeader(t, "cpu.fill", Candy.cpu, "处理器", pctText(driver.snapshot?.cpuUsage))
+            if let la = driver.loadAverage {
+                Text("负载 \(LoadAverage.format(la.one, la.five, la.fifteen)) / \(driver.coreCount) 核")
+                    .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+            }
+            Sparkline(values: driver.cpuHistory, colors: Candy.cpu)
+            procList(t, driver.topCPU.map { ($0.name, cpuPercentText($0.percent)) })
+        }
+    }
+
+    private func memPopover(_ t: WarmTheme) -> some View {
+        MetricPopover(theme: t) {
+            popoverHeader(t, "memorychip.fill", Candy.memory, "内存", memUsedText())
+            Text("压缩 \(ByteFormat.size(driver.compressedBytes)) · 交换 \(ByteFormat.size(driver.swapBytes))")
+                .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+            Sparkline(values: driver.memHistory, colors: Candy.memory)
+            procList(t, driver.topRAM.map { ($0.name, ByteFormat.size($0.rssBytes)) })
+        }
+    }
+
+    private func popoverHeader(
+        _ t: WarmTheme, _ symbol: String, _ colors: [Color], _ title: String, _ value: String
+    ) -> some View {
+        HStack(spacing: 6) {
+            CandyIcon(symbol: symbol, colors: colors, size: 12)
+            Text(title).font(WFont.label).foregroundStyle(t.ink)
+            Spacer(minLength: 6)
+            Text(value).font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+        }
+    }
+
+    @ViewBuilder
+    private func procList(_ t: WarmTheme, _ rows: [(String, String)]) -> some View {
+        if rows.isEmpty {
+            Text("采样中…").font(WFont.caption).foregroundStyle(t.inkFaint)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 5) {
+                        Text(row.1).font(WFont.caption).monospacedDigit()
+                            .foregroundStyle(t.inkStrong).fixedSize()
+                        Text("/").font(WFont.caption).foregroundStyle(t.inkFaint.opacity(0.6))
+                        Text(row.0).font(WFont.caption).foregroundStyle(t.ink)
+                            .lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private func memUsedText() -> String {
+        guard let s = driver.snapshot else { return "—" }
+        return "\(ByteFormat.size(s.memUsedBytes)) / \(ByteFormat.size(s.memTotalBytes))"
+    }
+
+    private func cpuPercentText(_ percent: Double) -> String {
+        "\(Int(percent.rounded()))%"
     }
 
     // MARK: work / PR section

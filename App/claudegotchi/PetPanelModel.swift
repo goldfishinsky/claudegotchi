@@ -30,6 +30,7 @@ final class PetPanelModel: ObservableObject {
     private var isHibernating = false
 
     var systemMemPressure: (@MainActor () -> MemPressureTier?)?
+    var systemThermal: (@MainActor () -> ThermalTier?)?
 
     private let db: DatabaseQueue
     private let config: ConfigYAML
@@ -97,10 +98,14 @@ final class PetPanelModel: ObservableObject {
         hungry = pet.fullness < 30
         isSick = base.animation == .sick
         isHibernating = pet.hibernationSince != nil
-        if let mem = systemMemPressure?() {
+        let mem = systemMemPressure?()
+        let thermal = systemThermal?()
+        if mem != nil || thermal != nil {
             visual = PetVisual(
                 stage: base.stage, animation: base.animation,
-                overlay: SystemMood.combine(base: base.overlay, mem: mem)
+                overlay: SystemMood.combine(
+                    base: base.overlay, mem: mem ?? .normal, thermal: thermal ?? .nominal
+                )
             )
         } else {
             visual = base

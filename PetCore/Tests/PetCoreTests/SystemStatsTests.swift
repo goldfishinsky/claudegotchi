@@ -183,4 +183,159 @@ final class SystemStatsTests: XCTestCase {
             XCTAssertLessThanOrEqual(battery.percent, 100)
         }
     }
+
+    func testMachSystemSamplerPerCoreIsNonEmptyAndAggregates() {
+        let sampler = MachSystemSampler()
+        let perCore = sampler.sampleCPUTicksPerCore()
+        XCTAssertGreaterThan(perCore.count, 0)
+        XCTAssertGreaterThan(CPUAggregate.sum(perCore).idle, 0)
+    }
+
+    func testMachSystemSamplerSwapIsNonNegative() {
+        let sampler = MachSystemSampler()
+        let mem = sampler.sampleMemory()
+        XCTAssertGreaterThanOrEqual(mem.swap, 0)
+    }
+
+    // MARK: - CPUAggregate
+
+    func testCPUAggregateSumsAllCores() {
+        let cores = [
+            CPUTicks(user: 10, system: 5, idle: 100, nice: 1),
+            CPUTicks(user: 20, system: 6, idle: 200, nice: 2),
+        ]
+        let sum = CPUAggregate.sum(cores)
+        XCTAssertEqual(sum, CPUTicks(user: 30, system: 11, idle: 300, nice: 3))
+    }
+
+    func testCPUAggregateEmptyIsZero() {
+        XCTAssertEqual(CPUAggregate.sum([]), CPUTicks(user: 0, system: 0, idle: 0, nice: 0))
+    }
+
+    // MARK: - PerCoreLoad
+
+    func testPerCoreLoadComputesEachCore() {
+        let prev = [
+            CPUTicks(user: 100, system: 50, idle: 850, nice: 0),
+            CPUTicks(user: 0, system: 0, idle: 100, nice: 0),
+        ]
+        let cur = [
+            CPUTicks(user: 150, system: 60, idle: 890, nice: 0),
+            CPUTicks(user: 0, system: 0, idle: 200, nice: 0),
+        ]
+        let loads = PerCoreLoad.compute(prev: prev, cur: cur)
+        XCTAssertEqual(loads.count, 2)
+        XCTAssertEqual(loads[0], 0.6, accuracy: 1e-9)
+        XCTAssertEqual(loads[1], 0.0, accuracy: 1e-9)
+    }
+
+    func testPerCoreLoadEmptyOnLengthMismatch() {
+        let prev = [CPUTicks(user: 0, system: 0, idle: 1, nice: 0)]
+        let cur = [CPUTicks(user: 0, system: 0, idle: 1, nice: 0), CPUTicks(user: 0, system: 0, idle: 1, nice: 0)]
+        XCTAssertEqual(PerCoreLoad.compute(prev: prev, cur: cur), [])
+    }
+
+    // MARK: - CoreBars
+
+    func testCoreBarsPassthroughWhenUnderCap() {
+        let cores = [0.1, 0.2, 0.3]
+        XCTAssertEqual(CoreBars.segments(cores, cap: 16), cores)
+    }
+
+    func testCoreBarsPassthroughAtExactlyCap() {
+        let cores = Array(repeating: 0.5, count: 16)
+        XCTAssertEqual(CoreBars.segments(cores, cap: 16), cores)
+    }
+
+    func testCoreBarsDownsamplesBeyondCap() {
+        let cores = Array(repeating: 0.5, count: 20)
+        let segs = CoreBars.segments(cores, cap: 16)
+        XCTAssertEqual(segs.count, 16)
+        XCTAssertTrue(segs.allSatisfy { abs($0 - 0.5) < 1e-9 })
+    }
+
+    func testCoreBarsAveragesPairs() {
+        let cores = [0.0, 1.0, 0.0, 1.0]
+        let segs = CoreBars.segments(cores, cap: 2)
+        XCTAssertEqual(segs, [0.5, 0.5])
+    }
+
+    // MARK: - LoadAverage
+
+    func testLoadAverageReadReturnsThreeNonNegativeValues() {
+        guard let la = LoadAverage.read() else {
+            return XCTFail("getloadavg returned nil on this host")
+        }
+        XCTAssertGreaterThanOrEqual(la.one, 0)
+        XCTAssertGreaterThanOrEqual(la.five, 0)
+        XCTAssertGreaterThanOrEqual(la.fifteen, 0)
+    }
+
+    func testLoadAverageFormatsWithOneDecimal() {
+        XCTAssertEqual(LoadAverage.format(3.24, 4.09, 4.8), "3.2 · 4.1 · 4.8")
+    }
+
+    // MARK: - ThermalTier + SystemMood thermal
+
+    func testThermalTierIsElevated() {
+        XCTAssertFalse(ThermalTier.nominal.isElevated)
+        XCTAssertFalse(ThermalTier.fair.isElevated)
+        XCTAssertTrue(ThermalTier.serious.isElevated)
+        XCTAssertTrue(ThermalTier.critical.isElevated)
+    }
+
+    func testSystemMoodThermalSeriousUpgradesToSweat() {
+        XCTAssertEqual(SystemMood.combine(base: .none, mem: .normal, thermal: .serious), .sweat)
+    }
+
+    func testSystemMoodThermalCriticalUpgradesFocusToSweat() {
+        XCTAssertEqual(SystemMood.combine(base: .focus, mem: .normal, thermal: .critical), .sweat)
+    }
+
+    func testSystemMoodThermalFairLeavesBaseUnchanged() {
+        XCTAssertEqual(SystemMood.combine(base: .focus, mem: .normal, thermal: .fair), .focus)
+        XCTAssertEqual(SystemMood.combine(base: .none, mem: .normal, thermal: .nominal), .none)
+    }
+
+    func testSystemMoodThermalNeverDowngradesExistingSweat() {
+        XCTAssertEqual(SystemMood.combine(base: .sweat, mem: .normal, thermal: .nominal), .sweat)
+    }
+
+    func testSystemMoodMemAndThermalTogether() {
+        XCTAssertEqual(SystemMood.combine(base: .none, mem: .critical, thermal: .serious), .sweat)
+    }
+
+    // MARK: - ThermalNotificationGate
+
+    func testThermalGateFiresOnceOnElevation() {
+        var gate = ThermalNotificationGate()
+        XCTAssertTrue(gate.shouldNotify(.serious))
+        XCTAssertFalse(gate.shouldNotify(.serious))
+    }
+
+    func testThermalGateSuppressesCriticalAfterSerious() {
+        var gate = ThermalNotificationGate()
+        XCTAssertTrue(gate.shouldNotify(.serious))
+        XCTAssertFalse(gate.shouldNotify(.critical))
+    }
+
+    func testThermalGateRearmsAfterReturningToNominal() {
+        var gate = ThermalNotificationGate()
+        XCTAssertTrue(gate.shouldNotify(.serious))
+        XCTAssertFalse(gate.shouldNotify(.nominal))
+        XCTAssertTrue(gate.shouldNotify(.critical))
+    }
+
+    func testThermalGateRearmsViaFair() {
+        var gate = ThermalNotificationGate()
+        XCTAssertTrue(gate.shouldNotify(.critical))
+        XCTAssertFalse(gate.shouldNotify(.fair))
+        XCTAssertTrue(gate.shouldNotify(.serious))
+    }
+
+    func testThermalGateStartsSilentAtNominal() {
+        var gate = ThermalNotificationGate()
+        XCTAssertFalse(gate.shouldNotify(.nominal))
+        XCTAssertFalse(gate.shouldNotify(.fair))
+    }
 }

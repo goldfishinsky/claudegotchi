@@ -40,6 +40,7 @@ final class AppServices: ObservableObject {
     let syncDriver: LeaderboardSyncDriver
     let systemStats: SystemStatsDriver
     let claudeUsage: ClaudeUsageDriver
+    let thermal: ThermalMonitor
 
     /// Thread-safe pause flag shared by both watchers (§7 pause semantics):
     /// while paused, synthetic PR nudges and hook events are still written and
@@ -122,6 +123,7 @@ final class AppServices: ObservableObject {
 
         systemStats = SystemStatsDriver()
         claudeUsage = ClaudeUsageDriver()
+        thermal = ThermalMonitor()
     }
 
     /// Order matters: reconcile stale/queued fix jobs (and clean their worktrees)
@@ -136,10 +138,12 @@ final class AppServices: ObservableObject {
         midnight.start()
         tick.start()
         syncDriver.start()
+        thermal.start()
     }
 
     /// Spec §8: terminate every live fix child via its process group on quit.
     func terminate() {
+        thermal.stop()
         syncDriver.stop()
         tick.stop()
         midnight.stop()
@@ -200,6 +204,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let statsDriver, statsDriver.isRunning else { return nil }
             return statsDriver.snapshot?.memPressure
         }
+        let thermalMonitor = services.thermal
+        petModel.systemThermal = { [weak thermalMonitor] in thermalMonitor?.tier }
         petPanelModel = petModel
         let agentModel = AgentActivityModel(db: services.db)
         agentActivityModel = agentModel

@@ -88,6 +88,52 @@ public enum CPULoad {
     }
 }
 
+public enum CPUAggregate {
+    public static func sum(_ perCore: [CPUTicks]) -> CPUTicks {
+        var user: UInt64 = 0, system: UInt64 = 0, idle: UInt64 = 0, nice: UInt64 = 0
+        for c in perCore {
+            user &+= c.user; system &+= c.system; idle &+= c.idle; nice &+= c.nice
+        }
+        return CPUTicks(user: user, system: system, idle: idle, nice: nice)
+    }
+}
+
+public enum PerCoreLoad {
+    public static func compute(prev: [CPUTicks], cur: [CPUTicks]) -> [Double] {
+        guard prev.count == cur.count else { return [] }
+        return zip(prev, cur).map { CPULoad.compute(prevTicks: $0, curTicks: $1) }
+    }
+}
+
+public enum CoreBars {
+    /// Per-core loads capped to `cap` segments; contiguous cores average-paired
+    /// down when the machine has more cores than the display budget.
+    public static func segments(_ perCore: [Double], cap: Int = 16) -> [Double] {
+        guard cap > 0 else { return [] }
+        guard perCore.count > cap else { return perCore }
+        let n = perCore.count
+        return (0..<cap).map { b in
+            let lo = b * n / cap
+            let hi = max(lo + 1, (b + 1) * n / cap)
+            let slice = perCore[lo..<hi]
+            return slice.reduce(0, +) / Double(slice.count)
+        }
+    }
+}
+
+public enum LoadAverage {
+    public static func read() -> (one: Double, five: Double, fifteen: Double)? {
+        var loads = [Double](repeating: 0, count: 3)
+        guard getloadavg(&loads, 3) == 3 else { return nil }
+        guard loads.allSatisfy({ $0 >= 0 && $0.isFinite }) else { return nil }
+        return (loads[0], loads[1], loads[2])
+    }
+
+    public static func format(_ one: Double, _ five: Double, _ fifteen: Double) -> String {
+        String(format: "%.1f · %.1f · %.1f", one, five, fifteen)
+    }
+}
+
 public enum MemPressure {
     public static func tier(used: UInt64, total: UInt64, compressed: UInt64) -> MemPressureTier {
         guard total > 0 else { return .normal }
@@ -118,6 +164,12 @@ public enum ByteFormat {
     }
 }
 
+public enum ThermalTier: String, Equatable, Sendable {
+    case nominal, fair, serious, critical
+
+    public var isElevated: Bool { self == .serious || self == .critical }
+}
+
 public enum SystemMood {
     private static func severity(_ overlay: PetOverlay) -> Int {
         switch overlay {
@@ -127,9 +179,13 @@ public enum SystemMood {
         }
     }
 
-    public static func combine(base: PetOverlay, mem: MemPressureTier) -> PetOverlay {
+    public static func combine(
+        base: PetOverlay, mem: MemPressureTier, thermal: ThermalTier = .nominal
+    ) -> PetOverlay {
         let memOverlay: PetOverlay = mem == .critical ? .sweat : .none
-        return severity(memOverlay) > severity(base) ? memOverlay : base
+        let thermalOverlay: PetOverlay = thermal.isElevated ? .sweat : .none
+        let system = severity(thermalOverlay) > severity(memOverlay) ? thermalOverlay : memOverlay
+        return severity(system) > severity(base) ? system : base
     }
 
     public static func animationSpeed(downBytesPerSec: Double) -> Double {
@@ -137,18 +193,41 @@ public enum SystemMood {
     }
 }
 
+/// One-shot gate for the "机器过热" notification: fires once when the thermal
+/// tier first crosses into serious/critical, stays silent until it drops back to
+/// nominal/fair, then rearms.
+public struct ThermalNotificationGate: Equatable, Sendable {
+    private var armed: Bool
+    public init() { armed = true }
+
+    public mutating func shouldNotify(_ tier: ThermalTier) -> Bool {
+        if tier.isElevated {
+            guard armed else { return false }
+            armed = false
+            return true
+        }
+        armed = true
+        return false
+    }
+}
+
 public protocol SystemSampling: Sendable {
-    func sampleMemory() -> (used: UInt64, total: UInt64, compressed: UInt64)
+    func sampleMemory() -> (used: UInt64, total: UInt64, compressed: UInt64, swap: UInt64)
     func sampleNetworkCounters() -> (down: UInt64, up: UInt64)
     func sampleCPUTicks() -> CPUTicks
+    func sampleCPUTicksPerCore() -> [CPUTicks]
     func sampleDisk() -> (free: UInt64, total: UInt64)
     func sampleBattery() -> (percent: Int, charging: Bool)?
+}
+
+public extension SystemSampling {
+    func sampleCPUTicksPerCore() -> [CPUTicks] { [sampleCPUTicks()] }
 }
 
 public final class MachSystemSampler: SystemSampling {
     public init() {}
 
-    public func sampleMemory() -> (used: UInt64, total: UInt64, compressed: UInt64) {
+    public func sampleMemory() -> (used: UInt64, total: UInt64, compressed: UInt64, swap: UInt64) {
         let total = ProcessInfo.processInfo.physicalMemory
         var stats = vm_statistics64()
         var count = mach_msg_type_number_t(
@@ -159,12 +238,19 @@ public final class MachSystemSampler: SystemSampling {
                 host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return (0, total, 0) }
+        guard result == KERN_SUCCESS else { return (0, total, 0, 0) }
         let pageSize = UInt64(vm_kernel_page_size)
         let compressed = UInt64(stats.compressor_page_count) * pageSize
         let used = (UInt64(stats.active_count) + UInt64(stats.wire_count)
             + UInt64(stats.compressor_page_count)) * pageSize
-        return (used, total, compressed)
+        return (used, total, compressed, swapUsed())
+    }
+
+    private func swapUsed() -> UInt64 {
+        var usage = xsw_usage()
+        var size = MemoryLayout<xsw_usage>.size
+        guard sysctlbyname("vm.swapusage", &usage, &size, nil, 0) == 0 else { return 0 }
+        return usage.xsu_used
     }
 
     public func sampleNetworkCounters() -> (down: UInt64, up: UInt64) {
@@ -189,31 +275,30 @@ public final class MachSystemSampler: SystemSampling {
     }
 
     public func sampleCPUTicks() -> CPUTicks {
+        CPUAggregate.sum(sampleCPUTicksPerCore())
+    }
+
+    public func sampleCPUTicksPerCore() -> [CPUTicks] {
         var numCPUs: natural_t = 0
         var cpuInfo: processor_info_array_t?
         var numCpuInfo: mach_msg_type_number_t = 0
         let result = host_processor_info(
             mach_host_self(), PROCESSOR_CPU_LOAD_INFO, &numCPUs, &cpuInfo, &numCpuInfo
         )
-        guard result == KERN_SUCCESS, let info = cpuInfo else {
-            return CPUTicks(user: 0, system: 0, idle: 0, nice: 0)
-        }
+        guard result == KERN_SUCCESS, let info = cpuInfo else { return [] }
         defer {
             let size = vm_size_t(Int(numCpuInfo) * MemoryLayout<integer_t>.stride)
             vm_deallocate(mach_task_self_, vm_address_t(bitPattern: info), size)
         }
-        var user: UInt64 = 0
-        var system: UInt64 = 0
-        var idle: UInt64 = 0
-        var nice: UInt64 = 0
-        for i in 0..<Int(numCPUs) {
+        return (0..<Int(numCPUs)).map { i in
             let base = Int(CPU_STATE_MAX) * i
-            user += UInt64(info[base + Int(CPU_STATE_USER)])
-            system += UInt64(info[base + Int(CPU_STATE_SYSTEM)])
-            idle += UInt64(info[base + Int(CPU_STATE_IDLE)])
-            nice += UInt64(info[base + Int(CPU_STATE_NICE)])
+            return CPUTicks(
+                user: UInt64(info[base + Int(CPU_STATE_USER)]),
+                system: UInt64(info[base + Int(CPU_STATE_SYSTEM)]),
+                idle: UInt64(info[base + Int(CPU_STATE_IDLE)]),
+                nice: UInt64(info[base + Int(CPU_STATE_NICE)])
+            )
         }
-        return CPUTicks(user: user, system: system, idle: idle, nice: nice)
     }
 
     public func sampleDisk() -> (free: UInt64, total: UInt64) {
