@@ -174,6 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var workPanelModel: WorkPanelModel?
     private var petPanelModel: PetPanelModel?
     private var agentActivityModel: AgentActivityModel?
+    private var islandModel: IslandModel?
+    private var islandController: NotchIslandController?
     private var panelRefreshTimer: Timer?
     private var iconTimer: Timer?
     private var petChangeObserver: NSObjectProtocol?
@@ -189,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelRefreshTimer?.invalidate()
         iconTimer?.invalidate()
         if let petChangeObserver { NotificationCenter.default.removeObserver(petChangeObserver) }
+        islandController?.stop()
         dropdown?.hide()
         services?.terminate()
     }
@@ -210,6 +213,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let agentModel = AgentActivityModel(db: services.db)
         agentActivityModel = agentModel
 
+        let island = IslandModel(db: services.db, notchAvailable: NotchGeometry.builtInNotch() != nil)
+        islandModel = island
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = ""
         item.button?.action = #selector(toggleDropdown(_:))
@@ -225,11 +231,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 services: services,
                 driver: statsDriver,
                 usageDriver: usageDriver,
+                islandModel: island,
                 onOpenStats: { [weak self] in
                     self?.dropdown?.hide()
                     self?.openStats(services, select: .overview)
+                },
+                onToggleIsland: { [weak self] on in
+                    self?.islandController?.setEnabled(on)
                 }
             ))
+        }
+
+        if let dropdown {
+            let controller = NotchIslandController(
+                dropdown: dropdown, petModel: petModel, agentModel: agentModel, island: island
+            )
+            islandController = controller
+            controller.start()
         }
 
         refreshPanels()
@@ -263,6 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workPanelModel?.refresh(firstPollComplete: services.watcher.snapshot.firstPollComplete)
         petPanelModel?.refresh()
         agentActivityModel?.refresh()
+        islandController?.refresh()
     }
 
     private func redrawStatusIcon() {

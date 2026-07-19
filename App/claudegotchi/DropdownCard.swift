@@ -13,7 +13,9 @@ struct DropdownCard: View {
     @ObservedObject var services: AppServices
     @ObservedObject var driver: SystemStatsDriver
     @ObservedObject var usageDriver: ClaudeUsageDriver
+    @ObservedObject var islandModel: IslandModel
     var onOpenStats: () -> Void
+    var onToggleIsland: (Bool) -> Void
 
     @Environment(\.colorScheme) private var scheme
     @State private var hoverTarget: HoverTarget?
@@ -437,7 +439,7 @@ struct DropdownCard: View {
     // MARK: footer actions
 
     private func footer(_ t: WarmTheme) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button(action: onOpenStats) {
                 Text("打开统计").font(WFont.label.weight(.semibold)).frame(maxWidth: .infinity)
             }
@@ -445,17 +447,20 @@ struct DropdownCard: View {
             .controlSize(.regular)
             .tint(rgb(1.0, 0.62, 0.34))
 
-            HStack(spacing: 6) {
-                Toggle(isOn: Binding(get: { services.paused }, set: { services.setPaused($0) })) {
-                    Text("暂停").font(WFont.label).foregroundStyle(t.ink)
+            if islandModel.notchAvailable {
+                Toggle(isOn: Binding(get: { islandModel.enabled }, set: { onToggleIsland($0) })) {
+                    Text("灵动岛").font(WFont.label).foregroundStyle(t.ink)
                 }
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .fixedSize()
-                if services.paused {
-                    Text("已暂停").font(WFont.caption).foregroundStyle(rgb(1.0, 0.55, 0.35))
-                }
             }
+
+            Toggle(isOn: Binding(get: { services.paused }, set: { services.setPaused($0) })) {
+                Text("暂停").font(WFont.label).foregroundStyle(t.ink)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
             .fixedSize()
         }
     }

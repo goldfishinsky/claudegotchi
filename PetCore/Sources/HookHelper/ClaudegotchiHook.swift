@@ -26,6 +26,9 @@ struct ClaudegotchiHook {
         var tokensOut = extras["tokens_out"] as? Int
         var model = extras["model"] as? String
         let prompt = type == "user_prompt_submit" ? promptTitle(from: extras["prompt"] as? String) : nil
+        let isNotification = type == "notification"
+        let message = isNotification ? notificationMessage(from: extras["message"] as? String) : nil
+        let notificationType = isNotification ? extras["notification_type"] as? String : nil
 
         if tokensIn == nil, tokensOut == nil, type == "stop",
            let transcript = extras["transcript_path"] as? String,
@@ -47,7 +50,9 @@ struct ClaudegotchiHook {
             tokensOut: tokensOut,
             model: model,
             cwd: extras["cwd"] as? String,
-            prompt: prompt
+            prompt: prompt,
+            message: message,
+            notificationType: notificationType
         )
 
         if let line = try? event.encodeJSON() {
@@ -67,6 +72,8 @@ struct ClaudegotchiHook {
         if let v = obj["transcript_path"] { out["transcript_path"] = v }
         if let v = obj["tool_name"] ?? obj["tool"] { out["tool"] = v }
         if let v = obj["model"] { out["model"] = v }
+        if let v = obj["message"] { out["message"] = v }
+        if let v = obj["notification_type"] { out["notification_type"] = v }
         if let tokens = obj["tokens"] as? [String: Any] {
             if let v = tokens["input"] { out["tokens_in"] = v }
             if let v = tokens["output"] { out["tokens_out"] = v }
@@ -85,8 +92,17 @@ struct ClaudegotchiHook {
     }
 
     static let promptTitleMaxChars = 120
+    static let notificationMessageMaxChars = 200
 
     static func promptTitle(from raw: String?) -> String? {
+        flatten(raw, max: promptTitleMaxChars)
+    }
+
+    static func notificationMessage(from raw: String?) -> String? {
+        flatten(raw, max: notificationMessageMaxChars)
+    }
+
+    private static func flatten(_ raw: String?, max: Int) -> String? {
         guard let raw else { return nil }
         let flattened = raw
             .replacingOccurrences(of: "\r\n", with: " ")
@@ -94,9 +110,7 @@ struct ClaudegotchiHook {
             .replacingOccurrences(of: "\r", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if flattened.isEmpty { return nil }
-        return flattened.count <= promptTitleMaxChars
-            ? flattened
-            : String(flattened.prefix(promptTitleMaxChars))
+        return flattened.count <= max ? flattened : String(flattened.prefix(max))
     }
 
     static func spoolURL() -> URL {

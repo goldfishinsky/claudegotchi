@@ -159,6 +159,44 @@ final class HookTypeGuardTests: XCTestCase {
         XCTAssertEqual(event.tokensOut, 0)
     }
 
+    func testRunNotificationSpoolsMessageAndType() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let stdin = #"{"session_id":"s","cwd":"/w","hook_event_name":"Notification","message":"Claude needs your permission","notification_type":"permission_prompt"}"#
+        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "notification"],
+                                        stdin: stdin, spoolURL: spool)
+        XCTAssertEqual(code, 0)
+        let line = try String(contentsOf: spool).split(separator: "\n").first.map(String.init)!
+        let event = try Event.parse(line)
+        XCTAssertEqual(event.type, .notification)
+        XCTAssertEqual(event.message, "Claude needs your permission")
+        XCTAssertEqual(event.notificationType, "permission_prompt")
+        XCTAssertEqual(event.cwd, "/w")
+    }
+
+    func testNotificationMessageTruncatesAt200() {
+        let long = String(repeating: "字", count: 300)
+        let msg = ClaudegotchiHook.notificationMessage(from: long)!
+        XCTAssertEqual(msg.count, 200)
+        XCTAssertEqual(msg, String(repeating: "字", count: 200))
+    }
+
+    func testNotificationMessageFlattensAndTrimsNilOnEmpty() {
+        XCTAssertEqual(ClaudegotchiHook.notificationMessage(from: "第一行\n第二行"), "第一行 第二行")
+        XCTAssertNil(ClaudegotchiHook.notificationMessage(from: "   \n "))
+        XCTAssertNil(ClaudegotchiHook.notificationMessage(from: nil))
+    }
+
+    func testNonNotificationDropsMessageField() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let stdin = #"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","message":"stray"}"#
+        _ = ClaudegotchiHook.run(args: ["claudegotchi-hook", "post_tool_use"], stdin: stdin, spoolURL: spool)
+        let event = try Event.parse(String(try String(contentsOf: spool).split(separator: "\n")[0]))
+        XCTAssertNil(event.message, "message is captured only for notification events")
+        XCTAssertNil(event.notificationType)
+    }
+
     private func tempSpoolURL() -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("spool-\(UUID()).jsonl")

@@ -35,11 +35,28 @@ final class MenuDropdownController {
 
     var isVisible: Bool { panel != nil }
 
+    /// Screen frame of the live dropdown panel, so the island can tell whether
+    /// the cursor is still hovering the card (hover-out grace).
+    var currentPanelFrame: NSRect? { panel?.frame }
+
     func toggle(relativeTo button: NSStatusBarButton) {
         if isVisible { hide() } else { show(relativeTo: button) }
     }
 
     func show(relativeTo button: NSStatusBarButton) {
+        guard let win = button.window else { return }
+        let rect = win.convertToScreen(button.convert(button.bounds, to: nil))
+        show(anchorRect: rect, on: win.screen ?? NSScreen.main)
+    }
+
+    func toggle(anchorRect rect: NSRect, on screen: NSScreen?) {
+        if isVisible { hide() } else { show(anchorRect: rect, on: screen) }
+    }
+
+    /// `autoDismiss: false` skips the outside-click monitors so a caller (the
+    /// island) can own hover-out / pin dismissal without the card racing itself
+    /// shut when its own pill is clicked.
+    func show(anchorRect rect: NSRect, on screen: NSScreen?, autoDismiss: Bool = true) {
         guard panel == nil else { return }
         guard Date().timeIntervalSince(closedAt) > 0.15 else { return }
         driver.start()
@@ -64,10 +81,10 @@ final class MenuDropdownController {
         panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
         panel.isReleasedWhenClosed = false
 
-        position(panel, under: button, size: size)
+        position(panel, anchorRect: rect, screen: screen, size: size)
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
-        installMonitors()
+        if autoDismiss { installMonitors() }
     }
 
     func hide() {
@@ -82,10 +99,8 @@ final class MenuDropdownController {
         usageDriver.stop()
     }
 
-    private func position(_ panel: NSPanel, under button: NSStatusBarButton, size: NSSize) {
-        guard let buttonWindow = button.window else { return }
-        let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        let vf = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame ?? buttonRect
+    private func position(_ panel: NSPanel, anchorRect: NSRect, screen scr: NSScreen?, size: NSSize) {
+        let vf = (scr ?? NSScreen.main)?.visibleFrame ?? anchorRect
         let margin = DropdownCard.glowMargin
         let cardW = DropdownCard.cardWidth
         let cardH = size.height - margin * 2
@@ -93,14 +108,13 @@ final class MenuDropdownController {
         // Work in the visual card's own frame, then inset by `margin` for the
         // window: the transparent glow border is 30pt on every side, so the
         // window sits that far below/left of the card's visible bottom-left.
-        let cardRight = min(buttonRect.maxX, vf.maxX - 6)
+        let cardRight = min(anchorRect.maxX, vf.maxX - 6)
         let cardLeft = max(vf.minX + 6, cardRight - cardW)
 
         // Menu-bar bottom off the physical frame, not visibleFrame: a non-notch
         // aware app gets a visibleFrame shrunk below the notch, so on notched
         // displays trust safeAreaInsets.top. Card top hangs 4pt under it; clamp
         // up only if too tall, so the footer stays on-screen.
-        let scr = buttonWindow.screen ?? NSScreen.main
         let frame = scr?.frame ?? vf
         let safeTop = scr?.safeAreaInsets.top ?? 0
         let menuBarBottom = frame.maxY - (safeTop > 0 ? safeTop : frame.maxY - vf.maxY)
