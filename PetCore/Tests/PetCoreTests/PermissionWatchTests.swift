@@ -125,6 +125,19 @@ final class PermissionWatchTests: XCTestCase {
         XCTAssertEqual(try PermissionWatch.pending(db: db, nowMs: now, maxAgeMs: 600_000).count, 1)
     }
 
+    func testFilterHidesPermissionByDirectory() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 20_000, sessionId: "s1", cwd: "/tmp/hookprobe/x")
+        try insert(id: "e2", type: "notification", ts: now - 2_000, sessionId: "s1", cwd: "/tmp/hookprobe/x",
+                   message: "Claude needs your permission", notificationType: "permission_prompt")
+        try insert(id: "k1", type: "session_start", ts: now - 20_000, sessionId: "s2", cwd: "/tmp/repo")
+        try insert(id: "k2", type: "notification", ts: now - 1_000, sessionId: "s2", cwd: "/tmp/repo",
+                   message: "Claude needs your permission", notificationType: "permission_prompt")
+        let filter = SessionFilter(directoryPatterns: ["/hookprobe"])
+        let pending = try PermissionWatch.pending(db: db, nowMs: now, filter: filter)
+        XCTAssertEqual(pending.map(\.sessionId), ["s2"], "hookprobe permission is filtered out")
+    }
+
     func testCwdNilYieldsUnknownRepo() throws {
         let now: Int64 = 1_000_000
         try insert(id: "e1", type: "session_start", ts: now - 5_000, sessionId: "s1", cwd: nil)

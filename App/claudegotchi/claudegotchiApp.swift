@@ -176,6 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityModel: AgentActivityModel?
     private var islandModel: IslandModel?
     private var islandController: NotchIslandController?
+    private var settings: SettingsStore?
+    private var settingsWindow: SettingsWindowController?
     private var panelRefreshTimer: Timer?
     private var iconTimer: Timer?
     private var petChangeObserver: NSObjectProtocol?
@@ -210,11 +212,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let thermalMonitor = services.thermal
         petModel.systemThermal = { [weak thermalMonitor] in thermalMonitor?.tier }
         petPanelModel = petModel
+        let settingsStore = SettingsStore()
+        settings = settingsStore
+        settingsWindow = SettingsWindowController(store: settingsStore)
+
         let agentModel = AgentActivityModel(db: services.db)
+        agentModel.filterProvider = { [weak settingsStore] in settingsStore?.sessionFilter ?? .empty }
         agentActivityModel = agentModel
 
         let island = IslandModel(db: services.db, notchAvailable: NotchGeometry.builtInNotch() != nil)
         islandModel = island
+
+        settingsStore.onChange = { [weak self] in
+            MainActor.assumeIsolated {
+                self?.agentActivityModel?.refresh()
+                self?.islandController?.refresh()
+            }
+        }
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = ""
@@ -238,13 +252,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onToggleIsland: { [weak self] on in
                     self?.islandController?.setEnabled(on)
+                },
+                onOpenSettings: { [weak self] in
+                    self?.dropdown?.hide()
+                    self?.settingsWindow?.show()
                 }
             ))
         }
 
         if let dropdown {
             let controller = NotchIslandController(
-                dropdown: dropdown, petModel: petModel, agentModel: agentModel, island: island
+                dropdown: dropdown, petModel: petModel, agentModel: agentModel, island: island,
+                db: services.db, settings: settingsStore
             )
             islandController = controller
             controller.start()
@@ -317,7 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             db: services.db,
             config: services.config,
             leaderboard: services.leaderboard,
-            githubClientID: services.config.resolvedLeaderboard.githubClientID
+            githubClientID: services.config.resolvedLeaderboard.githubClientID,
+            onOpenSettings: { [weak self] in self?.settingsWindow?.show() }
         )
         let win = Glass.window(root, size: NSSize(width: 720, height: 600), title: "claudegotchi")
         win.makeKeyAndOrderFront(nil)

@@ -34,7 +34,8 @@ public enum AgentActivityTracker {
 
     public static func activeAgents(
         db: DatabaseQueue, nowMs: Int64, windowMs: Int64,
-        workingWindowMs: Int64 = AgentActivityTracker.workingWindowMs
+        workingWindowMs: Int64 = AgentActivityTracker.workingWindowMs,
+        filter: SessionFilter = .empty
     ) throws -> [AgentActivity] {
         let sessions = try SessionTracker.activeSessions(
             db: db, nowMs: nowMs, windowMs: windowMs, repoPaths: []
@@ -97,6 +98,7 @@ public enum AgentActivityTracker {
         }
 
         return sessions
+            .filter { !filter.hides(cwd: $0.cwd, title: titles[$0.sessionId]) }
             .sorted { a, b in
                 let aw = a.lastActivityMs >= nowMs - workingWindowMs
                 let bw = b.lastActivityMs >= nowMs - workingWindowMs
@@ -119,9 +121,8 @@ public enum AgentActivityTracker {
 
     // Harness-injected prompts (task notifications, slash-command wrappers,
     // system reminders) precede the human's first prompt; skip them for titles.
-    static let titleNoisePrefixes = [
-        "<task-notification>", "<local-command-caveat>", "<command-name>", "<system",
-    ]
+    // Sourced from the prompt-prefix presets so the list is user-visible.
+    static let titleNoisePrefixes = SessionFilterPresets.promptPrefixPatterns
 
     static func pickTitle(_ prompts: [String]) -> String? {
         guard let first = prompts.first else { return nil }

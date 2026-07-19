@@ -241,4 +241,41 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(AgentActivityTracker.shortModel("claude-fable-5"), "fable-5")
         XCTAssertEqual(AgentActivityTracker.shortModel("opus"), "opus")
     }
+
+    func testFilterHidesByDirectory() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 5_000, sessionId: "s1", cwd: "/tmp/hookprobe/x")
+        try insert(id: "e2", type: "session_start", ts: now - 5_000, sessionId: "s2", cwd: "/tmp/repo")
+        let filter = SessionFilter(directoryPatterns: ["/hookprobe"])
+        let agents = try AgentActivityTracker.activeAgents(
+            db: db, nowMs: now, windowMs: window, filter: filter)
+        XCTAssertEqual(agents.map(\.sessionId), ["s2"], "hookprobe session is hidden")
+    }
+
+    func testFilterHidesByPromptPrefix() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 5_000, sessionId: "noise", cwd: "/tmp/r")
+        try insert(id: "e2", type: "user_prompt_submit", ts: now - 4_000, sessionId: "noise", cwd: "/tmp/r",
+                   prompt: "<task-notification>done</task-notification>")
+        try insert(id: "h1", type: "session_start", ts: now - 5_000, sessionId: "human", cwd: "/tmp/r")
+        try insert(id: "h2", type: "user_prompt_submit", ts: now - 4_000, sessionId: "human", cwd: "/tmp/r",
+                   prompt: "修复登录")
+        let filter = SessionFilter(promptPrefixPatterns: ["<task-notification>"])
+        let agents = try AgentActivityTracker.activeAgents(
+            db: db, nowMs: now, windowMs: window, filter: filter)
+        XCTAssertEqual(agents.map(\.sessionId), ["human"], "task-notification-only session is hidden")
+    }
+
+    func testFilterKeepsRealSessionWithNoisyLaterPrompt() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 6_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "user_prompt_submit", ts: now - 5_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "真正的任务")
+        try insert(id: "e3", type: "user_prompt_submit", ts: now - 4_000, sessionId: "s1", cwd: "/tmp/r",
+                   prompt: "<task-notification>x</task-notification>")
+        let filter = SessionFilter(promptPrefixPatterns: ["<task-notification>"])
+        let agents = try AgentActivityTracker.activeAgents(
+            db: db, nowMs: now, windowMs: window, filter: filter)
+        XCTAssertEqual(agents.count, 1, "de-noised title is the human prompt, so session stays visible")
+    }
 }

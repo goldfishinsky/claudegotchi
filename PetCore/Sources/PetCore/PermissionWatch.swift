@@ -38,7 +38,8 @@ public enum PermissionWatch {
     /// later event from the same session supersedes it (the user responded).
     /// At most one entry per session, newest first.
     public static func pending(
-        db: DatabaseQueue, nowMs: Int64, maxAgeMs: Int64 = defaultMaxAgeMs
+        db: DatabaseQueue, nowMs: Int64, maxAgeMs: Int64 = defaultMaxAgeMs,
+        filter: SessionFilter = .empty
     ) throws -> [PermissionRequest] {
         let cutoff = nowMs - maxAgeMs
         return try db.read { conn -> [PermissionRequest] in
@@ -61,10 +62,12 @@ public enum PermissionWatch {
                 let ntype: String? = r["ntype"]
                 let message: String? = r["message"]
                 guard isPermissionRequest(notificationType: ntype, message: message) else { continue }
+                let cwd: String? = r["cwd"]
+                if filter.hides(cwd: cwd, title: nil) { continue }
                 let sid: String = r["sid"]
                 let ts: Int64 = r["ts"]
                 out.append(PermissionRequest(
-                    sessionId: sid, cwd: r["cwd"],
+                    sessionId: sid, cwd: cwd,
                     message: message ?? messagePrefix, ageMs: max(0, nowMs - ts)
                 ))
             }

@@ -21,6 +21,7 @@ struct StatsWindowView: View {
     let config: ConfigYAML
     let leaderboard: LeaderboardService
     let githubClientID: String
+    var onOpenSettings: () -> Void = {}
 
     @State private var showHooks = false
     @State private var showLeaderboardSettings = false
@@ -48,6 +49,8 @@ struct StatsWindowView: View {
 
             HStack(spacing: 10) {
                 Spacer()
+                Button("设置") { onOpenSettings() }
+                    .buttonStyle(WarmButtonStyle())
                 Button("排行榜设置") { showLeaderboardSettings = true }
                     .buttonStyle(WarmButtonStyle())
                 Button("钩子设置") { showHooks = true }

@@ -8,6 +8,7 @@ final class AgentActivityModel: ObservableObject {
 
     private let db: DatabaseQueue
     private let sessionWindowMs: Int64
+    var filterProvider: () -> SessionFilter = { .empty }
 
     init(db: DatabaseQueue, sessionWindowMs: Int64 = 15 * 60 * 1000) {
         self.db = db
@@ -17,7 +18,7 @@ final class AgentActivityModel: ObservableObject {
     func refresh() {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         agents = (try? AgentActivityTracker.activeAgents(
-            db: db, nowMs: nowMs, windowMs: sessionWindowMs
+            db: db, nowMs: nowMs, windowMs: sessionWindowMs, filter: filterProvider()
         )) ?? []
     }
 }

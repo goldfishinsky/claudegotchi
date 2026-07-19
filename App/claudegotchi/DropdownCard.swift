@@ -16,6 +16,7 @@ struct DropdownCard: View {
     @ObservedObject var islandModel: IslandModel
     var onOpenStats: () -> Void
     var onToggleIsland: (Bool) -> Void
+    var onOpenSettings: () -> Void
 
     @Environment(\.colorScheme) private var scheme
     @State private var hoverTarget: HoverTarget?
@@ -462,6 +463,14 @@ struct DropdownCard: View {
             .toggleStyle(.switch)
             .controlSize(.mini)
             .fixedSize()
+
+            Button(action: onOpenSettings) {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(t.ink)
+            }
+            .buttonStyle(.plain)
+            .help("设置")
         }
     }
 
