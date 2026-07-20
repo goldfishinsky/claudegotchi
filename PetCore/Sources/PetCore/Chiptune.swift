@@ -111,3 +111,17 @@ public enum ChiptuneLibrary {
         ChiptuneNote(frequency: 0, durationMs: ms, waveform: .square)
     }
 }
+
+/// Pure per-key rate limiter: `shouldFire` passes at most once per `minGapMs` per
+/// key, recording the accepted time; the caller injects the clock so it's testable.
+public struct CooldownGate<Key: Hashable> {
+    private var lastFireMs: [Key: Int64] = [:]
+
+    public init() {}
+
+    public mutating func shouldFire(_ key: Key, nowMs: Int64, minGapMs: Int64) -> Bool {
+        if let last = lastFireMs[key], nowMs - last < minGapMs { return false }
+        lastFireMs[key] = nowMs
+        return true
+    }
+}

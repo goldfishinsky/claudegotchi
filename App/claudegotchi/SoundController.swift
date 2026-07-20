@@ -16,7 +16,11 @@ final class SoundController {
     private var lastPermissionSession: String?
 
     private var lastTheaterBehavior: TheaterBehavior?
-    private var lastEmissionFireMs: [ParticleKind: Int64] = [:]
+    private var cueCooldown = CooldownGate<ChiptuneEvent>()
+    private var emissionCooldown = CooldownGate<ParticleKind>()
+
+    private let sessionStartCooldownMs: Int64 = 60_000
+    private let taskCompleteCooldownMs: Int64 = 10_000
 
     init(settings: SettingsStore) { self.settings = settings }
 
@@ -28,8 +32,22 @@ final class SoundController {
     private func fire(_ event: ChiptuneEvent) {
         guard settings.soundEnabled, settings.isSoundEnabled(for: event) else { return }
         guard !QuietSceneInspector.isActive(settings: settings) else { return }
+        let gap = cooldownMs(for: event)
+        if gap > 0, !cueCooldown.shouldFire(event, nowMs: nowMs(), minGapMs: gap) { return }
         synth.play(ChiptuneLibrary.motif(for: event), volume: settings.soundVolume)
     }
+
+    /// Class-level floors so bursts of near-simultaneous events sound once. Only
+    /// the high-frequency lifecycle cues are throttled; permission / level-up pass.
+    private func cooldownMs(for event: ChiptuneEvent) -> Int64 {
+        switch event {
+        case .sessionStart: return sessionStartCooldownMs
+        case .taskComplete: return taskCompleteCooldownMs
+        default: return 0
+        }
+    }
+
+    private func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
     func taskComplete() { fire(.taskComplete) }
 
@@ -76,8 +94,7 @@ final class SoundController {
         }
         for em in scene.emissions where em.ageMs <= theaterFreshMs {
             guard let (cue, gapMs) = theaterCue(em.kind) else { continue }
-            if let last = lastEmissionFireMs[em.kind], nowMs - last < gapMs { continue }
-            lastEmissionFireMs[em.kind] = nowMs
+            guard emissionCooldown.shouldFire(em.kind, nowMs: nowMs, minGapMs: gapMs) else { continue }
             theaterPlay(cue)
         }
     }
@@ -86,10 +103,10 @@ final class SoundController {
 
     private func theaterCue(_ kind: ParticleKind) -> (ChiptuneEvent, Int64)? {
         switch kind {
-        case .heartRise: return (.petChirp, 300)
+        case .heartRise: return (.petChirp, 2000)
         case .crumbBurst: return (.petCrunch, 220)
         case .confettiFall: return (.petSparkle, 420)
-        case .keystrokeSparks: return (.petTick, 2000)
+        case .keystrokeSparks: return (.petTick, 8000)
         case .zDrift, .tapDust: return nil
         }
     }

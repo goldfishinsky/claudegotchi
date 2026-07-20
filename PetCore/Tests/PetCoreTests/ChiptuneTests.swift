@@ -60,4 +60,42 @@ final class ChiptuneTests: XCTestCase {
         }
         XCTAssertGreaterThan(ChiptuneLibrary.motif(for: .levelUp).notes.count, 3)
     }
+
+    func testCooldownGateFiresFirstThenBlocksWithinGap() {
+        var gate = CooldownGate<String>()
+        XCTAssertTrue(gate.shouldFire("a", nowMs: 0, minGapMs: 1000))
+        XCTAssertFalse(gate.shouldFire("a", nowMs: 500, minGapMs: 1000))
+        XCTAssertFalse(gate.shouldFire("a", nowMs: 999, minGapMs: 1000))
+    }
+
+    func testCooldownGateFiresAgainOnceGapElapses() {
+        var gate = CooldownGate<String>()
+        XCTAssertTrue(gate.shouldFire("a", nowMs: 0, minGapMs: 1000))
+        XCTAssertTrue(gate.shouldFire("a", nowMs: 1000, minGapMs: 1000))
+        XCTAssertFalse(gate.shouldFire("a", nowMs: 1500, minGapMs: 1000))
+        XCTAssertTrue(gate.shouldFire("a", nowMs: 2000, minGapMs: 1000))
+    }
+
+    func testCooldownGateKeysAreIndependent() {
+        var gate = CooldownGate<ChiptuneEvent>()
+        XCTAssertTrue(gate.shouldFire(.sessionStart, nowMs: 0, minGapMs: 60_000))
+        XCTAssertTrue(gate.shouldFire(.taskComplete, nowMs: 0, minGapMs: 10_000))
+        XCTAssertFalse(gate.shouldFire(.sessionStart, nowMs: 30_000, minGapMs: 60_000))
+        XCTAssertTrue(gate.shouldFire(.taskComplete, nowMs: 10_000, minGapMs: 10_000))
+    }
+
+    func testCooldownGateZeroGapAlwaysFires() {
+        var gate = CooldownGate<String>()
+        XCTAssertTrue(gate.shouldFire("x", nowMs: 0, minGapMs: 0))
+        XCTAssertTrue(gate.shouldFire("x", nowMs: 0, minGapMs: 0))
+    }
+
+    func testCooldownGateCollapsesNearSimultaneousBurst() {
+        var gate = CooldownGate<String>()
+        var fired = 0
+        for now in stride(from: Int64(0), to: 500, by: 50) {
+            if gate.shouldFire("burst", nowMs: now, minGapMs: 10_000) { fired += 1 }
+        }
+        XCTAssertEqual(fired, 1)
+    }
 }
