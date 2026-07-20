@@ -66,40 +66,49 @@ public final class ClaudeUsageClient: @unchecked Sendable {
     private static let timeout: TimeInterval = 12
 
     private let transport: HTTPTransport
-    private let tokenReader: ClaudeOAuthTokenReading
-    private let lock = NSLock()
-    private var didReadToken = false
-    private var cachedToken: String?
+    private let provider: ClaudeTokenProviding
 
     public init(transport: HTTPTransport = URLSessionTransport(),
-                tokenReader: ClaudeOAuthTokenReading = KeychainClaudeTokenReader()) {
+                provider: ClaudeTokenProviding = CachedClaudeTokenProvider()) {
         self.transport = transport
-        self.tokenReader = tokenReader
+        self.provider = provider
     }
 
-    // Read the keychain at most once per instance so a background poll never
-    // re-triggers the macOS consent prompt.
-    private func token() -> String? {
-        lock.lock(); defer { lock.unlock() }
-        if !didReadToken {
-            cachedToken = tokenReader.accessToken()
-            didReadToken = true
-        }
-        return cachedToken
+    public convenience init(transport: HTTPTransport, tokenReader: ClaudeOAuthTokenReading) {
+        self.init(transport: transport,
+                  provider: CachedClaudeTokenProvider(upstream: tokenReader, cache: InMemoryClaudeTokenCache()))
+    }
+
+    private enum Attempt {
+        case success(ClaudeUsage)
+        case unauthorized
+        case failed
     }
 
     public func fetch() async -> ClaudeUsage? {
-        guard let token = token() else { return nil }
+        guard let token = provider.token() else { return nil }
+        switch await attempt(token) {
+        case .success(let usage): return usage
+        case .failed: return nil
+        case .unauthorized:
+            guard let fresh = provider.refreshedToken(), fresh != token else { return nil }
+            if case .success(let usage) = await attempt(fresh) { return usage }
+            return nil
+        }
+    }
+
+    private func attempt(_ token: String) async -> Attempt {
         var req = URLRequest(url: Self.usageURL)
         req.httpMethod = "GET"
         req.timeoutInterval = Self.timeout
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(Self.beta, forHTTPHeaderField: "anthropic-beta")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        guard let (data, response) = try? await transport.send(req),
-              (200..<300).contains(response.statusCode)
-        else { return nil }
-        return Self.parse(data)
+        guard let (data, response) = try? await transport.send(req) else { return .failed }
+        if response.statusCode == 401 || response.statusCode == 403 { return .unauthorized }
+        guard (200..<300).contains(response.statusCode) else { return .failed }
+        if let usage = Self.parse(data) { return .success(usage) }
+        return .failed
     }
 
     static func parse(_ data: Data) -> ClaudeUsage? {

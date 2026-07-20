@@ -434,6 +434,7 @@ struct DropdownCard: View {
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(t.panelFill))
+            .help("订阅用量读自 Claude Code 的钥匙串凭证；首次读取时请在钥匙串弹窗选择“始终允许”。")
         }
     }
 

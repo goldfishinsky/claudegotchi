@@ -69,4 +69,45 @@ final class ClaudeUsageClientTests: XCTestCase {
         let usage = await client.fetch()
         XCTAssertNil(usage)
     }
+
+    func testUsesCachedTokenWithoutReadingUpstream() async throws {
+        let transport = FakeHTTPTransport()
+        transport.enqueue(status: 200, body: try fixture())
+        let upstream = FakeTokenReader(constant: "up")
+        let provider = CachedClaudeTokenProvider(upstream: upstream, cache: InMemoryClaudeTokenCache("cached"))
+        let client = ClaudeUsageClient(transport: transport, provider: provider)
+
+        let usage = await client.fetch()
+        XCTAssertEqual(usage?.fiveHourPct, 42)
+        XCTAssertEqual(transport.calls.first?.headers["Authorization"], "Bearer cached")
+        XCTAssertEqual(upstream.reads, 0, "the warm cache path must not re-prompt")
+    }
+
+    func testStaleTokenRefreshesFromUpstreamAndRetries() async throws {
+        let transport = FakeHTTPTransport()
+        transport.enqueue(status: 401, json: "{\"error\":\"unauthorized\"}")
+        transport.enqueue(status: 200, body: try fixture())
+        let upstream = FakeTokenReader(sequence: ["fresh"])
+        let provider = CachedClaudeTokenProvider(upstream: upstream, cache: InMemoryClaudeTokenCache("stale"))
+        let client = ClaudeUsageClient(transport: transport, provider: provider)
+
+        let usage = await client.fetch()
+        XCTAssertEqual(usage?.fiveHourPct, 42)
+        XCTAssertEqual(transport.calls.count, 2)
+        XCTAssertEqual(transport.calls[0].headers["Authorization"], "Bearer stale")
+        XCTAssertEqual(transport.calls[1].headers["Authorization"], "Bearer fresh")
+        XCTAssertEqual(upstream.reads, 1, "upstream re-read exactly once on rejection")
+    }
+
+    func testUnauthorizedWithSameTokenDoesNotRetry() async {
+        let transport = FakeHTTPTransport()
+        transport.enqueue(status: 401, json: "{\"error\":\"unauthorized\"}")
+        let upstream = FakeTokenReader(constant: "same")
+        let provider = CachedClaudeTokenProvider(upstream: upstream, cache: InMemoryClaudeTokenCache("same"))
+        let client = ClaudeUsageClient(transport: transport, provider: provider)
+
+        let usage = await client.fetch()
+        XCTAssertNil(usage)
+        XCTAssertEqual(transport.calls.count, 1, "no retry when the refreshed token is unchanged")
+    }
 }
