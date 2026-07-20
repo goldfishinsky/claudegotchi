@@ -49,4 +49,25 @@ final class TTYAnchorTests: XCTestCase {
         try insert(id: "e2", type: "session_start", ts: 300, sessionId: "s3", tty: "/dev/ttys009")
         XCTAssertEqual(try TTYAnchor.stored(db: db, sessionId: "s3"), "/dev/ttys009")
     }
+
+    func testStoredTakesLatestNonNullAcrossEventTypes() throws {
+        try insert(id: "e1", type: "session_start", ts: 100, sessionId: "s4", tty: "/dev/ttys001")
+        try insert(id: "e2", type: "post_tool_use", ts: 200, sessionId: "s4", tty: "/dev/ttys002")
+        try insert(id: "e3", type: "stop", ts: 300, sessionId: "s4", tty: "/dev/ttys003")
+        XCTAssertEqual(try TTYAnchor.stored(db: db, sessionId: "s4"), "/dev/ttys003",
+                       "latest tty from any event type wins")
+    }
+
+    func testStoredAnchorsFromLaterEventWhenSessionStartHeadless() throws {
+        try insert(id: "e1", type: "session_start", ts: 100, sessionId: "s5", tty: nil)
+        try insert(id: "e2", type: "pre_tool_use", ts: 200, sessionId: "s5", tty: "/dev/ttys007")
+        XCTAssertEqual(try TTYAnchor.stored(db: db, sessionId: "s5"), "/dev/ttys007",
+                       "a session that started without a tty still anchors from a later event")
+    }
+
+    func testStoredNilWhenEveryEventHeadless() throws {
+        try insert(id: "e1", type: "session_start", ts: 100, sessionId: "s6", tty: nil)
+        try insert(id: "e2", type: "post_tool_use", ts: 200, sessionId: "s6", tty: nil)
+        XCTAssertNil(try TTYAnchor.stored(db: db, sessionId: "s6"))
+    }
 }

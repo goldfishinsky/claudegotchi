@@ -259,6 +259,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onOpenSettings: { [weak self] in
                     self?.dropdown?.hide()
                     self?.settingsWindow?.show()
+                },
+                onJump: { [weak self] agent in
+                    self?.dropdown?.hide()
+                    let tty = (try? TTYAnchor.stored(db: services.db, sessionId: agent.sessionId)) ?? nil
+                    SessionJumper.shared.jump(
+                        cwd: agent.cwd ?? "", tty: tty,
+                        markerToken: TitleMarker.token(forSessionId: agent.sessionId))
                 }
             ))
         }

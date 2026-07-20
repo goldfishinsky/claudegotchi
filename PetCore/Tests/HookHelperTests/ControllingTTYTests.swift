@@ -16,6 +16,28 @@ final class ControllingTTYTests: XCTestCase {
         try Event.parse(spoolLine(url))
     }
 
+    func testResolvePrefersOwnTTY() {
+        let tty = ControllingTTY.resolve(pid: 10, ppid: 20) { $0 == 10 ? "/dev/ttys004" : "/dev/ttys009" }
+        XCTAssertEqual(tty, "/dev/ttys004")
+    }
+
+    func testResolveFallsBackToParentWhenHookDetached() {
+        // The detached hook has no controlling tty; the parent CLI process does.
+        let tty = ControllingTTY.resolve(pid: 10, ppid: 20) { $0 == 20 ? "/dev/ttys001" : nil }
+        XCTAssertEqual(tty, "/dev/ttys001", "a setsid'd hook anchors from its parent's terminal")
+    }
+
+    func testResolveNilWhenBothHeadless() {
+        XCTAssertNil(ControllingTTY.resolve(pid: 10, ppid: 20) { _ in nil })
+    }
+
+    func testResolveDoesNotProbeLaunchdParent() {
+        var probed: [Int32] = []
+        let tty = ControllingTTY.resolve(pid: 10, ppid: 1) { probed.append($0); return nil }
+        XCTAssertNil(tty)
+        XCTAssertEqual(probed, [10], "ppid 1 (launchd) is never a session terminal, so skip it")
+    }
+
     func testSessionStartRecordsTTY() throws {
         let spool = tempSpoolURL()
         defer { try? FileManager.default.removeItem(at: spool) }
@@ -26,13 +48,24 @@ final class ControllingTTYTests: XCTestCase {
         XCTAssertEqual(try spoolEvent(spool).tty, "/dev/ttys005")
     }
 
-    func testNonSessionStartDoesNotRecordTTY() throws {
+    func testNonSessionStartAlsoRecordsTTY() throws {
         let spool = tempSpoolURL()
         defer { try? FileManager.default.removeItem(at: spool) }
         _ = ClaudegotchiHook.run(
             args: ["claudegotchi-hook", "stop"],
             stdin: #"{"session_id":"s1"}"#,
             spoolURL: spool, controllingTTY: "/dev/ttys005")
+        XCTAssertEqual(try spoolEvent(spool).tty, "/dev/ttys005",
+                       "every resolvable event anchors the tty, not just session_start")
+    }
+
+    func testHeadlessNonSessionStartRecordsNoTTY() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        _ = ClaudegotchiHook.run(
+            args: ["claudegotchi-hook", "post_tool_use"],
+            stdin: #"{"session_id":"s1","tool_name":"Bash"}"#,
+            spoolURL: spool, controllingTTY: nil)
         XCTAssertFalse(try spoolLine(spool).contains("tty"))
     }
 

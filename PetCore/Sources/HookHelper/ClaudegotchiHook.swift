@@ -70,7 +70,7 @@ struct ClaudegotchiHook {
         if isCodex, let sid = sessionId { sessionId = "codex-" + sid }
 
         let backgroundTasks = type == "stop" ? extras["background_tasks"] as? Int : nil
-        let tty = type == "session_start" ? controllingTTY : nil
+        let tty = controllingTTY
 
         if titleMarkersEnabled, let writer = titleWriter, let dev = controllingTTY,
            let sid = sessionId, type == "session_start" || type == "user_prompt_submit" {

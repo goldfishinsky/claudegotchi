@@ -4,8 +4,17 @@ import Darwin
 enum ControllingTTY {
     // stdin is a pipe, so the tty comes from the kernel's controlling-terminal
     // record (e_tdev), not ttyname(stdin); nil means headless (NODEV).
+    // The CLI spawns the hook detached (setsid), so the hook itself has no
+    // controlling terminal — fall back to the parent CLI process, which keeps it.
     static func current() -> String? {
-        path(forPID: getpid())
+        resolve(pid: getpid(), ppid: getppid())
+    }
+
+    static func resolve(pid: Int32, ppid: Int32,
+                        lookup: (Int32) -> String? = { ControllingTTY.path(forPID: $0) }) -> String? {
+        if let own = lookup(pid) { return own }
+        guard ppid > 1 else { return nil }
+        return lookup(ppid)
     }
 
     static func path(forPID pid: Int32) -> String? {

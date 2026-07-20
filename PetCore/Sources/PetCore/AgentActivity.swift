@@ -17,11 +17,13 @@ public struct AgentActivity: Equatable {
     public let title: String?
     public let currentTool: String?
     public let currentToolStartedMs: Int64?
+    public let cwd: String?
 
     public init(sessionId: String, repoName: String, state: State,
                 sessionTokens: Int64, ratePerMin: Int64, model: String?,
                 title: String? = nil, repoLabel: String? = nil,
-                currentTool: String? = nil, currentToolStartedMs: Int64? = nil) {
+                currentTool: String? = nil, currentToolStartedMs: Int64? = nil,
+                cwd: String? = nil) {
         self.sessionId = sessionId
         self.repoName = repoName
         self.repoLabel = repoLabel ?? repoName
@@ -32,6 +34,7 @@ public struct AgentActivity: Equatable {
         self.title = title
         self.currentTool = currentTool
         self.currentToolStartedMs = currentToolStartedMs
+        self.cwd = cwd
     }
 
     /// Codex sessions are namespaced `codex-<uuid>` by the hook helper at spool time.
@@ -149,7 +152,8 @@ public enum AgentActivityTracker {
                 title: titles[s.sessionId],
                 repoLabel: labels[idx],
                 currentTool: action?.tool,
-                currentToolStartedMs: action?.ts
+                currentToolStartedMs: action?.ts,
+                cwd: s.cwd
             )
         }
     }

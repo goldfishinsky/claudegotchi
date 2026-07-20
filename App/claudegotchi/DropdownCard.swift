@@ -17,6 +17,7 @@ struct DropdownCard: View {
     var onOpenStats: () -> Void
     var onToggleIsland: (Bool) -> Void
     var onOpenSettings: () -> Void
+    var onJump: (AgentActivity) -> Void
 
     @Environment(\.colorScheme) private var scheme
     @State private var hoverTarget: HoverTarget?
@@ -358,64 +359,13 @@ struct DropdownCard: View {
             let agents = agentModel.agents
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(agents.prefix(WorkPanelFormat.rowCap)), id: \.sessionId) { agent in
-                    agentRow(t, agent)
+                    AgentRowView(theme: t, agent: agent, onJump: onJump)
                 }
                 if agents.count > WorkPanelFormat.rowCap {
                     Text("… 还有 \(WorkPanelFormat.cappedCount(agents.count - WorkPanelFormat.rowCap)) 个")
                         .font(WFont.caption).foregroundStyle(t.inkFaint)
                 }
             }
-        }
-    }
-
-    private func agentRow(_ t: WarmTheme, _ a: AgentActivity) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(a.state == .working ? rgb(0.46, 0.85, 0.45) : t.inkFaint.opacity(0.55))
-                        .frame(width: 6, height: 6)
-                    Text(a.repoLabel).font(WFont.vLabel).foregroundStyle(t.ink)
-                        .lineLimit(1).truncationMode(.middle).layoutPriority(1)
-                    if a.isCodex {
-                        Text("codex").font(WFont.caption)
-                            .foregroundStyle(rgb(0.55, 0.45, 0.95))
-                            .padding(.horizontal, 4).padding(.vertical, 0.5)
-                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(rgb(0.72, 0.57, 1.0).opacity(0.18)))
-                            .fixedSize()
-                    }
-                    if let model = a.model {
-                        Text(model).font(WFont.caption).foregroundStyle(t.inkFaint)
-                            .lineLimit(1).fixedSize()
-                    }
-                }
-                if let title = a.title {
-                    Text(title).font(WFont.caption).foregroundStyle(t.inkFaint)
-                        .lineLimit(1).truncationMode(.tail)
-                        .padding(.leading, 12)
-                }
-                if a.state == .working, let tool = a.currentTool, let started = a.currentToolStartedMs {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        let secs = max(0, Int((ctx.date.timeIntervalSince1970 * 1000 - Double(started)) / 1000))
-                        Text("正在 \(tool) · \(secs)s")
-                            .font(WFont.caption).monospacedDigit()
-                            .foregroundStyle(t.accent)
-                            .lineLimit(1).truncationMode(.tail)
-                    }
-                    .padding(.leading, 12)
-                }
-            }
-            Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 1) {
-                Text(a.ratePerMin > 0 ? "\(TokenFormat.compact(a.ratePerMin))/min" : "—")
-                    .font(WFont.vValue).monospacedDigit().foregroundStyle(t.inkStrong)
-                if a.sessionTokens > 0 {
-                    Text("共 \(TokenFormat.compact(a.sessionTokens))")
-                        .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
-                }
-            }
-            .fixedSize()
         }
     }
 
@@ -521,5 +471,80 @@ struct DropdownCard: View {
         case ..<88: return "battery.75"
         default: return "battery.100"
         }
+    }
+}
+
+// A whole active-agent row is the jump target: hovering warms the row and reveals
+// the ↗; a click jumps to that session's host terminal (SessionJumper tier 0).
+private struct AgentRowView: View {
+    let theme: WarmTheme
+    let agent: AgentActivity
+    let onJump: (AgentActivity) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        let t = theme
+        let a = agent
+        return HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(a.state == .working ? rgb(0.46, 0.85, 0.45) : t.inkFaint.opacity(0.55))
+                        .frame(width: 6, height: 6)
+                    Text(a.repoLabel).font(WFont.vLabel).foregroundStyle(t.ink)
+                        .lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                    if a.isCodex {
+                        Text("codex").font(WFont.caption)
+                            .foregroundStyle(rgb(0.55, 0.45, 0.95))
+                            .padding(.horizontal, 4).padding(.vertical, 0.5)
+                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(rgb(0.72, 0.57, 1.0).opacity(0.18)))
+                            .fixedSize()
+                    }
+                    if let model = a.model {
+                        Text(model).font(WFont.caption).foregroundStyle(t.inkFaint)
+                            .lineLimit(1).fixedSize()
+                    }
+                }
+                if let title = a.title {
+                    Text(title).font(WFont.caption).foregroundStyle(t.inkFaint)
+                        .lineLimit(1).truncationMode(.tail)
+                        .padding(.leading, 12)
+                }
+                if a.state == .working, let tool = a.currentTool, let started = a.currentToolStartedMs {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        let secs = max(0, Int((ctx.date.timeIntervalSince1970 * 1000 - Double(started)) / 1000))
+                        Text("正在 \(tool) · \(secs)s")
+                            .font(WFont.caption).monospacedDigit()
+                            .foregroundStyle(t.accent)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    .padding(.leading, 12)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(a.ratePerMin > 0 ? "\(TokenFormat.compact(a.ratePerMin))/min" : "—")
+                    .font(WFont.vValue).monospacedDigit().foregroundStyle(t.inkStrong)
+                if a.sessionTokens > 0 {
+                    Text("共 \(TokenFormat.compact(a.sessionTokens))")
+                        .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
+                }
+            }
+            .fixedSize()
+            Image(systemName: "arrow.up.forward.app.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(t.accent)
+                .opacity(hovering ? 1 : 0)
+                .frame(width: 13)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(hovering ? t.ink.opacity(0.09) : .clear))
+        .onHover { hovering = $0 }
+        .onTapGesture { onJump(a) }
+        .help("跳到发起该会话的终端窗口")
     }
 }
