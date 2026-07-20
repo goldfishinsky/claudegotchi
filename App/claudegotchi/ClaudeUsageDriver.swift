@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import PetCore
 
 @MainActor
@@ -10,6 +11,10 @@ final class ClaudeUsageDriver: ObservableObject {
     private var timer: Timer?
     private var inFlight = false
 
+    /// Gates every keychain-touching path. Default `false` means a fresh launch
+    /// reads nothing until the user opts into 「显示订阅用量」.
+    var isEnabled: () -> Bool = { false }
+
     init(client: ClaudeUsageClient = ClaudeUsageClient(), interval: TimeInterval = 300) {
         self.client = client
         self.interval = interval
@@ -18,7 +23,7 @@ final class ClaudeUsageDriver: ObservableObject {
     var isRunning: Bool { timer != nil }
 
     func start() {
-        guard timer == nil else { return }
+        guard isEnabled(), timer == nil else { return }
         fetch()
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.fetch() }
@@ -33,14 +38,21 @@ final class ClaudeUsageDriver: ObservableObject {
         timer = nil
     }
 
+    /// Turned off in settings: stop polling and drop any last reading so the strip
+    /// disappears immediately.
+    func stopAndClear() {
+        stop()
+        if usage != nil { withAnimation(.snappy(duration: 0.25)) { usage = nil } }
+    }
+
     private func fetch() {
-        guard !inFlight else { return }
+        guard isEnabled(), !inFlight else { return }
         inFlight = true
         Task { [client] in
             let result = await client.fetch()
             await MainActor.run {
                 self.inFlight = false
-                if let result { self.usage = result }
+                if let result { withAnimation(.snappy(duration: 0.25)) { self.usage = result } }
             }
         }
     }

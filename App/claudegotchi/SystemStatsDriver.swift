@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import PetCore
 
 @MainActor
@@ -127,17 +128,19 @@ final class SystemStatsDriver: ObservableObject {
         }
         tickCount += 1
 
-        snapshot = SystemSnapshot(
-            memUsedBytes: mem.used,
-            memTotalBytes: mem.total,
-            memPressure: MemPressure.tier(used: mem.used, total: mem.total, compressed: mem.compressed),
-            downBytesPerSec: down,
-            upBytesPerSec: up,
-            cpuUsage: cpu,
-            diskFreeBytes: lastDisk.free,
-            diskTotalBytes: lastDisk.total,
-            battery: lastBattery
-        )
+        withAnimation(.snappy(duration: 0.25)) {
+            snapshot = SystemSnapshot(
+                memUsedBytes: mem.used,
+                memTotalBytes: mem.total,
+                memPressure: MemPressure.tier(used: mem.used, total: mem.total, compressed: mem.compressed),
+                downBytesPerSec: down,
+                upBytesPerSec: up,
+                cpuUsage: cpu,
+                diskFreeBytes: lastDisk.free,
+                diskTotalBytes: lastDisk.total,
+                battery: lastBattery
+            )
+        }
     }
 
     private func sampleProcesses(now: TimeInterval) {

@@ -171,7 +171,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsSelection: StatsSelection?
     private var statusItem: NSStatusItem?
     private var dropdown: MenuDropdownController?
-    private var workPanelModel: WorkPanelModel?
     private var petPanelModel: PetPanelModel?
     private var agentActivityModel: AgentActivityModel?
     private var islandModel: IslandModel?
@@ -202,8 +201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: Menu-bar dropdown (spec §1/§10)
 
     private func installMenuBar(_ services: AppServices) {
-        let model = WorkPanelModel(db: services.db, config: services.config)
-        workPanelModel = model
         let petModel = PetPanelModel(db: services.db, config: services.config)
         let statsDriver = services.systemStats
         petModel.systemMemPressure = { [weak statsDriver] in
@@ -229,10 +226,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let island = IslandModel(db: services.db, notchAvailable: NotchGeometry.builtInNotch() != nil)
         islandModel = island
 
+        services.claudeUsage.isEnabled = { [weak settingsStore] in
+            settingsStore?.showSubscriptionUsage ?? false
+        }
+
         settingsStore.onChange = { [weak self] in
             MainActor.assumeIsolated {
                 self?.agentActivityModel?.refresh()
                 self?.islandController?.refresh()
+                self?.syncUsageDriver()
             }
         }
 
@@ -246,7 +248,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dropdown = MenuDropdownController(driver: statsDriver, usageDriver: usageDriver) {
             AnyView(DropdownCard(
                 petModel: petModel,
-                workModel: model,
                 agentModel: agentModel,
                 services: services,
                 driver: statsDriver,
@@ -269,6 +270,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     SessionJumper.shared.jump(
                         cwd: agent.cwd ?? "", tty: tty,
                         markerToken: TitleMarker.token(forSessionId: agent.sessionId))
+                },
+                onHeightChange: { [weak self] h in
+                    self?.dropdown?.setContentHeight(h)
                 }
             ))
         }
@@ -279,8 +283,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 db: services.db, settings: settingsStore, sound: soundController
             )
             islandController = controller
+            controller.onPresenceChange = { [weak self] in self?.syncStatusItemVisibility() }
             controller.start()
         }
+        syncStatusItemVisibility()
 
         refreshPanels()
         redrawStatusIcon()
@@ -308,9 +314,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The status item and the island are mutually exclusive: the menu-bar icon
+    /// shows only while the island is absent (no notch, or island disabled). The
+    /// island's auto-hide (no sessions) keeps the panel present, so the status
+    /// item stays hidden through it.
+    private func syncStatusItemVisibility() {
+        statusItem?.isVisible = !(islandController?.isPresent ?? false)
+    }
+
+    /// Opting out of 「显示订阅用量」 drops the keychain-reading poller and any last
+    /// reading at once; opting in while the card is open starts it immediately.
+    private func syncUsageDriver() {
+        guard let driver = services?.claudeUsage else { return }
+        if settings?.showSubscriptionUsage == true {
+            if dropdown?.isVisible == true { driver.start() }
+        } else {
+            driver.stopAndClear()
+        }
+    }
+
     private func refreshPanels() {
-        guard let services = services else { return }
-        workPanelModel?.refresh(firstPollComplete: services.watcher.snapshot.firstPollComplete)
+        guard services != nil else { return }
         petPanelModel?.refresh()
         agentActivityModel?.refresh()
         islandController?.refresh()

@@ -24,6 +24,7 @@ final class SettingsStore: ObservableObject {
     @Published var quietOnLock: Bool { didSet { persist(quietOnLock, .quietOnLock); notify() } }
     @Published var quietOnCapture: Bool { didSet { persist(quietOnCapture, .quietOnCapture); notify() } }
     @Published var nativeApprovalsEnabled: Bool { didSet { persist(nativeApprovalsEnabled, .nativeApprovals); notify() } }
+    @Published var showSubscriptionUsage: Bool { didSet { persist(showSubscriptionUsage, .showSubscriptionUsage); notify() } }
 
     /// Precise-jump toggles are file-backed, not UserDefaults: markers live behind a
     /// flag file the hook checks, and the native-title switch edits ~/.claude/settings.json.
@@ -67,6 +68,7 @@ final class SettingsStore: ObservableObject {
         quietOnLock = Self.readBool(defaults, .quietOnLock, true)
         quietOnCapture = Self.readBool(defaults, .quietOnCapture, true)
         nativeApprovalsEnabled = Self.readBool(defaults, .nativeApprovals, false)
+        showSubscriptionUsage = Self.readBool(defaults, .showSubscriptionUsage, false)
         titleMarkersEnabled = TitleMarker.isEnabled()
         disableClaudeNativeTitle = (try? NativeTitleSetting.isDisabled(
             settingsPath: FileManager.default.homeDirectoryForCurrentUser
@@ -75,11 +77,11 @@ final class SettingsStore: ObservableObject {
         islandWidthOffset = Self.readInt(defaults, .islandWidthOffset, 0, clamp: Self.widthOffsetRange)
         soundEnabled = Self.readBool(defaults, .soundEnabled, true)
         soundVolume = Self.readDouble(defaults, .soundVolume, 0.30, clamp: 0.0...1.0)
-        soundSessionStart = Self.readBool(defaults, .soundSessionStart, true)
+        soundSessionStart = Self.readBool(defaults, .soundSessionStart, false)
         soundTaskComplete = Self.readBool(defaults, .soundTaskComplete, true)
         soundPermission = Self.readBool(defaults, .soundPermission, true)
         soundLevelUp = Self.readBool(defaults, .soundLevelUp, true)
-        soundTheater = Self.readBool(defaults, .soundTheater, true)
+        soundTheater = Self.readBool(defaults, .soundTheater, false)
         presetEnabled = Self.readJSON(defaults, .presetEnabled) ?? [:]
         userDirectoryPatterns = Self.readJSON(defaults, .userDirs) ?? []
         userPromptPrefixPatterns = Self.readJSON(defaults, .userPrompts) ?? []
@@ -199,6 +201,7 @@ final class SettingsStore: ObservableObject {
         case quietOnLock = "claudegotchi.settings.quietOnLock"
         case quietOnCapture = "claudegotchi.settings.quietOnCapture"
         case nativeApprovals = "claudegotchi.settings.nativeApprovals"
+        case showSubscriptionUsage = "claudegotchi.settings.showSubscriptionUsage"
         case islandHeightOffset = "claudegotchi.settings.islandHeightOffset"
         case islandWidthOffset = "claudegotchi.settings.islandWidthOffset"
         case soundEnabled = "claudegotchi.settings.soundEnabled"

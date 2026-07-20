@@ -325,6 +325,12 @@ final class NotchIslandController {
     private var completionDetector = CompletionDetector()
     private var completionTimer: Timer?
     private var escMonitor: Any?
+    private var screenObserver: Any?
+
+    /// Fires whenever the island's on-screen presence may have changed (built,
+    /// torn down, or a screen-topology shift added/removed the notch) so the
+    /// status item can mirror it: shown only while the island is absent.
+    var onPresenceChange: (() -> Void)?
 
     init(dropdown: MenuDropdownController, petModel: PetPanelModel,
          agentModel: AgentActivityModel, island: IslandModel,
@@ -336,9 +342,44 @@ final class NotchIslandController {
         self.db = db
         self.settings = settings
         self.sound = sound
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenParametersChanged() }
+        }
+    }
+
+    deinit {
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
     }
 
     var isPresent: Bool { panel != nil }
+
+    private func notifyPresence() { onPresenceChange?() }
+
+    /// A monitor plugged/unplugged can add or remove the built-in notch. Rebuild,
+    /// tear down, or re-derive geometry to match, then report the new presence.
+    private func screenParametersChanged() {
+        let h = CGFloat(settings.islandHeightOffset)
+        let w = CGFloat(settings.islandWidthOffset)
+        let geoNow = NotchGeometry.builtInNotch(heightOffset: h, widthOffset: w)
+        if geoNow == nil {
+            if panel != nil { teardown() } else { notifyPresence() }
+        } else if island.enabled {
+            if panel == nil {
+                start()
+            } else {
+                geometry = geoNow
+                appliedHeightOffset = h
+                appliedWidthOffset = w
+                hosting?.rootView = makeRoot(geoNow!)
+                layout(animated: false)
+                notifyPresence()
+            }
+        } else {
+            notifyPresence()
+        }
+    }
 
     func start() {
         guard island.enabled, panel == nil else { return }
@@ -491,6 +532,7 @@ final class NotchIslandController {
         currentlyVisible = true
         island.refresh(filter: settings.sessionFilter)
         layout(animated: false)
+        notifyPresence()
     }
 
     private func teardown() {
@@ -503,6 +545,7 @@ final class NotchIslandController {
         geometry = nil
         appliedHeightOffset = .nan
         appliedWidthOffset = .nan
+        notifyPresence()
     }
 
     /// Resize the wrapping window to match the current lobe/strip state and drive

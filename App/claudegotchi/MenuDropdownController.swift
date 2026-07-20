@@ -21,6 +21,9 @@ final class MenuDropdownController {
     private let makeRoot: () -> AnyView
 
     private var panel: NSPanel?
+    // Screen-Y of the card's pinned top edge (panel maxY): the card hangs from
+    // the notch, so height changes grow downward from here.
+    private var anchorMaxY: CGFloat?
     private var globalMonitor: Any?
     private var localMonitor: Any?
     // Guards the reopen that would otherwise fire when the click on the status
@@ -64,7 +67,10 @@ final class MenuDropdownController {
 
         let hosting = NSHostingController(rootView: makeRoot())
         hosting.view.layoutSubtreeIfNeeded()
-        let size = hosting.view.fittingSize
+        var size = hosting.view.fittingSize
+        if size.width < 1 || size.height < 1 {
+            size = NSSize(width: DropdownCard.totalWidth, height: 600)
+        }
 
         let panel = DropdownPanel(
             contentRect: NSRect(origin: .zero, size: size),
@@ -87,6 +93,20 @@ final class MenuDropdownController {
         if autoDismiss { installMonitors() }
     }
 
+    /// Regrows the panel to the card's reported height as a hero tile expands in
+    /// place, keeping the card's top edge pinned (the card hangs from the notch).
+    /// The visible card sits `glowMargin` inside the panel, so following the card
+    /// height frame-by-frame never clips it.
+    func setContentHeight(_ height: CGFloat) {
+        guard let panel, height > 1 else { return }
+        var frame = panel.frame
+        let top = anchorMaxY ?? frame.maxY
+        guard abs(frame.height - height) > 0.5 || abs(frame.maxY - top) > 0.5 else { return }
+        frame.size.height = height
+        frame.origin.y = top - height
+        panel.setFrame(frame, display: true)
+    }
+
     func hide() {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
@@ -94,6 +114,7 @@ final class MenuDropdownController {
         localMonitor = nil
         panel?.orderOut(nil)
         panel = nil
+        anchorMaxY = nil
         closedAt = Date()
         driver.stop()
         usageDriver.stop()
@@ -122,7 +143,8 @@ final class MenuDropdownController {
 
         let originX = cardLeft - margin
         let originY = (cardTop - cardH) - margin
-        panel.setFrameOrigin(NSPoint(x: originX, y: originY))
+        anchorMaxY = cardTop + margin
+        panel.setFrame(NSRect(x: originX, y: originY, width: size.width, height: size.height), display: true)
     }
 
     private func installMonitors() {

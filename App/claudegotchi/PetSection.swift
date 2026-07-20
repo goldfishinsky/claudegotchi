@@ -24,7 +24,7 @@ struct PetSection: View {
 
     private var heroRow: some View {
         HStack(alignment: .center, spacing: 16) {
-            hero.frame(width: 120)
+            hero.frame(width: 168)
             VStack(spacing: 10) {
                 vitalRow(Candy.full, "饱食", petModel.fullness)
                 vitalRow(Candy.stam, "体力", petModel.stamina)
@@ -73,13 +73,13 @@ struct PetSection: View {
             Circle()
                 .fill(RadialGradient(
                     colors: [theme.halo.opacity(theme.isDark ? 0.28 : 0.50), theme.halo.opacity(0)],
-                    center: .center, startRadius: 2, endRadius: 58))
-                .frame(width: 112, height: 112)
-                .blur(radius: 4)
-                .offset(y: -4)
+                    center: .center, startRadius: 2, endRadius: 80))
+                .frame(width: 156, height: 156)
+                .blur(radius: 5)
+                .offset(y: -6)
             theaterStage
         }
-        .frame(width: 120, height: 90)
+        .frame(width: 168, height: 145)
     }
 
     @ViewBuilder
@@ -94,9 +94,9 @@ struct PetSection: View {
                 onPetting: { petModel.handlePetting() },
                 onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }
             )
-            .frame(width: 120, height: 90)
+            .frame(width: 168, height: 145)
         } else {
-            Color.clear.frame(width: 120, height: 90)
+            Color.clear.frame(width: 168, height: 145)
         }
     }
 
@@ -104,7 +104,7 @@ struct PetSection: View {
         Text("🥚 孵化中…")
             .font(.system(size: 15, weight: .medium, design: .rounded))
             .foregroundStyle(theme.inkFaint)
-            .frame(height: 92)
+            .frame(height: 145)
             .frame(maxWidth: .infinity)
     }
 

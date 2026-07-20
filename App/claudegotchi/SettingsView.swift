@@ -162,6 +162,12 @@ struct SettingsView: View {
                     t, title: "宽度偏移", subtitle: "微调左右两侧耳朵的总宽度，0 为自动",
                     value: $store.islandWidthOffset, range: SettingsStore.widthOffsetRange, step: 2)
             }
+            group(t, "订阅用量") {
+                SettingsToggleRow(
+                    t: t, title: "显示订阅用量",
+                    subtitle: "需要读取 Claude Code 的钥匙串凭证，可能触发系统授权弹窗",
+                    isOn: $store.showSubscriptionUsage)
+            }
         }
     }
 
@@ -270,17 +276,22 @@ struct SettingsView: View {
                 .disabled(!store.soundEnabled)
                 .opacity(store.soundEnabled ? 1 : 0.4)
             }
-            group(t, "事件音效") {
-                soundRow(t, "会话开始", "新的 Claude / Codex 会话启动", .sessionStart, $store.soundSessionStart)
-                Divider().overlay(t.track)
-                soundRow(t, "任务完成", "会话完成一轮工作", .taskComplete, $store.soundTaskComplete)
-                Divider().overlay(t.track)
-                soundRow(t, "请求权限", "会话等待你的批准", .permission, $store.soundPermission)
-                Divider().overlay(t.track)
-                soundRow(t, "宠物升级", "宠物等级提升时的号角", .levelUp, $store.soundLevelUp)
-                Divider().overlay(t.track)
-                soundRow(t, "剧场音效", "下拉剧场里的互动音效：吃食、爱心、庆祝、打字",
-                         .petChirp, $store.soundTheater)
+            VStack(alignment: .leading, spacing: 8) {
+                group(t, "事件音效") {
+                    soundRow(t, "会话开始", "新的 Claude / Codex 会话启动", .sessionStart, $store.soundSessionStart)
+                    Divider().overlay(t.track)
+                    soundRow(t, "任务完成", "会话完成一轮工作", .taskComplete, $store.soundTaskComplete)
+                    Divider().overlay(t.track)
+                    soundRow(t, "请求权限", "会话等待你的批准", .permission, $store.soundPermission)
+                    Divider().overlay(t.track)
+                    soundRow(t, "宠物升级", "宠物等级提升时的号角", .levelUp, $store.soundLevelUp)
+                    Divider().overlay(t.track)
+                    soundRow(t, "剧场音效", "下拉剧场里的互动音效：吃食、爱心、庆祝、打字",
+                             .petChirp, $store.soundTheater)
+                }
+                Text("多会话并发时建议只保留 任务完成 与 请求权限")
+                    .font(WFont.caption).foregroundStyle(t.inkFaint)
+                    .padding(.horizontal, 2)
             }
             .disabled(!store.soundEnabled)
             .opacity(store.soundEnabled ? 1 : 0.5)

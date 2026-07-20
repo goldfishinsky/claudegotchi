@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import GRDB
 import PetCore
 
@@ -17,8 +18,9 @@ final class AgentActivityModel: ObservableObject {
 
     func refresh() {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        agents = (try? AgentActivityTracker.activeAgents(
+        let next = (try? AgentActivityTracker.activeAgents(
             db: db, nowMs: nowMs, windowMs: sessionWindowMs, filter: filterProvider()
         )) ?? []
+        withAnimation(.snappy(duration: 0.25)) { agents = next }
     }
 }
