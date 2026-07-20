@@ -10,6 +10,28 @@ private final class DropdownPanel: NSPanel {
     }
 }
 
+// Drives the card's grow-out-of-the-notch entrance: a per-show flag the wrapper
+// animates on the same spring family as the island morph.
+@MainActor
+final class DropdownAppearance: ObservableObject {
+    @Published var shown = false
+    static let spring = Animation.spring(response: 0.40, dampingFraction: 0.82, blendDuration: 0)
+}
+
+private struct DropdownAppear<Content: View>: View {
+    @ObservedObject var appearance: DropdownAppearance
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let content: Content
+    var body: some View {
+        content
+            .scaleEffect(appearance.shown ? 1 : 0.96, anchor: .top)
+            .opacity(appearance.shown ? 1 : 0)
+            .animation(reduceMotion ? .easeOut(duration: 0.14) : DropdownAppearance.spring,
+                       value: appearance.shown)
+            .onAppear { appearance.shown = true }
+    }
+}
+
 // Anchors the dreamy card under the status-item button as a borderless,
 // non-activating panel (transparent so the warm glow spills past the card).
 // Dismisses on any click outside the panel; runs the system-stats sampler only
@@ -21,6 +43,7 @@ final class MenuDropdownController {
     private let makeRoot: () -> AnyView
 
     private var panel: NSPanel?
+    private var appearance: DropdownAppearance?
     // Screen-Y of the card's pinned top edge (panel maxY): the card hangs from
     // the notch, so height changes grow downward from here.
     private var anchorMaxY: CGFloat?
@@ -65,7 +88,10 @@ final class MenuDropdownController {
         driver.start()
         usageDriver.start()
 
-        let hosting = NSHostingController(rootView: makeRoot())
+        let appearance = DropdownAppearance()
+        self.appearance = appearance
+        let hosting = NSHostingController(
+            rootView: AnyView(DropdownAppear(appearance: appearance, content: makeRoot())))
         hosting.view.layoutSubtreeIfNeeded()
         var size = hosting.view.fittingSize
         if size.width < 1 || size.height < 1 {
@@ -112,12 +138,20 @@ final class MenuDropdownController {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         globalMonitor = nil
         localMonitor = nil
-        panel?.orderOut(nil)
+        let closing = panel
+        let ap = appearance
         panel = nil
+        appearance = nil
         anchorMaxY = nil
         closedAt = Date()
         driver.stop()
         usageDriver.stop()
+        // Reverse the entrance (scale/opacity toward the notch) before ordering out.
+        ap?.shown = false
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        DispatchQueue.main.asyncAfter(deadline: .now() + (reduce ? 0.15 : 0.42)) {
+            closing?.orderOut(nil)
+        }
     }
 
     private func position(_ panel: NSPanel, anchorRect: NSRect, screen scr: NSScreen?, size: NSSize) {
