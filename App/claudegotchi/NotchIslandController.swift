@@ -8,7 +8,7 @@ enum IslandMetric {
     static let stripWidth: CGFloat = 158
     static let topFlare: CGFloat = 7
     static let bottomCorner: CGFloat = 10
-    static let bottomExtend: CGFloat = 4
+    static let bottomExtend: CGFloat = 2
 }
 
 // MARK: - notch shape
@@ -51,13 +51,16 @@ struct NotchGeometry {
     let notchRect: NSRect
     let notchCenterX: CGFloat
     let islandHeight: CGFloat
+    let lobeWidth: CGFloat
 
     var notchWidth: CGFloat { notchRect.width }
 
     /// The built-in notched display, if any: `safeAreaInsets.top > 0` is present
     /// only on the notched built-in panel. The physical cutout spans from the
     /// left auxiliary area's right edge to the right auxiliary area's left edge.
-    static func builtInNotch() -> NotchGeometry? {
+    /// `heightOffset`/`widthOffset` are the user's tuning nudges (0 = pure API
+    /// geometry); the width nudge splits evenly across both lobes.
+    static func builtInNotch(heightOffset: CGFloat = 0, widthOffset: CGFloat = 0) -> NotchGeometry? {
         for screen in NSScreen.screens {
             let menuBarHeight = screen.safeAreaInsets.top
             guard menuBarHeight > 0,
@@ -69,9 +72,11 @@ struct NotchGeometry {
             let notchRect = NSRect(
                 x: notchLeft, y: screen.frame.maxY - menuBarHeight,
                 width: notchWidth, height: menuBarHeight)
+            let height = max(20, menuBarHeight + IslandMetric.bottomExtend + heightOffset)
+            let lobe = max(20, IslandMetric.lobeWidth + widthOffset / 2)
             return NotchGeometry(
                 screen: screen, notchRect: notchRect, notchCenterX: notchRect.midX,
-                islandHeight: menuBarHeight + IslandMetric.bottomExtend)
+                islandHeight: height, lobeWidth: lobe)
         }
         return nil
     }
@@ -80,11 +85,11 @@ struct NotchGeometry {
     /// bottom hangs `bottomExtend` below the notch. The left lobe collapses when
     /// no agents are active; the alert strip extends the island rightward.
     func frame(leftLobe: Bool, alert: Bool) -> NSRect {
-        let lc = leftLobe ? IslandMetric.lobeWidth : 0
+        let lc = leftLobe ? lobeWidth : 0
         let strip = alert ? IslandMetric.stripWidth : 0
         return NSRect(
             x: notchRect.minX - lc, y: notchRect.maxY - islandHeight,
-            width: lc + notchRect.width + IslandMetric.lobeWidth + strip,
+            width: lc + notchRect.width + lobeWidth + strip,
             height: islandHeight)
     }
 
@@ -163,6 +168,7 @@ struct NotchIslandView: View {
     @ObservedObject var agentModel: AgentActivityModel
     @ObservedObject var island: IslandModel
     let notchWidth: CGFloat
+    let lobeWidth: CGFloat
     let height: CGFloat
     var onHover: (Bool) -> Void
     var onClick: () -> Void
@@ -180,9 +186,9 @@ struct NotchIslandView: View {
         ZStack(alignment: .topLeading) {
             shape.fill(Color.black).frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 0) {
-                badgeLobe.frame(width: hasLeftLobe ? IslandMetric.lobeWidth : 0)
+                badgeLobe.frame(width: hasLeftLobe ? lobeWidth : 0)
                 Color.clear.frame(width: notchWidth).allowsHitTesting(false)
-                petLobe.frame(width: IslandMetric.lobeWidth)
+                petLobe.frame(width: lobeWidth)
                 if island.showPermissionStrip, let req = island.pendingPermission {
                     alertStrip(req).frame(width: IslandMetric.stripWidth)
                 } else if island.showCompletionStrip, let comp = island.completion {
@@ -300,7 +306,10 @@ final class NotchIslandController {
     private let sound: SoundController
 
     private var panel: NSPanel?
+    private var hosting: NSHostingController<AnyView>?
     private var geometry: NotchGeometry?
+    private var appliedHeightOffset: CGFloat = .nan
+    private var appliedWidthOffset: CGFloat = .nan
     private var lastLeftLobe = false
     private var lastHasStrip = false
     private var currentlyVisible = true
@@ -332,7 +341,12 @@ final class NotchIslandController {
     var isPresent: Bool { panel != nil }
 
     func start() {
-        guard island.enabled, panel == nil, let geo = NotchGeometry.builtInNotch() else { return }
+        guard island.enabled, panel == nil else { return }
+        let h = CGFloat(settings.islandHeightOffset)
+        let w = CGFloat(settings.islandWidthOffset)
+        guard let geo = NotchGeometry.builtInNotch(heightOffset: h, widthOffset: w) else { return }
+        appliedHeightOffset = h
+        appliedWidthOffset = w
         geometry = geo
         buildPanel(geo)
     }
@@ -348,11 +362,26 @@ final class NotchIslandController {
     /// a fast 3s poll runs only while an alert/completion is showing.
     func refresh() {
         guard panel != nil else { return }
+        applyGeometryIfNeeded()
         let filter = settings.sessionFilter
         island.refresh(filter: filter)
         updatePermissionSuppression()
         detectCompletions(filter: filter)
         layout(animated: true)
+    }
+
+    /// Re-derive geometry when the user's tuning offsets change, swap the hosted
+    /// root (so the SwiftUI `height`/`lobeWidth` update) and re-frame in place.
+    private func applyGeometryIfNeeded() {
+        let h = CGFloat(settings.islandHeightOffset)
+        let w = CGFloat(settings.islandWidthOffset)
+        guard h != appliedHeightOffset || w != appliedWidthOffset,
+              let geo = NotchGeometry.builtInNotch(heightOffset: h, widthOffset: w) else { return }
+        appliedHeightOffset = h
+        appliedWidthOffset = w
+        geometry = geo
+        hosting?.rootView = makeRoot(geo)
+        layout(animated: false)
     }
 
     // MARK: completion reveal
@@ -426,16 +455,20 @@ final class NotchIslandController {
 
     // MARK: panel
 
-    private func buildPanel(_ geo: NotchGeometry) {
-        let root = NotchIslandView(
+    private func makeRoot(_ geo: NotchGeometry) -> AnyView {
+        AnyView(NotchIslandView(
             petModel: petModel, agentModel: agentModel, island: island,
-            notchWidth: geo.notchWidth, height: geo.islandHeight,
+            notchWidth: geo.notchWidth, lobeWidth: geo.lobeWidth, height: geo.islandHeight,
             onHover: { [weak self] in self?.islandHover($0) },
             onClick: { [weak self] in self?.islandClick() },
             onAlertClick: { [weak self] in self?.alertClick($0) },
             onCompletionClick: { [weak self] in self?.completionClick($0) }
-        )
-        let hosting = NSHostingController(rootView: AnyView(root))
+        ))
+    }
+
+    private func buildPanel(_ geo: NotchGeometry) {
+        let hosting = NSHostingController(rootView: makeRoot(geo))
+        self.hosting = hosting
         let panel = IslandPanel(
             contentRect: NSRect(origin: .zero, size: geo.frame(leftLobe: false, alert: false).size),
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
@@ -466,7 +499,10 @@ final class NotchIslandController {
         alertTimer?.invalidate(); alertTimer = nil
         panel?.orderOut(nil)
         panel = nil
+        hosting = nil
         geometry = nil
+        appliedHeightOffset = .nan
+        appliedWidthOffset = .nan
     }
 
     /// Resize the wrapping window to match the current lobe/strip state and drive

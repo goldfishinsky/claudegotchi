@@ -10,6 +10,8 @@ import PetCore
 final class SettingsStore: ObservableObject {
     static let hoverDelayDefault = 0.25
     static let dwellRange = 3...10
+    static let heightOffsetRange = -6...12
+    static let widthOffsetRange = -20...40
 
     var onChange: (() -> Void)?
 
@@ -22,6 +24,9 @@ final class SettingsStore: ObservableObject {
     @Published var quietOnLock: Bool { didSet { persist(quietOnLock, .quietOnLock); notify() } }
     @Published var quietOnCapture: Bool { didSet { persist(quietOnCapture, .quietOnCapture); notify() } }
     @Published var nativeApprovalsEnabled: Bool { didSet { persist(nativeApprovalsEnabled, .nativeApprovals); notify() } }
+
+    @Published var islandHeightOffset: Int { didSet { persist(islandHeightOffset, .islandHeightOffset); notify() } }
+    @Published var islandWidthOffset: Int { didSet { persist(islandWidthOffset, .islandWidthOffset); notify() } }
 
     @Published var soundEnabled: Bool { didSet { persist(soundEnabled, .soundEnabled); notify() } }
     @Published var soundVolume: Double { didSet { persist(soundVolume, .soundVolume); notify() } }
@@ -49,6 +54,8 @@ final class SettingsStore: ObservableObject {
         quietOnLock = Self.readBool(defaults, .quietOnLock, true)
         quietOnCapture = Self.readBool(defaults, .quietOnCapture, true)
         nativeApprovalsEnabled = Self.readBool(defaults, .nativeApprovals, false)
+        islandHeightOffset = Self.readInt(defaults, .islandHeightOffset, 0, clamp: Self.heightOffsetRange)
+        islandWidthOffset = Self.readInt(defaults, .islandWidthOffset, 0, clamp: Self.widthOffsetRange)
         soundEnabled = Self.readBool(defaults, .soundEnabled, true)
         soundVolume = Self.readDouble(defaults, .soundVolume, 0.30, clamp: 0.0...1.0)
         soundSessionStart = Self.readBool(defaults, .soundSessionStart, true)
@@ -142,6 +149,8 @@ final class SettingsStore: ObservableObject {
         case quietOnLock = "claudegotchi.settings.quietOnLock"
         case quietOnCapture = "claudegotchi.settings.quietOnCapture"
         case nativeApprovals = "claudegotchi.settings.nativeApprovals"
+        case islandHeightOffset = "claudegotchi.settings.islandHeightOffset"
+        case islandWidthOffset = "claudegotchi.settings.islandWidthOffset"
         case soundEnabled = "claudegotchi.settings.soundEnabled"
         case soundVolume = "claudegotchi.settings.soundVolume"
         case soundSessionStart = "claudegotchi.settings.soundSessionStart"

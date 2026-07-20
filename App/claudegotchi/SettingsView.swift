@@ -141,7 +141,53 @@ struct SettingsView: View {
                     t: t, title: "无活跃会话时隐藏灵动岛", subtitle: "没有会话时淡出灵动岛，宠物仅留在下拉面板",
                     isOn: $store.autoHideWhenNoSessions)
             }
+            group(t, "灵动岛微调") {
+                offsetRow(
+                    t, title: "高度偏移", subtitle: "在系统凹口高度基础上加减，0 为自动",
+                    value: $store.islandHeightOffset, range: SettingsStore.heightOffsetRange, step: 1)
+                Divider().overlay(t.track)
+                offsetRow(
+                    t, title: "宽度偏移", subtitle: "微调左右两侧耳朵的总宽度，0 为自动",
+                    value: $store.islandWidthOffset, range: SettingsStore.widthOffsetRange, step: 2)
+            }
         }
+    }
+
+    private func offsetRow(
+        _ t: WarmTheme, title: String, subtitle: String,
+        value: Binding<Int>, range: ClosedRange<Int>, step: Int
+    ) -> some View {
+        let isAuto = value.wrappedValue == 0
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                settingLabel(t, title, subtitle)
+                Spacer(minLength: 8)
+                Button { value.wrappedValue = 0 } label: {
+                    Text(isAuto ? "0 · 自动" : String(format: "%+dpt", value.wrappedValue))
+                        .font(WFont.value).monospacedDigit()
+                        .foregroundStyle(isAuto ? t.inkFaint : t.inkStrong)
+                }
+                .buttonStyle(.plain)
+                .help("点按恢复自动 (0)")
+                Button { value.wrappedValue = 0 } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(t.inkFaint)
+                .opacity(isAuto ? 0.25 : 1)
+                .disabled(isAuto)
+                .help("重置")
+            }
+            Slider(
+                value: Binding(
+                    get: { Double(value.wrappedValue) },
+                    set: { value.wrappedValue = Int($0.rounded()) }),
+                in: Double(range.lowerBound)...Double(range.upperBound),
+                step: Double(step)
+            ).tint(t.accent)
+        }
+        .padding(.vertical, 4)
     }
 
     // MARK: 通知
