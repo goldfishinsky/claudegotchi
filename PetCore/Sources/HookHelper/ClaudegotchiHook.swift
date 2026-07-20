@@ -61,6 +61,8 @@ struct ClaudegotchiHook {
         var sessionId = extras["session_id"] as? String
         if isCodex, let sid = sessionId { sessionId = "codex-" + sid }
 
+        let backgroundTasks = type == "stop" ? extras["background_tasks"] as? Int : nil
+
         let event = Event(
             schemaVersion: 1,
             eventId: ULID.generate(),
@@ -75,7 +77,8 @@ struct ClaudegotchiHook {
             prompt: prompt,
             message: message,
             notificationType: notificationType,
-            platform: isCodex ? "codex" : nil
+            platform: isCodex ? "codex" : nil,
+            backgroundTasks: backgroundTasks
         )
 
         if let line = try? event.encodeJSON() {
@@ -103,6 +106,7 @@ struct ClaudegotchiHook {
         }
         if out["tokens_in"] == nil, let v = obj["tokens_in"] { out["tokens_in"] = v }
         if out["tokens_out"] == nil, let v = obj["tokens_out"] { out["tokens_out"] = v }
+        if let bg = obj["background_tasks"] as? [Any] { out["background_tasks"] = bg.count }
         return out
     }
 

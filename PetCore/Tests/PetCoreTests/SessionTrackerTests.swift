@@ -19,12 +19,20 @@ final class SessionTrackerTests: XCTestCase {
     var petId: Int64!
 
     private func insertEvent(id: String, type: String, ts: Int64,
-                             sessionId: String?, cwd: String?, tool: String? = nil) throws {
+                             sessionId: String?, cwd: String?, tool: String? = nil,
+                             backgroundTasks: Int? = nil) throws {
+        var payload: String?
+        if tool != nil || backgroundTasks != nil {
+            var obj: [String: Any] = [:]
+            if let tool { obj["tool"] = tool }
+            if let backgroundTasks { obj["background_tasks"] = backgroundTasks }
+            payload = String(data: try JSONSerialization.data(withJSONObject: obj), encoding: .utf8)
+        }
         try db.write { conn in
             try conn.execute(sql: """
                 INSERT INTO event (helper_event_id, ts, type, pet_id, payload, session_id, cwd)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, arguments: [id, ts, type, petId!, tool.map { "{\"tool\":\"\($0)\"}" }, sessionId, cwd])
+                """, arguments: [id, ts, type, petId!, payload, sessionId, cwd])
         }
     }
 
@@ -53,6 +61,27 @@ final class SessionTrackerTests: XCTestCase {
             db: db, nowMs: 2500, windowMs: window, repoPaths: []
         )
         XCTAssertTrue(sessions.isEmpty)
+    }
+
+    func testStopWithPendingBackgroundTasksStaysActive() throws {
+        try insertEvent(id: "e1", type: "session_start", ts: 1000, sessionId: "s1", cwd: "/tmp/r")
+        try insertEvent(id: "e2", type: "post_tool_use", ts: 2000, sessionId: "s1", cwd: "/tmp/r", tool: "Bash")
+        try insertEvent(id: "e3", type: "stop", ts: 3000, sessionId: "s1", cwd: "/tmp/r", backgroundTasks: 1)
+        let sessions = try SessionTracker.activeSessions(
+            db: db, nowMs: 3500, windowMs: window, repoPaths: []
+        )
+        XCTAssertEqual(sessions.count, 1, "a stop with pending background work does not close the session")
+        XCTAssertEqual(sessions[0].backgroundTasks, 1)
+        XCTAssertEqual(sessions[0].lastActivityMs, 3000)
+    }
+
+    func testStopWithZeroBackgroundTasksClosesSession() throws {
+        try insertEvent(id: "e1", type: "session_start", ts: 1000, sessionId: "s1", cwd: "/tmp/r")
+        try insertEvent(id: "e2", type: "stop", ts: 2000, sessionId: "s1", cwd: "/tmp/r", backgroundTasks: 0)
+        let sessions = try SessionTracker.activeSessions(
+            db: db, nowMs: 2500, windowMs: window, repoPaths: []
+        )
+        XCTAssertTrue(sessions.isEmpty, "a drained stop closes the session")
     }
 
     func testResumedAfterStopStaysActive() throws {

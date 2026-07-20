@@ -21,13 +21,15 @@ final class AgentActivityTests: XCTestCase {
 
     private func insert(id: String, type: String, ts: Int64, sessionId: String?,
                         cwd: String?, tokensIn: Int? = nil, tokensOut: Int? = nil,
-                        model: String? = nil, prompt: String? = nil, tool: String? = nil) throws {
+                        model: String? = nil, prompt: String? = nil, tool: String? = nil,
+                        backgroundTasks: Int? = nil) throws {
         var obj: [String: Any] = ["type": type, "ts": ts]
         if let tokensIn { obj["tokens_in"] = tokensIn }
         if let tokensOut { obj["tokens_out"] = tokensOut }
         if let model { obj["model"] = model }
         if let prompt { obj["prompt"] = prompt }
         if let tool { obj["tool"] = tool }
+        if let backgroundTasks { obj["background_tasks"] = backgroundTasks }
         let data = try JSONSerialization.data(withJSONObject: obj)
         let payload = String(data: data, encoding: .utf8)
         try db.write { conn in
@@ -77,6 +79,35 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(agents.count, 1)
         XCTAssertEqual(agents[0].state, .working)
         XCTAssertEqual(agents[0].sessionTokens, 15)
+    }
+
+    func testStopWithBackgroundTasksShowsWorkingPastWindow() throws {
+        let now: Int64 = 1_000_000
+        // Latest event is a stop 5 minutes ago — well past the 120s idle window —
+        // but it still lists background subagents, so the session stays working.
+        try insert(id: "e1", type: "session_start", ts: now - 400_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "pre_tool_use", ts: now - 350_000, sessionId: "s1", cwd: "/tmp/r",
+                   tool: "Bash")
+        try insert(id: "e3", type: "stop", ts: now - 300_000, sessionId: "s1", cwd: "/tmp/r",
+                   backgroundTasks: 2)
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        XCTAssertEqual(agents.count, 1)
+        XCTAssertEqual(agents[0].state, .working, "pending background work keeps the session working")
+        XCTAssertNil(agents[0].currentTool, "the turn has stopped, so no live tool is shown")
+    }
+
+    func testStopWithBackgroundTasksSortsBeforeIdle() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "b1", type: "session_start", ts: now - 400_000, sessionId: "bg", cwd: "/tmp/b")
+        try insert(id: "b2", type: "stop", ts: now - 300_000, sessionId: "bg", cwd: "/tmp/b",
+                   backgroundTasks: 1)
+        try insert(id: "i1", type: "session_start", ts: now - 300_000, sessionId: "idle", cwd: "/tmp/i")
+        try insert(id: "i2", type: "pre_tool_use", ts: now - 121_000, sessionId: "idle", cwd: "/tmp/i")
+        let agents = try AgentActivityTracker.activeAgents(db: db, nowMs: now, windowMs: window)
+        let byId = Dictionary(uniqueKeysWithValues: agents.map { ($0.sessionId, $0) })
+        XCTAssertEqual(byId["bg"]?.state, .working)
+        XCTAssertEqual(byId["idle"]?.state, .idle)
+        XCTAssertEqual(agents.first?.sessionId, "bg", "the background-working session sorts first")
     }
 
     func testIdleVsWorkingBoundary() throws {

@@ -17,9 +17,9 @@ public struct SessionStop: Equatable {
     public var repoName: String { AgentActivityTracker.repoName(cwd: cwd) }
 }
 
-/// A session whose most recent event is a `stop` has finished its turn. Mirrors
-/// PermissionWatch's "latest event" test: a later tool event means it resumed,
-/// so it is no longer a completion.
+/// A session whose most recent event is a `stop` with no pending background tasks
+/// has finished its turn. A later tool event means it resumed; a stop that still
+/// lists background tasks (subagents/shells) is not yet a completion.
 public enum CompletionWatch {
     public static let defaultWindowMs: Int64 = 10 * 60 * 1000
 
@@ -36,6 +36,7 @@ public enum CompletionWatch {
                 WHERE s.type = 'stop'
                   AND s.session_id IS NOT NULL
                   AND s.ts >= ?
+                  AND COALESCE(json_extract(s.payload, '$.background_tasks'), 0) = 0
                   AND NOT EXISTS (
                     SELECT 1 FROM event e
                     WHERE e.session_id = s.session_id AND e.id > s.id

@@ -17,9 +17,10 @@ final class CompletionWatchTests: XCTestCase {
     }
 
     private func insert(id: String, type: String, ts: Int64, sessionId: String?,
-                        cwd: String?, prompt: String? = nil) throws {
+                        cwd: String?, prompt: String? = nil, backgroundTasks: Int? = nil) throws {
         var obj: [String: Any] = ["type": type, "ts": ts]
         if let prompt { obj["prompt"] = prompt }
+        if let backgroundTasks { obj["background_tasks"] = backgroundTasks }
         let data = try JSONSerialization.data(withJSONObject: obj)
         try db.write { conn in
             try conn.execute(sql: """
@@ -48,6 +49,36 @@ final class CompletionWatchTests: XCTestCase {
         try insert(id: "e2", type: "stop", ts: now - 20_000, sessionId: "s1", cwd: "/tmp/r")
         try insert(id: "e3", type: "pre_tool_use", ts: now - 5_000, sessionId: "s1", cwd: "/tmp/r")
         XCTAssertTrue(try CompletionWatch.recentCompletions(db: db, nowMs: now).isEmpty)
+    }
+
+    func testStopWithPendingBackgroundTasksIsNotCompletion() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 30_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "stop", ts: now - 5_000, sessionId: "s1", cwd: "/tmp/r",
+                   backgroundTasks: 2)
+        XCTAssertTrue(try CompletionWatch.recentCompletions(db: db, nowMs: now).isEmpty,
+                      "a stop that still lists background subagents/shells is not a completion")
+    }
+
+    func testFinalStopAfterBackgroundDrainIsCompletion() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 30_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e2", type: "stop", ts: now - 20_000, sessionId: "s1", cwd: "/tmp/r",
+                   backgroundTasks: 1)
+        try insert(id: "e3", type: "post_tool_use", ts: now - 8_000, sessionId: "s1", cwd: "/tmp/r")
+        try insert(id: "e4", type: "stop", ts: now - 4_000, sessionId: "s1", cwd: "/tmp/r",
+                   backgroundTasks: 0)
+        let stops = try CompletionWatch.recentCompletions(db: db, nowMs: now)
+        XCTAssertEqual(stops.map(\.sessionId), ["s1"])
+        XCTAssertEqual(stops[0].tsMs, now - 4_000, "the drained final stop is the completion")
+    }
+
+    func testStopWithoutBackgroundFieldIsCompletion() throws {
+        let now: Int64 = 1_000_000
+        try insert(id: "e1", type: "session_start", ts: now - 30_000, sessionId: "s1", cwd: "/tmp/r")
+        // No background_tasks key at all — old spooled payloads must behave as before.
+        try insert(id: "e2", type: "stop", ts: now - 5_000, sessionId: "s1", cwd: "/tmp/r")
+        XCTAssertEqual(try CompletionWatch.recentCompletions(db: db, nowMs: now).count, 1)
     }
 
     func testStopOutsideWindowExcluded() throws {

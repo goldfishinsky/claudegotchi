@@ -108,6 +108,52 @@ final class HookTypeGuardTests: XCTestCase {
         XCTAssertEqual(p["tokens_out"] as? Int, 3)
     }
 
+    func testParsePayloadCountsBackgroundTasks() {
+        let p = ClaudegotchiHook.parsePayload(
+            #"{"background_tasks":[{"id":"a","type":"subagent"},{"id":"b","type":"shell"}]}"#)
+        XCTAssertEqual(p["background_tasks"] as? Int, 2)
+    }
+
+    func testParsePayloadEmptyBackgroundTasksIsZero() {
+        let p = ClaudegotchiHook.parsePayload(#"{"background_tasks":[]}"#)
+        XCTAssertEqual(p["background_tasks"] as? Int, 0)
+    }
+
+    func testParsePayloadAbsentBackgroundTasksMissing() {
+        let p = ClaudegotchiHook.parsePayload(#"{"session_id":"s"}"#)
+        XCTAssertNil(p["background_tasks"])
+    }
+
+    func testRunStopCapturesBackgroundTaskCount() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let stdin = #"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"background_tasks":[{"id":"a","type":"subagent","status":"running"}],"session_crons":[]}"#
+        let code = ClaudegotchiHook.run(args: ["claudegotchi-hook", "stop"], stdin: stdin, spoolURL: spool)
+        XCTAssertEqual(code, 0)
+        let line = try String(contentsOf: spool).split(separator: "\n").first.map(String.init)!
+        let event = try Event.parse(line)
+        XCTAssertEqual(event.type, .stop)
+        XCTAssertEqual(event.backgroundTasks, 1)
+    }
+
+    func testRunStopWithoutBackgroundTasksLeavesFieldNil() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let stdin = #"{"session_id":"s","hook_event_name":"Stop","stop_hook_active":false,"session_crons":[]}"#
+        _ = ClaudegotchiHook.run(args: ["claudegotchi-hook", "stop"], stdin: stdin, spoolURL: spool)
+        let event = try Event.parse(String(try String(contentsOf: spool).split(separator: "\n")[0]))
+        XCTAssertNil(event.backgroundTasks, "absent field must not be materialized (old-payload compat)")
+    }
+
+    func testRunNonStopIgnoresBackgroundTasks() throws {
+        let spool = tempSpoolURL()
+        defer { try? FileManager.default.removeItem(at: spool) }
+        let stdin = #"{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","background_tasks":[{"id":"a"}]}"#
+        _ = ClaudegotchiHook.run(args: ["claudegotchi-hook", "post_tool_use"], stdin: stdin, spoolURL: spool)
+        let event = try Event.parse(String(try String(contentsOf: spool).split(separator: "\n")[0]))
+        XCTAssertNil(event.backgroundTasks, "background_tasks is captured only for stop events")
+    }
+
     func testRunStopDerivesTokensAndModelFromTranscript() throws {
         let spool = tempSpoolURL()
         let cursorDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cur-\(UUID())")

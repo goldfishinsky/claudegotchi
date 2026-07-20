@@ -8,15 +8,20 @@ public struct ActiveSession: Equatable {
     public let startedAtMs: Int64
     public let lastActivityMs: Int64
     public let lastTool: String?
+    /// Background tasks still pending on the session's latest `stop` (0 when the
+    /// latest event is not a stop, or the stop carried none).
+    public let backgroundTasks: Int
 
     public init(sessionId: String, cwd: String?, repo: String,
-                startedAtMs: Int64, lastActivityMs: Int64, lastTool: String?) {
+                startedAtMs: Int64, lastActivityMs: Int64, lastTool: String?,
+                backgroundTasks: Int = 0) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.repo = repo
         self.startedAtMs = startedAtMs
         self.lastActivityMs = lastActivityMs
         self.lastTool = lastTool
+        self.backgroundTasks = backgroundTasks
     }
 }
 
@@ -59,7 +64,10 @@ public enum SessionTracker {
             // session is closed only when its most recent event is a stop; any
             // later tool call means it resumed.
             guard let last = rows.last else { continue }
-            if last.type == "stop" { continue }
+            let bgTasks = backgroundTasks(last.payload)
+            // A stop closes the session only once its background work drains; a
+            // stop that still lists subagents/shells keeps the session working.
+            if last.type == "stop" && bgTasks == 0 { continue }
             if last.ts < cutoff { continue }
 
             let cwd = last.cwd ?? start.cwd
@@ -69,7 +77,8 @@ public enum SessionTracker {
                 repo: repoLabel(cwd: cwd, repoPaths: repoPaths),
                 startedAtMs: start.ts,
                 lastActivityMs: last.ts,
-                lastTool: toolFromPayload(last.payload)
+                lastTool: toolFromPayload(last.payload),
+                backgroundTasks: bgTasks
             ))
         }
         return result.sorted { $0.startedAtMs < $1.startedAtMs }
@@ -94,5 +103,12 @@ public enum SessionTracker {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return obj["tool"] as? String
+    }
+
+    private static func backgroundTasks(_ payload: String?) -> Int {
+        guard let payload, let data = payload.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return 0 }
+        return obj["background_tasks"] as? Int ?? 0
     }
 }

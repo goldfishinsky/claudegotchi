@@ -87,7 +87,8 @@ final class PetPanelModel: ObservableObject {
         let base = PetMood.derive(pet: pet, pressure: tier)
 
         workingCount = sessions.filter {
-            $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
+            $0.backgroundTasks > 0
+                || $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
         }.count
         let tokenStop = try? TheaterQueries.latestTokenStop(db, sinceMs: nowMs - PetTheater.eatWindowMs)
         lastTokenStopMs = (tokenStop ?? nil)?.ts

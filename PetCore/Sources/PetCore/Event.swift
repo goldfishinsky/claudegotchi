@@ -20,6 +20,9 @@ public struct Event: Codable, Equatable {
     public let notificationType: String?
     /// Absent means Claude Code (full back-compat with old spool lines / DB rows).
     public let platform: String?
+    /// Count of background tasks (background shells + subagents) still pending on a
+    /// `stop`. Absent on old lines and on non-stop events → treated as zero.
+    public let backgroundTasks: Int?
 
     public init(
         schemaVersion: Int, eventId: String, ts: Int64, type: EventType,
@@ -27,7 +30,7 @@ public struct Event: Codable, Equatable {
         tokensIn: Int?, tokensOut: Int?, model: String?,
         cwd: String? = nil, prompt: String? = nil,
         message: String? = nil, notificationType: String? = nil,
-        platform: String? = nil
+        platform: String? = nil, backgroundTasks: Int? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.eventId = eventId
@@ -43,6 +46,7 @@ public struct Event: Codable, Equatable {
         self.message = message
         self.notificationType = notificationType
         self.platform = platform
+        self.backgroundTasks = backgroundTasks
     }
 
     public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
@@ -75,6 +79,7 @@ public struct Event: Codable, Equatable {
         case message
         case notificationType = "notification_type"
         case platform
+        case backgroundTasks = "background_tasks"
     }
 
     public static func parse(_ json: String) throws -> Event {

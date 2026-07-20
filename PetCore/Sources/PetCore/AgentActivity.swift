@@ -122,18 +122,23 @@ public enum AgentActivityTracker {
             return (totals, rates, models, titles, actions)
         }
 
+        // A session running background tasks stays working past the idle window;
+        // its own turn has stopped, so no live tool is shown for it.
+        func isWorking(_ s: ActiveSession) -> Bool {
+            s.backgroundTasks > 0 || s.lastActivityMs >= nowMs - workingWindowMs
+        }
         let ordered = sessions
             .filter { !filter.hides(cwd: $0.cwd, title: titles[$0.sessionId]) }
             .sorted { a, b in
-                let aw = a.lastActivityMs >= nowMs - workingWindowMs
-                let bw = b.lastActivityMs >= nowMs - workingWindowMs
+                let aw = isWorking(a)
+                let bw = isWorking(b)
                 if aw != bw { return aw }
                 return a.lastActivityMs > b.lastActivityMs
             }
         let labels = SessionRepo.labels(cwds: ordered.map(\.cwd))
         return ordered.enumerated().map { idx, s in
-            let working = s.lastActivityMs >= nowMs - workingWindowMs
-            let action = working ? actions[s.sessionId] : nil
+            let working = isWorking(s)
+            let action = (working && s.backgroundTasks == 0) ? actions[s.sessionId] : nil
             return AgentActivity(
                 sessionId: s.sessionId,
                 repoName: repoName(cwd: s.cwd),
