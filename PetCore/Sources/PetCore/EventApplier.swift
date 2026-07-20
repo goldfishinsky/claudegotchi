@@ -56,7 +56,7 @@ public final class EventApplier {
             p.intimacy = clamp(p.intimacy + config.eventCosts.stopIntimacy)
             feed(&p, tokensTotal: event.tokensTotal)
 
-        case .petClick:
+        case .petClick, .petting:
             p.intimacy = clamp(p.intimacy + config.eventCosts.petClickIntimacy)
 
         case .userPromptSubmit:

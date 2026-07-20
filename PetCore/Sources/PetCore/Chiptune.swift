@@ -33,6 +33,10 @@ public enum ChiptuneEvent: String, CaseIterable, Equatable {
     case taskComplete
     case permission
     case levelUp
+    case petChirp
+    case petCrunch
+    case petSparkle
+    case petTick
 }
 
 public enum ChiptuneLibrary {
@@ -73,6 +77,29 @@ public enum ChiptuneLibrary {
                 note(Pitch.c6, 95, .triangle),
                 note(Pitch.g5, 65, .square),
                 note(Pitch.c6, 180, .triangle),
+            ])
+        case .petChirp:
+            // Soft affectionate two-note rise for a heart spawn.
+            return ChiptuneMotif([
+                note(Pitch.g5, 70, .triangle),
+                note(Pitch.c6, 60, .triangle),
+            ])
+        case .petCrunch:
+            // Low descending bite for a crumb burst.
+            return ChiptuneMotif([
+                note(196.00, 45, .square),
+                note(146.83, 55, .square),
+            ])
+        case .petSparkle:
+            // Bright quick shimmer for falling confetti.
+            return ChiptuneMotif([
+                note(Pitch.e6, 55, .triangle),
+                note(Pitch.g6, 60, .triangle),
+            ])
+        case .petTick:
+            // Tiny keystroke tick.
+            return ChiptuneMotif([
+                note(Pitch.b5, 30, .square),
             ])
         }
     }

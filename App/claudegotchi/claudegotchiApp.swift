@@ -217,6 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings = settingsStore
         let soundController = SoundController(settings: settingsStore)
         sound = soundController
+        petModel.theaterSound = { [weak soundController] scene, nowMs in
+            soundController?.theaterScene(scene, nowMs: nowMs)
+        }
         settingsWindow = SettingsWindowController(store: settingsStore, sound: soundController)
 
         let agentModel = AgentActivityModel(db: services.db)

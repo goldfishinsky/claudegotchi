@@ -46,6 +46,7 @@ final class SettingsStore: ObservableObject {
     @Published var soundTaskComplete: Bool { didSet { persist(soundTaskComplete, .soundTaskComplete); notify() } }
     @Published var soundPermission: Bool { didSet { persist(soundPermission, .soundPermission); notify() } }
     @Published var soundLevelUp: Bool { didSet { persist(soundLevelUp, .soundLevelUp); notify() } }
+    @Published var soundTheater: Bool { didSet { persist(soundTheater, .soundTheater); notify() } }
 
     @Published var presetEnabled: [String: Bool] { didSet { persistJSON(presetEnabled, .presetEnabled); notify() } }
     @Published var userDirectoryPatterns: [String] { didSet { persistJSON(userDirectoryPatterns, .userDirs); notify() } }
@@ -78,6 +79,7 @@ final class SettingsStore: ObservableObject {
         soundTaskComplete = Self.readBool(defaults, .soundTaskComplete, true)
         soundPermission = Self.readBool(defaults, .soundPermission, true)
         soundLevelUp = Self.readBool(defaults, .soundLevelUp, true)
+        soundTheater = Self.readBool(defaults, .soundTheater, true)
         presetEnabled = Self.readJSON(defaults, .presetEnabled) ?? [:]
         userDirectoryPatterns = Self.readJSON(defaults, .userDirs) ?? []
         userPromptPrefixPatterns = Self.readJSON(defaults, .userPrompts) ?? []
@@ -106,6 +108,7 @@ final class SettingsStore: ObservableObject {
         case .taskComplete: return soundTaskComplete
         case .permission: return soundPermission
         case .levelUp: return soundLevelUp
+        case .petChirp, .petCrunch, .petSparkle, .petTick: return soundTheater
         }
     }
 
@@ -204,6 +207,7 @@ final class SettingsStore: ObservableObject {
         case soundTaskComplete = "claudegotchi.settings.soundTaskComplete"
         case soundPermission = "claudegotchi.settings.soundPermission"
         case soundLevelUp = "claudegotchi.settings.soundLevelUp"
+        case soundTheater = "claudegotchi.settings.soundTheater"
         case presetEnabled = "claudegotchi.settings.presetEnabled"
         case userDirs = "claudegotchi.settings.userDirectoryPatterns"
         case userPrompts = "claudegotchi.settings.userPromptPrefixPatterns"

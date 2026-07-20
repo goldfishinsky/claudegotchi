@@ -26,11 +26,17 @@ final class PetPanelModel: ObservableObject {
     private var lastClickMs: Int64?
     private var lastEventMs: Int64?
     private var hungry = false
+    private var hungrySinceMs: Int64?
+    private var lastPettingAccrualMs: Int64?
     private var isSick = false
     private var isHibernating = false
 
+    private static let hungryFullness = 30.0
+    private static let intimacyHighThreshold = 80.0
+
     var systemMemPressure: (@MainActor () -> MemPressureTier?)?
     var systemThermal: (@MainActor () -> ThermalTier?)?
+    var theaterSound: ((SceneFrame, Int64) -> Void)?
 
     private let db: DatabaseQueue
     private let config: ConfigYAML
@@ -96,7 +102,12 @@ final class PetPanelModel: ObservableObject {
         lastPrEventMs = (try? TheaterQueries.latestPRCelebrationMs(db, sinceMs: nowMs - 120_000)) ?? nil
         lastClickMs = (try? TheaterQueries.latestClickMs(db)) ?? nil
         lastEventMs = (try? TheaterQueries.latestEventMs(db)) ?? nil
-        hungry = pet.fullness < 30
+        hungry = pet.fullness < Self.hungryFullness
+        if hungry {
+            if hungrySinceMs == nil { hungrySinceMs = nowMs }
+        } else {
+            hungrySinceMs = nil
+        }
         isSick = base.animation == .sick
         isHibernating = pet.hibernationSince != nil
         let mem = systemMemPressure?()
@@ -125,6 +136,7 @@ final class PetPanelModel: ObservableObject {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let drop = lastTokenStopMs.map { TokenDrop(tokens: lastTokenStopTokens, ageMs: nowMs - $0) }
         let idleSeconds = lastEventMs.map { Double(max(0, nowMs - $0)) / 1000 } ?? .greatestFiniteMagnitude
+        let hungrySince = hungrySinceMs.map { Double(max(0, nowMs - $0)) / 1000 }
         return TheaterSignals(
             workingAgentCount: workingCount,
             recentTokenDrop: drop,
@@ -134,27 +146,46 @@ final class PetPanelModel: ObservableObject {
             sick: isSick,
             hungry: hungry,
             memPressureHigh: memPressureHigh,
-            recentClickAgeMs: lastClickMs.map { nowMs - $0 }
+            recentClickAgeMs: lastClickMs.map { nowMs - $0 },
+            hungrySinceSeconds: hungrySince,
+            intimacyHigh: intimacy >= Self.intimacyHighThreshold
         )
     }
 
-    func handlePetClick() {
+    /// Forwards each rendered theater frame to the sound layer. No-op unless the
+    /// app wired `theaterSound`; only the dropdown theater feeds this.
+    func observeTheater(_ scene: SceneFrame, nowMs: Int64) {
+        theaterSound?(scene, nowMs)
+    }
+
+    /// Returns whether the tap was counted (cooldown passed → reward path). A
+    /// blocked tap still deserves a small visual reaction, driven view-side.
+    @discardableResult
+    func handlePetClick() -> Bool {
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-        guard let pet = try? Pet.fetchAlive(from: db), let petId = pet.id else { return }
+        guard let pet = try? Pet.fetchAlive(from: db), let petId = pet.id else { return false }
         let last = try? PetClickGate.lastClickMs(db)
         let cooldown = config.thresholds.petClickCooldownSeconds
-        guard PetClick.allowed(lastClickMs: last ?? nil, nowMs: nowMs, cooldownSeconds: cooldown) else { return }
+        guard PetClick.allowed(lastClickMs: last ?? nil, nowMs: nowMs, cooldownSeconds: cooldown) else { return false }
 
+        writeIntimacyEvent(eventId: "click:\(petId):\(nowMs)", type: .petClick, nowMs: nowMs)
+        return true
+    }
+
+    /// Long-press petting accrues intimacy, capped to one bucket per window via a
+    /// deterministic event id (idempotent on replay).
+    func handlePetting() {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        guard PetPetting.shouldAccrue(lastAccrualMs: lastPettingAccrualMs, nowMs: nowMs) else { return }
+        guard let pet = try? Pet.fetchAlive(from: db), let petId = pet.id else { return }
+        writeIntimacyEvent(eventId: PetPetting.eventId(petId: petId, nowMs: nowMs), type: .petting, nowMs: nowMs)
+        lastPettingAccrualMs = nowMs
+    }
+
+    private func writeIntimacyEvent(eventId: String, type: Event.EventType, nowMs: Int64) {
         let event = Event(
-            schemaVersion: 1,
-            eventId: "click:\(petId):\(nowMs)",
-            ts: nowMs,
-            type: .petClick,
-            sessionId: nil,
-            tool: nil,
-            tokensIn: nil,
-            tokensOut: nil,
-            model: nil
+            schemaVersion: 1, eventId: eventId, ts: nowMs, type: type,
+            sessionId: nil, tool: nil, tokensIn: nil, tokensOut: nil, model: nil
         )
         let applier = EventApplier(config: config)
         try? ApplyTransaction(db: db, applier: applier, paused: false).process(event: event)

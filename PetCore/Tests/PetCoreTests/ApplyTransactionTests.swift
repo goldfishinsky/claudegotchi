@@ -47,6 +47,25 @@ final class ApplyTransactionTests: XCTestCase {
         XCTAssertEqual(p.xp, 1, "Stat must not be applied twice")
     }
 
+    func testPettingEventCreditsIntimacyOnceAndReplaysCleanly() throws {
+        let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: false)
+        let before = try Pet.fetchAlive(from: db)!.intimacy
+        let e = Event(
+            schemaVersion: 1, eventId: PetPetting.eventId(petId: pet.id!, nowMs: 1000),
+            ts: 1000, type: .petting,
+            sessionId: nil, tool: nil, tokensIn: nil, tokensOut: nil, model: nil)
+        try atx.process(event: e)
+        let once = try Pet.fetchAlive(from: db)!.intimacy
+        try atx.process(event: e)
+        let twice = try Pet.fetchAlive(from: db)!.intimacy
+        XCTAssertGreaterThan(once, before, "petting accrues intimacy")
+        XCTAssertEqual(once, twice, "same-bucket replay must not double-credit")
+        let count = try db.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM event WHERE type = 'petting'")
+        }
+        XCTAssertEqual(count, 1)
+    }
+
     func testPausedSkipsEventApplierButWritesEventAndRollup() throws {
         let atx = ApplyTransaction(db: db, applier: EventApplier(config: .defaults), paused: true)
         try atx.process(jsonLine: eventJSON(eventId: "01H0000000000000000000000A"))

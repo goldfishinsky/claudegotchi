@@ -15,6 +15,9 @@ final class SoundController {
     private var lastLevel: Int?
     private var lastPermissionSession: String?
 
+    private var lastTheaterBehavior: TheaterBehavior?
+    private var lastEmissionFireMs: [ParticleKind: Int64] = [:]
+
     init(settings: SettingsStore) { self.settings = settings }
 
     @discardableResult
@@ -55,4 +58,45 @@ final class SoundController {
     }
 
     func permissionCleared() { lastPermissionSession = nil }
+
+    // MARK: theater cues
+
+    /// The dropdown theater feeds every rendered frame here. Behaviour entrances
+    /// reuse the lifecycle jingles; freshly-born particle emissions chirp/crunch/
+    /// sparkle/tick. All gated under the single 剧场音效 toggle and quiet scenes;
+    /// each cue is rate-limited so recurring per-loop bursts don't machine-gun.
+    func theaterScene(_ scene: SceneFrame, nowMs: Int64) {
+        defer { lastTheaterBehavior = scene.behavior }
+        if scene.behavior != lastTheaterBehavior {
+            switch scene.behavior {
+            case .celebrate: theaterPlay(.levelUp)
+            case .eat: theaterPlay(.taskComplete)
+            default: break
+            }
+        }
+        for em in scene.emissions where em.ageMs <= theaterFreshMs {
+            guard let (cue, gapMs) = theaterCue(em.kind) else { continue }
+            if let last = lastEmissionFireMs[em.kind], nowMs - last < gapMs { continue }
+            lastEmissionFireMs[em.kind] = nowMs
+            theaterPlay(cue)
+        }
+    }
+
+    private let theaterFreshMs: Int64 = 160
+
+    private func theaterCue(_ kind: ParticleKind) -> (ChiptuneEvent, Int64)? {
+        switch kind {
+        case .heartRise: return (.petChirp, 300)
+        case .crumbBurst: return (.petCrunch, 220)
+        case .confettiFall: return (.petSparkle, 420)
+        case .keystrokeSparks: return (.petTick, 2000)
+        case .zDrift, .tapDust: return nil
+        }
+    }
+
+    private func theaterPlay(_ motif: ChiptuneEvent) {
+        guard settings.soundEnabled, settings.soundTheater else { return }
+        guard !QuietSceneInspector.isActive(settings: settings) else { return }
+        synth.play(ChiptuneLibrary.motif(for: motif), volume: settings.soundVolume)
+    }
 }

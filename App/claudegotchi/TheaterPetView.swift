@@ -10,7 +10,13 @@ struct TheaterPetView: View {
     let species: String
     let signals: TheaterSignals
     let theme: WarmTheme
-    var onTap: (() -> Void)?
+    var onTap: (() -> Void)? = nil
+    /// Interactive dropdown theater: returns whether the tap was cooldown-counted.
+    var onPet: (() -> Bool)? = nil
+    /// Fires once when a ≥500ms hold is recognised (intimacy accrual is capped model-side).
+    var onPetting: (() -> Void)? = nil
+    /// Every rendered frame, for the sound layer to observe emission/behaviour edges.
+    var onScene: ((SceneFrame, Int64) -> Void)? = nil
 
     private let cols = 30.0
     private let rows = 22.0
@@ -19,22 +25,75 @@ struct TheaterPetView: View {
     private let groundRow = 20.0
     private let fps = 11.0
 
+    private let comboTapCount = 4
+    private let comboSpanMs: Int64 = 1200
+    private let comboShowMs: Int64 = 2000
+
+    @GestureState private var pressing = false
+    @State private var petting = false
+    @State private var lastTapMs: Int64?
+    @State private var lastTapCounted = false
+    @State private var tapTimes: [Int64] = []
+    @State private var comboUntilMs: Int64?
+
+    private var interactive: Bool { onPet != nil }
+
     var body: some View {
         GeometryReader { geo in
             TimelineView(.periodic(from: .now, by: 1.0 / fps)) { context in
-                let timeMs = Int64(context.date.timeIntervalSince1970 * 1000)
-                let scene = PetTheater.scene(signals: signals, timeMs: timeMs)
-                ZStack(alignment: .topLeading) {
-                    Canvas { ctx, size in draw(scene, in: &ctx, size: size) }
-                    if let bubble = scene.bubble {
-                        chip(bubble)
-                            .position(headPoint(scene, size: geo.size))
-                    }
-                }
+                rendered(timeMs: Int64(context.date.timeIntervalSince1970 * 1000), size: geo.size)
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { onTap?() }
+        .onTapGesture { handleTap() }
+        .gesture(holdGesture)
+        .onChange(of: pressing) { isDown in
+            petting = isDown
+            if isDown { onPetting?() }
+        }
+    }
+
+    private func rendered(timeMs: Int64, size: CGSize) -> some View {
+        var s = signals
+        if interactive {
+            if let lastTapMs { s.lastTapAgeMs = timeMs - lastTapMs; s.lastTapCounted = lastTapCounted }
+            if petting { s.pettingActive = true }
+            if let comboUntilMs, timeMs < comboUntilMs { s.comboTap = true }
+        }
+        let scene = PetTheater.scene(signals: s, timeMs: timeMs)
+        onScene?(scene, timeMs)
+        return ZStack(alignment: .topLeading) {
+            Canvas { ctx, canvasSize in draw(scene, in: &ctx, size: canvasSize) }
+            if let bubble = scene.bubble {
+                chip(bubble).position(headPoint(scene, size: size))
+            }
+        }
+    }
+
+    // MARK: gestures
+
+    private var holdGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.5)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .updating($pressing) { value, state, _ in
+                if case .second(true, _) = value { state = true } else { state = false }
+            }
+    }
+
+    private func handleTap() {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        guard let onPet else { onTap?(); return }
+        recordComboTap(now)
+        lastTapCounted = onPet()
+        lastTapMs = now
+    }
+
+    private func recordComboTap(_ now: Int64) {
+        tapTimes = tapTimes.filter { now - $0 <= comboSpanMs } + [now]
+        if tapTimes.count >= comboTapCount {
+            comboUntilMs = now + comboShowMs
+            tapTimes = []
+        }
     }
 
     // MARK: geometry
@@ -152,6 +211,8 @@ struct TheaterPetView: View {
             fill(ax, ay, 0.7, 0.7, (PixelPalette.color(21) ?? .cyan).opacity(a))
         case .crumbBurst:
             fill(ax, ay, 0.7, 0.7, (PixelPalette.color(23) ?? .brown).opacity(a))
+        case .tapDust:
+            fill(ax, ay, 0.55, 0.55, (PixelPalette.color(20) ?? .gray).opacity(a))
         }
     }
 }

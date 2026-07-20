@@ -89,10 +89,11 @@ struct PetSection: View {
             TheaterPetView(
                 visual: visual, species: petModel.species,
                 signals: petModel.makeSignals(memPressureHigh: memHigh),
-                theme: theme
-            ) {
-                petModel.handlePetClick()
-            }
+                theme: theme,
+                onPet: { petModel.handlePetClick() },
+                onPetting: { petModel.handlePetting() },
+                onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }
+            )
             .frame(width: 120, height: 90)
         } else {
             Color.clear.frame(width: 120, height: 90)
