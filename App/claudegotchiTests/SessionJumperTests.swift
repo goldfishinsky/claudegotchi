@@ -11,6 +11,21 @@ private struct MockEnv: TerminalEnvironment {
     func windowBundleID(matching targets: [String]) -> String? { windowMatch }
 }
 
+private struct MockTTYEnv: TerminalEnvironment {
+    var axTrusted: Bool
+    var running: [String] = []
+    var windowMatch: String?
+    var ttyOwner: String?
+    var windowInAppMatches: Bool = false
+
+    func runningTerminalBundleIDs() -> [String] { running }
+    func windowBundleID(matching targets: [String]) -> String? { windowMatch }
+    func ttyOwnerBundleID(tty: String) -> String? { ttyOwner }
+    func matchWindow(inApp bundleID: String, targets: [String], markerToken: String?) -> Bool {
+        windowInAppMatches
+    }
+}
+
 final class SessionJumperTests: XCTestCase {
     func testMatchTargetsBasenameAndLastTwo() {
         XCTAssertEqual(
@@ -71,5 +86,61 @@ final class SessionJumperTests: XCTestCase {
                 axTrusted: false, matchedWindowBundleID: "com.apple.Terminal",
                 runningTerminalBundleIDs: [])),
             .openInTerminal)
+    }
+
+    // MARK: tier 0 (tty anchoring)
+
+    func testDecideTTYRaisesWindowWhenTrustedAndMatched() {
+        XCTAssertEqual(
+            TerminalJumpPlanner.decideTTY(axTrusted: true, ownerBundleID: "dev.warp.Warp-Stable", windowMatched: true),
+            .raiseWindow(bundleID: "dev.warp.Warp-Stable"))
+    }
+
+    func testDecideTTYActivatesOwnerWhenNoWindowMatch() {
+        XCTAssertEqual(
+            TerminalJumpPlanner.decideTTY(axTrusted: true, ownerBundleID: "com.mitchellh.ghostty", windowMatched: false),
+            .activateApp(bundleID: "com.mitchellh.ghostty"))
+    }
+
+    func testDecideTTYActivatesOwnerWhenUntrusted() {
+        XCTAssertEqual(
+            TerminalJumpPlanner.decideTTY(axTrusted: false, ownerBundleID: "com.apple.Terminal", windowMatched: false),
+            .activateApp(bundleID: "com.apple.Terminal"))
+    }
+
+    func testTier0RaisesResolvedAppWindowWhenMarkerMatched() {
+        let env = MockTTYEnv(axTrusted: true, ttyOwner: "com.googlecode.iterm2", windowInAppMatches: true)
+        XCTAssertEqual(
+            TerminalJumpPlanner.plan(cwd: "/w/repo", tty: "/dev/ttys001", markerToken: "❖abc123", env: env),
+            .raiseWindow(bundleID: "com.googlecode.iterm2"))
+    }
+
+    func testTier0ActivatesResolvedAppWhenNoWindowMatch() {
+        let env = MockTTYEnv(axTrusted: true, ttyOwner: "dev.warp.Warp-Stable", windowInAppMatches: false)
+        XCTAssertEqual(
+            TerminalJumpPlanner.plan(cwd: "/w/repo", tty: "/dev/ttys001", markerToken: nil, env: env),
+            .activateApp(bundleID: "dev.warp.Warp-Stable"))
+    }
+
+    func testTier0ActivatesResolvedAppEvenWithoutAX() {
+        let env = MockTTYEnv(axTrusted: false, ttyOwner: "com.apple.Terminal", windowInAppMatches: false)
+        XCTAssertEqual(
+            TerminalJumpPlanner.plan(cwd: "/w/repo", tty: "/dev/ttys001", markerToken: "❖x", env: env),
+            .activateApp(bundleID: "com.apple.Terminal"))
+    }
+
+    func testUnresolvedTTYFallsBackToLegacyTiers() {
+        let env = MockTTYEnv(axTrusted: true, running: ["com.apple.Terminal"],
+                             windowMatch: "com.googlecode.iterm2", ttyOwner: nil)
+        XCTAssertEqual(
+            TerminalJumpPlanner.plan(cwd: "/w/repo", tty: "/dev/ttys999", markerToken: nil, env: env),
+            .raiseWindow(bundleID: "com.googlecode.iterm2"))
+    }
+
+    func testNilTTYUsesLegacyPlanUnchanged() {
+        let env = MockTTYEnv(axTrusted: true, running: ["com.apple.Terminal"], ttyOwner: "should.be.ignored")
+        XCTAssertEqual(
+            TerminalJumpPlanner.plan(cwd: "/w/repo", tty: nil, markerToken: nil, env: env),
+            .activateApp(bundleID: "com.apple.Terminal"))
     }
 }

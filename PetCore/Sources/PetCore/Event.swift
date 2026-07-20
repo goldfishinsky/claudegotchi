@@ -23,6 +23,9 @@ public struct Event: Codable, Equatable {
     /// Count of background tasks (background shells + subagents) still pending on a
     /// `stop`. Absent on old lines and on non-stop events → treated as zero.
     public let backgroundTasks: Int?
+    /// Controlling terminal of the CLI process at session start (e.g. `/dev/ttys003`);
+    /// absent on old lines, non-session-start events, and headless sessions.
+    public let tty: String?
 
     public init(
         schemaVersion: Int, eventId: String, ts: Int64, type: EventType,
@@ -30,7 +33,8 @@ public struct Event: Codable, Equatable {
         tokensIn: Int?, tokensOut: Int?, model: String?,
         cwd: String? = nil, prompt: String? = nil,
         message: String? = nil, notificationType: String? = nil,
-        platform: String? = nil, backgroundTasks: Int? = nil
+        platform: String? = nil, backgroundTasks: Int? = nil,
+        tty: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.eventId = eventId
@@ -47,6 +51,7 @@ public struct Event: Codable, Equatable {
         self.notificationType = notificationType
         self.platform = platform
         self.backgroundTasks = backgroundTasks
+        self.tty = tty
     }
 
     public var tokensTotal: Int { (tokensIn ?? 0) + (tokensOut ?? 0) }
@@ -80,6 +85,7 @@ public struct Event: Codable, Equatable {
         case notificationType = "notification_type"
         case platform
         case backgroundTasks = "background_tasks"
+        case tty
     }
 
     public static func parse(_ json: String) throws -> Event {

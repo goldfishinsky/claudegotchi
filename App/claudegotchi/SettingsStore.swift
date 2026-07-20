@@ -25,6 +25,18 @@ final class SettingsStore: ObservableObject {
     @Published var quietOnCapture: Bool { didSet { persist(quietOnCapture, .quietOnCapture); notify() } }
     @Published var nativeApprovalsEnabled: Bool { didSet { persist(nativeApprovalsEnabled, .nativeApprovals); notify() } }
 
+    /// Precise-jump toggles are file-backed, not UserDefaults: markers live behind a
+    /// flag file the hook checks, and the native-title switch edits ~/.claude/settings.json.
+    @Published var titleMarkersEnabled: Bool {
+        didSet { TitleMarker.setEnabled(titleMarkersEnabled); notify() }
+    }
+    @Published var disableClaudeNativeTitle: Bool {
+        didSet { if !applyingNativeTitle { applyNativeTitle(disableClaudeNativeTitle) } }
+    }
+    private var applyingNativeTitle = false
+    private let claudeSettingsURL = FileManager.default
+        .homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
+
     @Published var islandHeightOffset: Int { didSet { persist(islandHeightOffset, .islandHeightOffset); notify() } }
     @Published var islandWidthOffset: Int { didSet { persist(islandWidthOffset, .islandWidthOffset); notify() } }
 
@@ -54,6 +66,10 @@ final class SettingsStore: ObservableObject {
         quietOnLock = Self.readBool(defaults, .quietOnLock, true)
         quietOnCapture = Self.readBool(defaults, .quietOnCapture, true)
         nativeApprovalsEnabled = Self.readBool(defaults, .nativeApprovals, false)
+        titleMarkersEnabled = TitleMarker.isEnabled()
+        disableClaudeNativeTitle = (try? NativeTitleSetting.isDisabled(
+            settingsPath: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/settings.json"))) ?? false
         islandHeightOffset = Self.readInt(defaults, .islandHeightOffset, 0, clamp: Self.heightOffsetRange)
         islandWidthOffset = Self.readInt(defaults, .islandWidthOffset, 0, clamp: Self.widthOffsetRange)
         soundEnabled = Self.readBool(defaults, .soundEnabled, true)
@@ -119,6 +135,37 @@ final class SettingsStore: ObservableObject {
         case .directory: userDirectoryPatterns.removeAll { $0 == pattern }
         case .promptPrefix: userPromptPrefixPatterns.removeAll { $0 == pattern }
         }
+    }
+
+    // MARK: precise jump
+
+    /// Re-reads the on-disk truth (flag file + settings.json) so the toggles reflect
+    /// external edits whenever the settings window reopens.
+    func refreshPreciseJump() {
+        titleMarkersEnabled = TitleMarker.isEnabled()
+        let actual = (try? NativeTitleSetting.isDisabled(settingsPath: claudeSettingsURL)) ?? disableClaudeNativeTitle
+        if actual != disableClaudeNativeTitle {
+            applyingNativeTitle = true
+            disableClaudeNativeTitle = actual
+            applyingNativeTitle = false
+        }
+    }
+
+    private func applyNativeTitle(_ disabled: Bool) {
+        do {
+            try NativeTitleSetting.setDisabled(
+                disabled, settingsPath: claudeSettingsURL,
+                nowISO: ISO8601DateFormatter().string(from: Date()))
+        } catch {
+            NSLog("claudegotchi: native-title toggle failed: \(error.localizedDescription)")
+        }
+        let actual = (try? NativeTitleSetting.isDisabled(settingsPath: claudeSettingsURL)) ?? disabled
+        if actual != disableClaudeNativeTitle {
+            applyingNativeTitle = true
+            disableClaudeNativeTitle = actual
+            applyingNativeTitle = false
+        }
+        notify()
     }
 
     // MARK: launch at login

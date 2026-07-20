@@ -7,11 +7,19 @@ struct ClaudegotchiHook {
         var stdin: String? = nil
         let raw = FileHandle.standardInput.readDataToEndOfFile()
         if !raw.isEmpty { stdin = String(data: raw, encoding: .utf8) }
-        exit(run(args: CommandLine.arguments, stdin: stdin))
+        exit(run(
+            args: CommandLine.arguments, stdin: stdin,
+            controllingTTY: ControllingTTY.current(),
+            titleMarkersEnabled: TitleMarker.isEnabled(),
+            titleWriter: { escape, tty in ControllingTTY.writeTitle(escape, toTTY: tty) }
+        ))
     }
 
     static func run(args: [String], stdin: String?, spoolURL: URL = ClaudegotchiHook.spoolURL(),
-                    cursorDir: URL = TranscriptTokens.defaultCursorDir()) -> Int32 {
+                    cursorDir: URL = TranscriptTokens.defaultCursorDir(),
+                    controllingTTY: String? = nil,
+                    titleMarkersEnabled: Bool = false,
+                    titleWriter: ((String, String) -> Void)? = nil) -> Int32 {
         guard args.count >= 2 else { return 0 }
         let rawArg = args[1]
         if rejectsRawType(rawArg) { return 0 }
@@ -62,6 +70,15 @@ struct ClaudegotchiHook {
         if isCodex, let sid = sessionId { sessionId = "codex-" + sid }
 
         let backgroundTasks = type == "stop" ? extras["background_tasks"] as? Int : nil
+        let tty = type == "session_start" ? controllingTTY : nil
+
+        if titleMarkersEnabled, let writer = titleWriter, let dev = controllingTTY,
+           let sid = sessionId, type == "session_start" || type == "user_prompt_submit" {
+            let escape = TitleMarker.escapeSequence(
+                token: TitleMarker.token(forSessionId: sid),
+                repo: TitleMarker.repoLabel(cwd: extras["cwd"] as? String))
+            writer(escape, dev)
+        }
 
         let event = Event(
             schemaVersion: 1,
@@ -78,7 +95,8 @@ struct ClaudegotchiHook {
             message: message,
             notificationType: notificationType,
             platform: isCodex ? "codex" : nil,
-            backgroundTasks: backgroundTasks
+            backgroundTasks: backgroundTasks,
+            tty: tty
         )
 
         if let line = try? event.encodeJSON() {

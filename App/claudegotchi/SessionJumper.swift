@@ -12,9 +12,11 @@ enum TerminalHost {
         "com.microsoft.VSCode",
         "com.todesktop.230313mzl4w4u92",   // Cursor
         "dev.warp.Warp-Stable",
+        "com.mitchellh.ghostty",
         "net.kovidgoyal.kitty",
         "org.alacritty",
         "com.github.wez.wezterm",
+        "com.onevcat.prowl",
     ]
     static let fallbackBundleID = "com.apple.Terminal"
 }
@@ -37,6 +39,16 @@ protocol TerminalEnvironment {
     var axTrusted: Bool { get }
     func runningTerminalBundleIDs() -> [String]
     func windowBundleID(matching targets: [String]) -> String?
+    /// tty → the bundle id of the app that owns that controlling terminal (tier 0).
+    func ttyOwnerBundleID(tty: String) -> String?
+    /// AX-scan just `bundleID`'s windows for the marker token (preferred) or a cwd
+    /// target, stashing the hit for a later raise. Returns whether one matched.
+    func matchWindow(inApp bundleID: String, targets: [String], markerToken: String?) -> Bool
+}
+
+extension TerminalEnvironment {
+    func ttyOwnerBundleID(tty: String) -> String? { nil }
+    func matchWindow(inApp bundleID: String, targets: [String], markerToken: String?) -> Bool { false }
 }
 
 enum TerminalJumpPlanner {
@@ -50,14 +62,30 @@ enum TerminalJumpPlanner {
         return .openInTerminal
     }
 
-    static func plan(cwd: String, env: TerminalEnvironment) -> JumpDecision {
+    /// Tier 0: a resolved tty owner is the exact app; raise its marker/cwd-matched
+    /// window when AX is granted, otherwise deterministically activate that app.
+    static func decideTTY(axTrusted: Bool, ownerBundleID: String, windowMatched: Bool) -> JumpDecision {
+        if axTrusted && windowMatched { return .raiseWindow(bundleID: ownerBundleID) }
+        return .activateApp(bundleID: ownerBundleID)
+    }
+
+    static func plan(cwd: String, tty: String?, markerToken: String?, env: TerminalEnvironment) -> JumpDecision {
         let targets = matchTargets(cwd: cwd)
+        if let tty, !tty.isEmpty, let owner = env.ttyOwnerBundleID(tty: tty) {
+            let windowMatched = env.axTrusted
+                && env.matchWindow(inApp: owner, targets: targets, markerToken: markerToken)
+            return decideTTY(axTrusted: env.axTrusted, ownerBundleID: owner, windowMatched: windowMatched)
+        }
         let matched = env.axTrusted ? env.windowBundleID(matching: targets) : nil
         return decide(JumpContext(
             axTrusted: env.axTrusted,
             matchedWindowBundleID: matched,
             runningTerminalBundleIDs: env.runningTerminalBundleIDs()
         ))
+    }
+
+    static func plan(cwd: String, env: TerminalEnvironment) -> JumpDecision {
+        plan(cwd: cwd, tty: nil, markerToken: nil, env: env)
     }
 
     /// Title probes derived from the cwd: the basename and the last two path
@@ -88,8 +116,8 @@ final class SessionJumper {
     static let shared = SessionJumper()
     private let promptedKey = "claudegotchi.jumper.axPrompted"
 
-    func jump(cwd: String) {
-        guard !cwd.isEmpty else { return }
+    func jump(cwd: String, tty: String? = nil, markerToken: String? = nil) {
+        guard !cwd.isEmpty || (tty?.isEmpty == false) else { return }
         let env = AppKitTerminalEnvironment()
         if TerminalJumpPlanner.shouldPromptAX(
             axTrusted: env.axTrusted,
@@ -98,7 +126,8 @@ final class SessionJumper {
             UserDefaults.standard.set(true, forKey: promptedKey)
             presentAXSheet()
         }
-        execute(TerminalJumpPlanner.plan(cwd: cwd, env: env), cwd: cwd, env: env)
+        let decision = TerminalJumpPlanner.plan(cwd: cwd, tty: tty, markerToken: markerToken, env: env)
+        execute(decision, cwd: cwd, env: env)
     }
 
     private func execute(_ decision: JumpDecision, cwd: String, env: AppKitTerminalEnvironment) {
@@ -149,8 +178,52 @@ final class SessionJumper {
 
 final class AppKitTerminalEnvironment: TerminalEnvironment {
     private var matched: (window: AXUIElement, app: NSRunningApplication)?
+    private let processTable: ProcessTableProviding
+
+    init(processTable: ProcessTableProviding = SysctlProcessTable()) {
+        self.processTable = processTable
+    }
 
     var axTrusted: Bool { AXIsProcessTrusted() }
+
+    func ttyOwnerBundleID(tty: String) -> String? {
+        TTYOwnerResolver.resolve(
+            tty: tty, processes: processTable.processes(), guiApps: processTable.guiApps())
+    }
+
+    // For Electron editors (VS Code/Cursor) the cwd-basename pass raises the right
+    // window; tab-level focus inside the IDE needs an extension (out of scope).
+    func matchWindow(inApp bundleID: String, targets: [String], markerToken: String?) -> Bool {
+        guard axTrusted else { return false }
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.bundleIdentifier == bundleID }
+        for app in apps {
+            let appEl = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement] else { continue }
+            if let token = markerToken, !token.isEmpty {
+                for window in windows where (title(of: window)?.contains(token) ?? false) {
+                    matched = (window, app)
+                    return true
+                }
+            }
+            for window in windows {
+                guard let title = title(of: window) else { continue }
+                if TerminalJumpPlanner.titleMatches(title, targets: targets) {
+                    matched = (window, app)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func title(of window: AXUIElement) -> String? {
+        var titleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+              let title = titleRef as? String else { return nil }
+        return title
+    }
 
     func runningTerminalBundleIDs() -> [String] {
         let known = TerminalHost.bundleIDs

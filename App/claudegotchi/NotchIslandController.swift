@@ -581,12 +581,19 @@ final class NotchIslandController {
     }
 
     private func alertClick(_ req: PermissionRequest) {
-        SessionJumper.shared.jump(cwd: req.cwd ?? "")
+        jumpToSession(req.sessionId, cwd: req.cwd)
     }
 
     private func completionClick(_ comp: CompletionReveal) {
         clearCompletion()
-        SessionJumper.shared.jump(cwd: comp.cwd ?? "")
+        jumpToSession(comp.sessionId, cwd: comp.cwd)
+    }
+
+    private func jumpToSession(_ sessionId: String, cwd: String?) {
+        let tty = (try? TTYAnchor.stored(db: db, sessionId: sessionId)) ?? nil
+        SessionJumper.shared.jump(
+            cwd: cwd ?? "", tty: tty,
+            markerToken: TitleMarker.token(forSessionId: sessionId))
     }
 
     private func expand(pinned: Bool) {

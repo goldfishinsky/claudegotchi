@@ -18,6 +18,27 @@ final class EventTests: XCTestCase {
         XCTAssertEqual(e.model, "claude-opus-4-7")
     }
 
+    func testTTYParsesFromSessionStartPayload() throws {
+        let json = #"""
+        {"schema_version":1,"event_id":"a","ts":0,"type":"session_start","session_id":"s","tty":"/dev/ttys003"}
+        """#
+        let e = try Event.parse(json)
+        XCTAssertEqual(e.tty, "/dev/ttys003")
+    }
+
+    func testTTYOmittedWhenNilButPresentWhenSet() throws {
+        let bare = Event(schemaVersion: 1, eventId: "a", ts: 0, type: .stop,
+                         sessionId: "s", tool: nil, tokensIn: nil, tokensOut: nil, model: nil)
+        XCTAssertFalse(try bare.encodeJSON().contains("tty"))
+
+        let anchored = Event(schemaVersion: 1, eventId: "a", ts: 0, type: .sessionStart,
+                             sessionId: "s", tool: nil, tokensIn: nil, tokensOut: nil, model: nil,
+                             tty: "/dev/ttys007")
+        let encoded = try anchored.encodeJSON()
+        XCTAssertTrue(encoded.contains("tty"))
+        XCTAssertEqual(try Event.parse(encoded).tty, "/dev/ttys007")
+    }
+
     func testTokensTotalSumsBothFields() throws {
         let json = #"""
         {"schema_version":1,"event_id":"a","ts":0,"type":"post_tool_use","tokens_in":300,"tokens_out":700}

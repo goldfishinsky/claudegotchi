@@ -46,6 +46,7 @@ struct SettingsView: View {
         }
         .frame(width: 640, height: 480)
         .background { t.windowFill.ignoresSafeArea() }
+        .onAppear { store.refreshPreciseJump() }
     }
 
     // MARK: sidebar
@@ -120,6 +121,17 @@ struct SettingsView: View {
                 SettingsToggleRow(
                     t: t, title: "登录时启动", subtitle: "开机后自动运行 claudegotchi",
                     isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
+            }
+            group(t, "精确跳转") {
+                SettingsToggleRow(
+                    t: t, title: "启用标题标记",
+                    subtitle: "会话开始与每次发消息时，在终端标题写入一个唯一标记；点提醒时据此精确定位到发起请求的那个窗口",
+                    isOn: $store.titleMarkersEnabled)
+                Divider().overlay(t.track)
+                SettingsToggleRow(
+                    t: t, title: "禁用 Claude Code 原生标题",
+                    subtitle: "Warp、Ghostty 等只有一个终端标题，Claude 自带的标题会不断覆盖标记；开启后写入 ~/.claude/settings.json（自动备份）以保证这些终端里也能精确跳转",
+                    isOn: $store.disableClaudeNativeTitle)
             }
             group(t, "展开与显示") {
                 VStack(alignment: .leading, spacing: 8) {
