@@ -38,10 +38,17 @@ public final class EventApplier {
             // silently dropped (no stamina charge, no pending entry). The
             // helper always populates both fields per spec §4.
             guard let sid = event.sessionId, let tool = event.tool else { return p }
-            let cost = isSustained(sessionId: sid, eventMs: event.ts)
-                ? config.eventCosts.preToolUseStaminaSustained
-                : config.eventCosts.preToolUseStamina
-            p.stamina = clamp(p.stamina - cost)
+            // Storm damping: only the first pre_tool_use per charge window drains
+            // stamina; the marker persists on the pet so replay stays idempotent.
+            let windowMs = Int64(config.eventCosts.resolvedStaminaChargeWindowSeconds) * 1000
+            let charges = p.lastStaminaChargeAt.map { event.ts - $0 >= windowMs } ?? true
+            if charges {
+                let cost = isSustained(sessionId: sid, eventMs: event.ts)
+                    ? config.eventCosts.preToolUseStaminaSustained
+                    : config.eventCosts.preToolUseStamina
+                p.stamina = clamp(p.stamina - cost)
+                p.lastStaminaChargeAt = event.ts
+            }
             pending[sid + "\u{1}" + tool] = PendingPreUse(
                 eventId: event.eventId, sessionId: sid, tool: tool, startedMs: event.ts
             )

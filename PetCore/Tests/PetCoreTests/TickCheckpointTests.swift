@@ -58,4 +58,14 @@ final class TickCheckpointTests: XCTestCase {
         XCTAssertEqual(r.pet.fullness, 50, "asleep → frozen")
         XCTAssertEqual(r.pet.lastTickAt, 20_000)
     }
+
+    func testStillHibernatingRegensStaminaAtDoubleRate() {
+        var p = pet(lastTickAt: 0, hibernating: 5_000)
+        p.stamina = 10
+        let r = TickCheckpoint.run(pet: p, nowMs: 3_600_000, lastEventMs: 4_000, config: cfg)
+        XCTAssertNil(r.emit)
+        // 1h asleep → 0.0035 * 2 * 3600 = 25.2, hunger/affection still frozen
+        XCTAssertEqual(r.pet.stamina, 10 + 25.2, accuracy: 1e-6)
+        XCTAssertEqual(r.pet.fullness, 50, "asleep → hunger frozen")
+    }
 }

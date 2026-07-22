@@ -36,6 +36,7 @@ public struct ConfigYAML: Codable, Equatable {
         public let postToolUseXpPer200Tokens: Double
         public let stopIntimacy: Double
         public let petClickIntimacy: Double
+        public let staminaChargeWindowSeconds: Int?
         enum CodingKeys: String, CodingKey {
             case preToolUseStamina = "pre_tool_use_stamina"
             case preToolUseStaminaSustained = "pre_tool_use_stamina_sustained"
@@ -43,6 +44,12 @@ public struct ConfigYAML: Codable, Equatable {
             case postToolUseXpPer200Tokens = "post_tool_use_xp_per_200_tokens"
             case stopIntimacy = "stop_intimacy"
             case petClickIntimacy = "pet_click_intimacy"
+            case staminaChargeWindowSeconds = "stamina_charge_window_seconds"
+        }
+
+        public static let defaultStaminaChargeWindowSeconds = 30
+        public var resolvedStaminaChargeWindowSeconds: Int {
+            staminaChargeWindowSeconds ?? Self.defaultStaminaChargeWindowSeconds
         }
     }
 
@@ -133,11 +140,12 @@ public struct ConfigYAML: Codable, Equatable {
     }
 
     public static let defaults: ConfigYAML = ConfigYAML(
-        decay: .init(fullnessPerSecond: 0.0006, intimacyPerSecond: 0.0003, staminaRegenPerSecond: 0.0002),
+        decay: .init(fullnessPerSecond: 0.0006, intimacyPerSecond: 0.0003, staminaRegenPerSecond: 0.0035),
         eventCosts: .init(
             preToolUseStamina: 0.5, preToolUseStaminaSustained: 1.0,
             postToolUseFullnessPer2kTokens: 1.0, postToolUseXpPer200Tokens: 1.0,
-            stopIntimacy: 0.5, petClickIntimacy: 2.0
+            stopIntimacy: 0.5, petClickIntimacy: 2.0,
+            staminaChargeWindowSeconds: nil
         ),
         thresholds: .init(
             deathStatLow: 20, deathLowStatsRequired: 2, deathConsecutiveDays: 5,

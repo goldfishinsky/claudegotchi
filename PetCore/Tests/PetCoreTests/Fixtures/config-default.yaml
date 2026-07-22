@@ -1,7 +1,7 @@
 decay:
   fullness_per_second: 0.0006
   intimacy_per_second: 0.0003
-  stamina_regen_per_second: 0.0002
+  stamina_regen_per_second: 0.0035
 event_costs:
   pre_tool_use_stamina: 0.5
   pre_tool_use_stamina_sustained: 1.0

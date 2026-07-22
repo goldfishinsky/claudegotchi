@@ -141,6 +141,13 @@ final class DatabaseTests: XCTestCase {
         XCTAssertEqual(uid?.count, 26, "backfilled uid is a 26-char ULID")
     }
 
+    func testV5AddsLastStaminaChargeColumn() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let db = try Database.open(at: dbPath)
+        XCTAssertTrue(try petColumns(db).contains("last_stamina_charge_at"))
+    }
+
     func testHatchedPetHasUid() throws {
         let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
         defer { try? FileManager.default.removeItem(atPath: dbPath) }

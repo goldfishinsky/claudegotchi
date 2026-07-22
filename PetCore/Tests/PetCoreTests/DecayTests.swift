@@ -21,8 +21,24 @@ final class DecayTests: XCTestCase {
     func testStaminaRegenerates() {
         var pet = Pet.fresh(species: "frog", at: 0)
         pet.stamina = 50
+        // 1 hour → 0.0035 * 3600 = 12.6 gain
         let next = Decay.apply(pet: pet, elapsedSeconds: 3600, config: cfg)
-        XCTAssertEqual(next.stamina, 50 + 0.72, accuracy: 1e-6)
+        XCTAssertEqual(next.stamina, 50 + 12.6, accuracy: 1e-6)
+    }
+
+    func testHibernatingDoublesStaminaRegen() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 20
+        let next = Decay.apply(pet: pet, elapsedSeconds: 3600, config: cfg, hibernating: true)
+        XCTAssertEqual(next.stamina, 20 + 25.2, accuracy: 1e-6)
+    }
+
+    func testHibernatingFreezesHungerAndAffection() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.fullness = 60; pet.intimacy = 60
+        let next = Decay.apply(pet: pet, elapsedSeconds: 86400, config: cfg, hibernating: true)
+        XCTAssertEqual(next.fullness, 60, accuracy: 1e-9)
+        XCTAssertEqual(next.intimacy, 60, accuracy: 1e-9)
     }
 
     func testStatsClampToZero() {

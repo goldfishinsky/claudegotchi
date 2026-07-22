@@ -141,6 +141,9 @@ public enum Database {
                 try db.execute(sql: "UPDATE pet SET uid = ? WHERE id = ?", arguments: [ULID.generate(), id])
             }
         }
+        m.registerMigration("v5_stamina_charge_marker") { db in
+            try db.execute(sql: "ALTER TABLE pet ADD COLUMN last_stamina_charge_at INTEGER;")
+        }
         return m
     }
 }

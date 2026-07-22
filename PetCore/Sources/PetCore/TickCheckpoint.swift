@@ -31,6 +31,8 @@ public enum TickCheckpoint {
         } else if lastEventMs > pet.hibernationSince! {
             p.hibernationSince = nil
             emit = .hibernateEnd
+        } else {
+            p = Decay.apply(pet: p, elapsedSeconds: elapsedSeconds, config: config, hibernating: true)
         }
 
         p.lastTickAt = nowMs

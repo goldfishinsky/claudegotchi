@@ -17,6 +17,23 @@ final class EventApplierTests: XCTestCase {
         )
     }
 
+    private func config(window seconds: Int?) -> ConfigYAML {
+        let d = ConfigYAML.defaults
+        let ec = ConfigYAML.EventCosts(
+            preToolUseStamina: d.eventCosts.preToolUseStamina,
+            preToolUseStaminaSustained: d.eventCosts.preToolUseStaminaSustained,
+            postToolUseFullnessPer2kTokens: d.eventCosts.postToolUseFullnessPer2kTokens,
+            postToolUseXpPer200Tokens: d.eventCosts.postToolUseXpPer200Tokens,
+            stopIntimacy: d.eventCosts.stopIntimacy,
+            petClickIntimacy: d.eventCosts.petClickIntimacy,
+            staminaChargeWindowSeconds: seconds
+        )
+        return ConfigYAML(
+            decay: d.decay, eventCosts: ec, thresholds: d.thresholds,
+            spool: d.spool, work: d.work, leaderboard: d.leaderboard
+        )
+    }
+
     func testPostToolUseIncreasesFullnessAndXP() {
         var pet = Pet.fresh(species: "frog", at: 0)
         pet.fullness = 50
@@ -179,5 +196,84 @@ final class EventApplierTests: XCTestCase {
         pet.lastTickAt = 100
         let next = applier.apply(event: evt(.sessionStart, ts: 5_000_000), to: pet)
         XCTAssertEqual(next.lastTickAt, 100, "no wake → lastTickAt untouched")
+    }
+
+    func testStormDampingChargesOncePerWindow() {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 100
+        for i in 0..<5 {
+            pet = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: Int64(i) * 5_000), to: pet)
+        }
+        XCTAssertEqual(pet.stamina, 99.5, accuracy: 1e-9, "only the first call in the 30s window charges")
+        XCTAssertEqual(pet.lastStaminaChargeAt, 0)
+        pet = applier.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: 30_000), to: pet)
+        XCTAssertEqual(pet.stamina, 99.0, accuracy: 1e-9, "a call at the window boundary charges again")
+        XCTAssertEqual(pet.lastStaminaChargeAt, 30_000)
+    }
+
+    func testStormDampingIsReplayIdempotent() {
+        let seed = Pet.fresh(species: "frog", at: 0)
+        let events = (0..<8).map { evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: Int64($0) * 12_000) }
+        func run() -> Double {
+            let a = EventApplier(config: cfg)
+            var p = seed
+            for e in events { p = a.apply(event: e, to: p) }
+            return p.stamina
+        }
+        XCTAssertEqual(run(), run(), accuracy: 1e-12, "replaying the same stream is deterministic")
+    }
+
+    func testStormDampingWindowZeroChargesEveryCall() {
+        let a = EventApplier(config: config(window: 0))
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 100
+        for i in 0..<10 {
+            pet = a.apply(event: evt(.preToolUse, sessionId: "s1", tool: "Bash", ts: Int64(i)), to: pet)
+        }
+        XCTAssertEqual(pet.stamina, 95.0, accuracy: 1e-9, "window 0 disables damping: every call charges")
+    }
+
+    private struct HeavyDay { let dayEnd: Double; let nightEnd: Double; let charges: Int }
+
+    private func runHeavyDay(applier a: EventApplier, regenConfig: ConfigYAML) -> HeavyDay {
+        var pet = Pet.fresh(species: "frog", at: 0)
+        pet.stamina = 100
+        let dayMs: Int64 = 10 * 3600 * 1000
+        let totalCalls = 2500
+        let burstCount = 400
+        let burstSpacing = dayMs / Int64(burstCount)
+        let intraMs: Int64 = 3_000
+        var lastTs: Int64 = 0
+        var charges = 0
+        func regen(to ts: Int64) {
+            pet = Decay.apply(pet: pet, elapsedSeconds: Double(ts - lastTs) / 1000.0, config: regenConfig)
+            lastTs = ts
+        }
+        for b in 0..<burstCount {
+            let calls = totalCalls / burstCount + (b < totalCalls % burstCount ? 1 : 0)
+            let burstStart = Int64(b) * burstSpacing
+            for c in 0..<calls {
+                let ts = burstStart + Int64(c) * intraMs
+                regen(to: ts)
+                let before = pet.stamina
+                pet = a.apply(event: evt(.preToolUse, sessionId: "s", tool: "Bash", ts: ts), to: pet)
+                if pet.stamina < before - 1e-9 { charges += 1 }
+            }
+        }
+        let dayEnd = pet.stamina
+        regen(to: lastTs + 8 * 3600 * 1000)
+        return HeavyDay(dayEnd: dayEnd, nightEnd: pet.stamina, charges: charges)
+    }
+
+    func testHeavyDayDrainsSaneThenIdleNightRecovers() {
+        let damped = runHeavyDay(applier: EventApplier(config: cfg), regenConfig: cfg)
+        XCTAssertEqual(damped.charges, 400, "storm damping collapses 2500 calls to one charge per burst")
+        XCTAssertGreaterThan(damped.dayEnd, 0, "damped day never floors the pet at 0")
+        XCTAssertTrue(damped.dayEnd > 10 && damped.dayEnd < 50, "busy day lands in a sane band, got \(damped.dayEnd)")
+        XCTAssertEqual(damped.nightEnd, 100, accuracy: 1e-6, "8h idle night fully recovers")
+
+        let undamped = runHeavyDay(applier: EventApplier(config: config(window: 0)), regenConfig: cfg)
+        XCTAssertEqual(undamped.charges, 2500, "without damping every call charges")
+        XCTAssertEqual(undamped.dayEnd, 0, accuracy: 1e-9, "without damping the same day zeroes stamina")
     }
 }

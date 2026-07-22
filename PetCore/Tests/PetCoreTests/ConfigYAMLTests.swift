@@ -116,6 +116,22 @@ final class ConfigYAMLTests: XCTestCase {
         XCTAssertEqual(resolved.githubClientID, "Iv1.abc123")
     }
 
+    func testStaminaChargeWindowDefaultsWhenAbsent() throws {
+        let cfg = try loadYAML(minimalConfigBody)
+        XCTAssertNil(cfg.eventCosts.staminaChargeWindowSeconds)
+        XCTAssertEqual(cfg.eventCosts.resolvedStaminaChargeWindowSeconds, 30)
+    }
+
+    func testStaminaChargeWindowParsed() throws {
+        let yaml = minimalConfigBody.replacingOccurrences(
+            of: "pet_click_intimacy: 2.0",
+            with: "pet_click_intimacy: 2.0\n  stamina_charge_window_seconds: 45"
+        )
+        let cfg = try loadYAML(yaml)
+        XCTAssertEqual(cfg.eventCosts.staminaChargeWindowSeconds, 45)
+        XCTAssertEqual(cfg.eventCosts.resolvedStaminaChargeWindowSeconds, 45)
+    }
+
     func testLeaderboardPartialSectionUsesDefaults() throws {
         let yaml = minimalConfigBody + """
 

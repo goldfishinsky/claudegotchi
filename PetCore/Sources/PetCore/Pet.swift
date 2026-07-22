@@ -14,6 +14,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
     public var lastTickAt: Int64
     public var lastAppliedEventId: Int64
     public var hibernationSince: Int64?
+    public var lastStaminaChargeAt: Int64?
     public var deathWindowState: String
     public var lastEventAt: Int64
     public var uid: String?
@@ -27,6 +28,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
         case lastTickAt = "last_tick_at"
         case lastAppliedEventId = "last_applied_event_id"
         case hibernationSince = "hibernation_since"
+        case lastStaminaChargeAt = "last_stamina_charge_at"
         case deathWindowState = "death_window_state"
         case lastEventAt = "last_event_at"
         case uid
@@ -42,7 +44,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
             birthday: ts, deathAt: nil,
             fullness: 100, stamina: 100, intimacy: 50,
             xp: 0, lastTickAt: ts, lastAppliedEventId: 0,
-            hibernationSince: nil, deathWindowState: "[]",
+            hibernationSince: nil, lastStaminaChargeAt: nil, deathWindowState: "[]",
             lastEventAt: ts, uid: uid
         )
     }
