@@ -5,16 +5,30 @@ import PetCore
 
 enum IslandMetric {
     static let lobeWidth: CGFloat = 54
-    static let stripWidth: CGFloat = 158
     static let topFlare: CGFloat = 7
     static let bottomCorner: CGFloat = 10
-    static let stripBottomCorner: CGFloat = 13
     static let bottomExtend: CGFloat = 2
     // Transparent breathing room around the tight island so the arrival pulse,
     // hover glow, and auto-hide slide are not clipped by the hosting window.
     static let motionPadX: CGFloat = 14
     static let motionPadTop: CGFloat = 8
     static let motionPadBottom: CGFloat = 14
+
+    // Alert/completion banner that drops below the island (the island's own width
+    // never changes for alerts). The window reserves `bannerReserve` extra height
+    // downward while a banner is mounted; the banner hangs `bannerGap` under the
+    // island bottom and slides out from behind it.
+    static let bannerHeight: CGFloat = 30
+    static let bannerGap: CGFloat = 5
+    static let bannerCorner: CGFloat = 12
+    static let bannerSideInset: CGFloat = 2
+    static var bannerReserve: CGFloat { bannerGap + bannerHeight }
+
+    // Right-lobe collision clamp: keep the pet lobe this far clear of the nearest
+    // menu-bar status item, and hide the pet entirely once the clamped lobe would
+    // fall below the floor rather than overlap.
+    static let lobeGap: CGFloat = 6
+    static let lobeFloor: CGFloat = 30
 }
 
 // MARK: - motion
@@ -119,18 +133,6 @@ struct NotchGeometry {
         return nil
     }
 
-    /// The wrapping window frame: lobes flank the physical cutout and the island
-    /// bottom hangs `bottomExtend` below the notch. The left lobe collapses when
-    /// no agents are active; the alert strip extends the island rightward.
-    func frame(leftLobe: Bool, alert: Bool) -> NSRect {
-        let lc = leftLobe ? lobeWidth : 0
-        let strip = alert ? IslandMetric.stripWidth : 0
-        return NSRect(
-            x: notchRect.minX - lc, y: notchRect.maxY - islandHeight,
-            width: lc + notchRect.width + lobeWidth + strip,
-            height: islandHeight)
-    }
-
     /// Anchor rect that centres the dropdown card under the notch: the card's
     /// right edge lands at `notchCenterX + cardWidth/2` (position() flush-rights).
     var dropdownAnchor: NSRect {
@@ -218,7 +220,7 @@ private struct DisplayStrip: Equatable {
     let completion: CompletionReveal?
 }
 
-private enum MetricEdge: Hashable { case left, strip }
+private enum MetricEdge: Hashable { case left, drop }
 
 private struct MetricKey: PreferenceKey {
     static var defaultValue: [MetricEdge: CGFloat] = [:]
@@ -241,6 +243,7 @@ struct NotchIslandView: View {
     @ObservedObject var chrome: IslandChrome
     let notchWidth: CGFloat
     let lobeWidth: CGFloat
+    let petLobeWidth: CGFloat
     let height: CGFloat
     var onHover: (Bool) -> Void
     var onClick: () -> Void
@@ -250,8 +253,8 @@ struct NotchIslandView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shownStrip: DisplayStrip?
-    @State private var stripWide = false
-    @State private var stripTextIn = false
+    @State private var bannerDown = false
+    @State private var bannerTextIn = false
     @State private var pulse: CGFloat = 1
     @State private var wobbleY: CGFloat = 1
     @State private var hovering = false
@@ -285,10 +288,13 @@ struct NotchIslandView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.clear.allowsHitTesting(false)
+                .preference(key: MetricKey.self,
+                            value: [.drop: shownStrip != nil ? IslandMetric.bannerReserve : 0])
+            bannerLayer
             islandChrome
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onPreferenceChange(MetricKey.self) { m in onMetrics(m[.left] ?? 0, m[.strip] ?? 0) }
+        .onPreferenceChange(MetricKey.self) { m in onMetrics(m[.left] ?? 0, m[.drop] ?? 0) }
         .onChange(of: desiredStrip?.key ?? "") { _ in syncStrip() }
         .onAppear { syncStrip() }
     }
@@ -316,22 +322,18 @@ struct NotchIslandView: View {
                 .frame(width: hasLeftLobe ? lobeWidth : 0)
                 .background(measure(.left))
             Color.clear.frame(width: notchWidth).allowsHitTesting(false)
-            petLobe.frame(width: lobeWidth)
-            stripSlot
-                .frame(width: stripWide ? IslandMetric.stripWidth : 0)
-                .background(measure(.strip))
-                .clipped()
+            petLobe.frame(width: petLobeWidth)
         }
         .frame(height: height)
         .background(
             NotchShape(
                 topCornerRadius: IslandMetric.topFlare,
-                bottomCornerRadius: stripWide ? IslandMetric.stripBottomCorner : IslandMetric.bottomCorner
+                bottomCornerRadius: IslandMetric.bottomCorner
             ).fill(Color.black)
         )
         .contentShape(NotchShape(
             topCornerRadius: IslandMetric.topFlare,
-            bottomCornerRadius: stripWide ? IslandMetric.stripBottomCorner : IslandMetric.bottomCorner))
+            bottomCornerRadius: IslandMetric.bottomCorner))
         .onHover { hovering = $0; onHover($0) }
         .onTapGesture { onClick() }
         .animation(IslandMotion.morph, value: hasLeftLobe)
@@ -363,7 +365,9 @@ struct NotchIslandView: View {
     private var petLobe: some View {
         let shaking = island.pendingPermission != nil
         Group {
-            if let visual = petModel.visual {
+            if petLobeWidth <= 1 {
+                Color.clear
+            } else if let visual = petModel.visual {
                 TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { ctx in
                     let wobble = shaking ? sin(ctx.date.timeIntervalSince1970 * 18) * 1.6 : 0
                     TheaterPetView(
@@ -379,10 +383,17 @@ struct NotchIslandView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
+    // The island bottom (with the motion pad) and the resting/tucked banner tops,
+    // in the window's top-leading coordinate space.
+    private var islandBottomY: CGFloat { IslandMetric.motionPadTop + height }
+    private var bannerRestY: CGFloat { islandBottomY + IslandMetric.bannerGap }
+    private var bannerTuckY: CGFloat { islandBottomY - IslandMetric.bannerHeight }
+
     @ViewBuilder
-    private var stripSlot: some View {
+    private var bannerLayer: some View {
         if let strip = shownStrip {
             let color = strip.isCompletion ? mint : coral
             HStack(spacing: 6) {
@@ -397,7 +408,7 @@ struct NotchIslandView: View {
                         .shadow(color: Candy.coral[1].opacity(0.7), radius: 2)
                 }
                 Text("\(strip.repoName) · \(strip.isCompletion ? "完成" : "请求权限")")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(color)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 2)
@@ -405,15 +416,28 @@ struct NotchIslandView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(color)
             }
-            .padding(.leading, 8).padding(.trailing, 10)
+            .padding(.leading, 11).padding(.trailing, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .opacity(stripTextIn ? 1 : 0)
-            .offset(x: stripTextIn ? 0 : 8)
-            .contentShape(Rectangle())
+            .opacity(bannerTextIn ? 1 : 0)
+            .background(
+                RoundedRectangle(cornerRadius: IslandMetric.bannerCorner, style: .continuous)
+                    .fill(Color.black)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: IslandMetric.bannerCorner, style: .continuous)
+                            .strokeBorder(color.opacity(0.4), lineWidth: 1))
+                    .shadow(color: color.opacity(0.28), radius: 7, x: 0, y: 3)
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: IslandMetric.bannerHeight)
+            .padding(.horizontal, IslandMetric.bannerSideInset)
+            .contentShape(RoundedRectangle(cornerRadius: IslandMetric.bannerCorner, style: .continuous))
             .onTapGesture {
                 if let comp = strip.completion { onCompletionClick(comp) }
                 else if let req = strip.permission { onAlertClick(req) }
             }
+            .opacity(bannerDown ? 1 : 0)
+            .offset(y: bannerDown ? bannerRestY : bannerTuckY)
+            .allowsHitTesting(bannerDown && bannerTextIn)
         }
     }
 
@@ -421,39 +445,39 @@ struct NotchIslandView: View {
 
     private func syncStrip() {
         if let want = desiredStrip {
-            let wasWide = stripWide
+            let wasDown = bannerDown
             shownStrip = want
-            if wasWide {
+            if wasDown {
                 guard !reduceMotion else { return }
-                withAnimation(IslandMotion.content) { stripTextIn = false }
+                withAnimation(IslandMotion.content) { bannerTextIn = false }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
                     guard desiredStrip != nil else { return }
-                    withAnimation(IslandMotion.content) { stripTextIn = true }
+                    withAnimation(IslandMotion.content) { bannerTextIn = true }
                 }
                 return
             }
             if reduceMotion {
-                withAnimation(.easeOut(duration: 0.2)) { stripWide = true; stripTextIn = true }
+                withAnimation(.easeOut(duration: 0.2)) { bannerDown = true; bannerTextIn = true }
                 return
             }
             firePulse()
             DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.pulsePeak) {
                 guard desiredStrip != nil else { return }
-                withAnimation(IslandMotion.morph) { stripWide = true }
+                withAnimation(IslandMotion.morph) { bannerDown = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.contentStagger) {
                     guard desiredStrip != nil else { return }
-                    withAnimation(IslandMotion.content) { stripTextIn = true }
+                    withAnimation(IslandMotion.content) { bannerTextIn = true }
                 }
             }
         } else {
             guard shownStrip != nil else { return }
             if reduceMotion {
-                withAnimation(.easeOut(duration: 0.2)) { stripTextIn = false; stripWide = false }
+                withAnimation(.easeOut(duration: 0.2)) { bannerTextIn = false; bannerDown = false }
             } else {
-                withAnimation(IslandMotion.content) { stripTextIn = false }
+                withAnimation(IslandMotion.content) { bannerTextIn = false }
                 DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.contentStagger) {
                     guard desiredStrip == nil else { return }
-                    withAnimation(IslandMotion.settle) { stripWide = false }
+                    withAnimation(IslandMotion.settle) { bannerDown = false }
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.departClear) {
@@ -495,6 +519,58 @@ private final class IslandPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
+// MARK: - menu-bar collision probe
+
+/// Finds the nearest right-of-notch menu-bar status item so the pet lobe can be
+/// clamped clear of it. `CGWindowListCopyWindowInfo` exposes window bounds, layer,
+/// and owning PID without Screen Recording permission (only window *names* need
+/// it, which this never reads). Status items live at layer 25 (`NSStatusWindowLevel`);
+/// the full-width Window Server "Menubar" backdrop sits at layer 24 and the island
+/// itself at 26, so a strict layer-25 filter excludes both. Left-side app menus are
+/// drawn inside that single backdrop window, not as probeable items, so only the
+/// right side can be clamped.
+enum MenuBarProbe {
+    static let statusLayer = 25
+    static let backdropLayer = 24
+
+    struct Result {
+        /// minX of the nearest right-of-notch status item, or nil when the bar is
+        /// genuinely clear on the right.
+        let nearestMinX: CGFloat?
+        /// False when the window list looked degenerate (nil, or no menu-bar-level
+        /// window at all) — a transient the caller must not treat as "no obstacle",
+        /// or it would briefly un-clamp the lobe back over an icon.
+        let trustworthy: Bool
+    }
+
+    static func probe(
+        notchCenterX: CGFloat, notchMaxX: CGFloat, menuBarHeight: CGFloat,
+        screenMaxX: CGFloat, myPID: Int
+    ) -> Result {
+        let opts: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let list = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
+            return Result(nearestMinX: nil, trustworthy: false)
+        }
+        var nearest = CGFloat.greatestFiniteMagnitude
+        var sawMenuBarLevel = false
+        for info in list {
+            guard let layer = info[kCGWindowLayer as String] as? Int,
+                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
+            let x = bounds["X"] ?? 0
+            let y = bounds["Y"] ?? 0
+            let h = bounds["Height"] ?? 0
+            guard y <= 2, h <= menuBarHeight + 4 else { continue }
+            if layer == backdropLayer || layer == statusLayer { sawMenuBarLevel = true }
+            guard layer == statusLayer,
+                  let pid = info[kCGWindowOwnerPID as String] as? Int, pid != myPID else { continue }
+            guard x >= notchCenterX, x < screenMaxX else { continue }
+            if x < nearest { nearest = x }
+        }
+        guard sawMenuBarLevel else { return Result(nearestMinX: nil, trustworthy: false) }
+        return Result(nearestMinX: nearest.isFinite ? nearest : nil, trustworthy: true)
+    }
+}
+
 // MARK: - controller
 
 @MainActor
@@ -513,11 +589,18 @@ final class NotchIslandController {
     private var geometry: NotchGeometry?
     private var appliedHeightOffset: CGFloat = .nan
     private var appliedWidthOffset: CGFloat = .nan
-    // Latest lobe/strip widths the SwiftUI layer measured mid-spring; the window
-    // frame tracks these so its bounds follow the animated shape exactly.
+    // Latest left-lobe width the SwiftUI layer measured mid-spring plus the
+    // downward banner reserve; the window frame tracks these so its bounds follow
+    // the animated shape and the banner has room to drop below.
     private var lastLobeW: CGFloat = 0
-    private var lastStripW: CGFloat = 0
+    private var lastDrop: CGFloat = 0
     private var repositionScheduled = false
+
+    // Max width the right (pet) lobe may take before it would overlap the nearest
+    // menu-bar status item; refreshed by the collision probe.
+    private var rightLobeAllowance: CGFloat = .greatestFiniteMagnitude
+    private var clampTimer: Timer?
+    private var alertActive = false
 
     private var expandWork: DispatchWorkItem?
     private var watchdog: Timer?
@@ -580,6 +663,7 @@ final class NotchIslandController {
                 hosting?.rootView = makeRoot(geoNow!)
                 positionWindow()
                 layout(animated: false)
+                probeClamp()
                 notifyPresence()
             }
         } else {
@@ -630,6 +714,7 @@ final class NotchIslandController {
         hosting?.rootView = makeRoot(geo)
         positionWindow()
         layout(animated: false)
+        probeClamp()
     }
 
     // MARK: completion reveal
@@ -706,12 +791,13 @@ final class NotchIslandController {
     private func makeRoot(_ geo: NotchGeometry) -> AnyView {
         AnyView(NotchIslandView(
             petModel: petModel, agentModel: agentModel, island: island, chrome: chrome,
-            notchWidth: geo.notchWidth, lobeWidth: geo.lobeWidth, height: geo.islandHeight,
+            notchWidth: geo.notchWidth, lobeWidth: geo.lobeWidth,
+            petLobeWidth: effectivePetLobe(geo), height: geo.islandHeight,
             onHover: { [weak self] in self?.islandHover($0) },
             onClick: { [weak self] in self?.islandClick() },
             onAlertClick: { [weak self] in self?.alertClick($0) },
             onCompletionClick: { [weak self] in self?.completionClick($0) },
-            onMetrics: { [weak self] lobe, strip in self?.islandMetrics(lobe: lobe, strip: strip) }
+            onMetrics: { [weak self] lobe, drop in self?.islandMetrics(leftLobe: lobe, drop: drop) }
         ))
     }
 
@@ -721,7 +807,7 @@ final class NotchIslandController {
         // tries to drive window-size constraints from its content.
         hosting.sizingOptions = []
         self.hosting = hosting
-        let contentRect = paddedFrame(geo, lobeW: 0, stripW: 0)
+        let contentRect = paddedFrame(geo, lobeW: 0, drop: 0)
         let panel = IslandPanel(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
@@ -750,8 +836,9 @@ final class NotchIslandController {
         panel.orderFrontRegardless()
         self.panel = panel
         lastLobeW = 0
-        lastStripW = 0
+        lastDrop = 0
         chrome.dropdownOpen = false
+        startClampProbe()
         positionWindow()
         island.refresh(filter: settings.sessionFilter)
         layout(animated: false)
@@ -762,6 +849,9 @@ final class NotchIslandController {
         collapse()
         clearCompletion()
         alertTimer?.invalidate(); alertTimer = nil
+        stopClampProbe()
+        rightLobeAllowance = .greatestFiniteMagnitude
+        alertActive = false
         panel?.orderOut(nil)
         panel = nil
         hosting = nil
@@ -771,28 +861,30 @@ final class NotchIslandController {
         notifyPresence()
     }
 
-    /// The window frame for a given measured lobe/strip width: the tight island
-    /// pinned to the notch, outset by the motion pad so the pulse, glow, and slide
-    /// have room. Left/right edges are computed from the notch, never from the
-    /// leading edge, so the notch-clear column always aligns with the cutout.
-    private func paddedFrame(_ geo: NotchGeometry, lobeW: CGFloat, stripW: CGFloat) -> NSRect {
+    /// The window frame for the measured left-lobe width and downward banner
+    /// reserve: the tight island pinned to the notch, outset by the motion pad so
+    /// the pulse, glow, and slide have room, and extended downward by `drop` so the
+    /// banner can hang below. Left/right edges are computed from the notch, never
+    /// from the leading edge, so the notch-clear column always aligns with the
+    /// cutout; the right edge honours the collision-clamped pet lobe.
+    private func paddedFrame(_ geo: NotchGeometry, lobeW: CGFloat, drop: CGFloat) -> NSRect {
         let n = geo.notchRect
         let left = n.minX - lobeW - IslandMetric.motionPadX
-        let right = n.minX + geo.notchWidth + geo.lobeWidth + stripW + IslandMetric.motionPadX
-        let originY = n.maxY - geo.islandHeight - IslandMetric.motionPadBottom
-        let heightTotal = geo.islandHeight + IslandMetric.motionPadTop + IslandMetric.motionPadBottom
+        let right = n.minX + geo.notchWidth + effectivePetLobe(geo) + IslandMetric.motionPadX
+        let originY = n.maxY - geo.islandHeight - IslandMetric.motionPadBottom - drop
+        let heightTotal = geo.islandHeight + IslandMetric.motionPadTop + IslandMetric.motionPadBottom + drop
         return NSRect(x: left, y: originY, width: right - left, height: heightTotal)
     }
 
-    /// The SwiftUI layer measures the animating lobe/strip widths every frame; the
-    /// window bounds follow so the black shape (which fills the window) morphs with
-    /// visible overshoot without ever clipping. The resize is coalesced onto the
-    /// next runloop hop so it never reenters the SwiftUI display cycle that emitted
-    /// the measurement.
-    private func islandMetrics(lobe: CGFloat, strip: CGFloat) {
-        guard lobe != lastLobeW || strip != lastStripW else { return }
+    /// The SwiftUI layer measures the animating left-lobe width and the banner
+    /// reserve every frame; the window bounds follow so the black shape morphs with
+    /// visible overshoot and the banner has room to drop, without ever clipping. The
+    /// resize is coalesced onto the next runloop hop so it never reenters the
+    /// SwiftUI display cycle that emitted the measurement.
+    private func islandMetrics(leftLobe lobe: CGFloat, drop: CGFloat) {
+        guard lobe != lastLobeW || drop != lastDrop else { return }
         lastLobeW = lobe
-        lastStripW = strip
+        lastDrop = drop
         guard !repositionScheduled else { return }
         repositionScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -803,18 +895,21 @@ final class NotchIslandController {
 
     private func positionWindow() {
         guard let panel, let geo = geometry else { return }
-        let frame = paddedFrame(geo, lobeW: lastLobeW, stripW: lastStripW)
+        let frame = paddedFrame(geo, lobeW: lastLobeW, drop: lastDrop)
         if panel.frame != frame { panel.setFrame(frame, display: false) }
     }
 
     /// Drive the 3s alert poll and hand the auto-hide decision to the SwiftUI layer
     /// (fade + upward slide). The window frame itself is driven by measured widths.
+    /// A fresh collision probe runs the moment an alert becomes active.
     private func layout(animated: Bool) {
         guard panel != nil else { return }
         let poll = island.hasActiveAlertState
         if poll != (alertTimer != nil) {
             if poll { startAlertPoll() } else { stopAlertPoll() }
         }
+        if poll && !alertActive { probeClamp() }
+        alertActive = poll
         chrome.hidden = !islandShouldBeVisible()
     }
 
@@ -834,6 +929,52 @@ final class NotchIslandController {
     }
 
     private func stopAlertPoll() { alertTimer?.invalidate(); alertTimer = nil }
+
+    // MARK: right-lobe collision clamp
+
+    /// The pet lobe width after clamping against the nearest menu-bar item: the
+    /// full lobe when there is room, a shrunk lobe down to the floor, or 0 (pet
+    /// hidden) once even the floor would overlap.
+    private func effectivePetLobe(_ geo: NotchGeometry) -> CGFloat {
+        let base = geo.lobeWidth
+        if rightLobeAllowance >= base { return base }
+        if rightLobeAllowance < IslandMetric.lobeFloor { return 0 }
+        return rightLobeAllowance
+    }
+
+    /// Probe the menu bar for the nearest right-side status item and re-derive how
+    /// wide the pet lobe may be. Only rebuilds/repositions when the effective lobe
+    /// actually changes, so the slow poll is cheap and flicker-free.
+    private func probeClamp() {
+        guard let geo = geometry, panel != nil else { return }
+        let result = MenuBarProbe.probe(
+            notchCenterX: geo.notchCenterX,
+            notchMaxX: geo.notchRect.maxX,
+            menuBarHeight: geo.notchRect.height,
+            screenMaxX: geo.screen.frame.maxX,
+            myPID: Int(ProcessInfo.processInfo.processIdentifier))
+        guard result.trustworthy else { return }
+        let allowance = result.nearestMinX.map { $0 - geo.notchRect.maxX - IslandMetric.lobeGap }
+            ?? .greatestFiniteMagnitude
+        let oldLobe = effectivePetLobe(geo)
+        rightLobeAllowance = allowance
+        guard effectivePetLobe(geo) != oldLobe else { return }
+        hosting?.rootView = makeRoot(geo)
+        positionWindow()
+    }
+
+    private func startClampProbe() {
+        probeClamp()
+        guard clampTimer == nil else { return }
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.probeClamp() }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        clampTimer = timer
+    }
+
+    private func stopClampProbe() { clampTimer?.invalidate(); clampTimer = nil }
 
     // MARK: hover / click
 

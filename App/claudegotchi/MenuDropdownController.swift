@@ -15,7 +15,7 @@ private final class DropdownPanel: NSPanel {
 @MainActor
 final class DropdownAppearance: ObservableObject {
     @Published var shown = false
-    static let spring = Animation.spring(response: 0.40, dampingFraction: 0.82, blendDuration: 0)
+    static let spring = Animation.spring(response: 0.30, dampingFraction: 0.82, blendDuration: 0)
 }
 
 private struct DropdownAppear<Content: View>: View {

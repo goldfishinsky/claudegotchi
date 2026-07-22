@@ -8,7 +8,7 @@ import PetCore
 /// immediately without a restart.
 @MainActor
 final class SettingsStore: ObservableObject {
-    static let hoverDelayDefault = 0.25
+    static let hoverDelayDefault = 0.12
     static let dwellRange = 3...10
     static let heightOffsetRange = -6...12
     static let widthOffsetRange = -20...40
