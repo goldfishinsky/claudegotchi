@@ -4,7 +4,7 @@ import GRDB
 import PetCore
 
 enum StatsTab: Hashable {
-    case overview, models, growth, work, leaderboard
+    case overview, system, models, growth, work, leaderboard
 }
 
 final class StatsSelection: ObservableObject {
@@ -17,8 +17,11 @@ struct StatsWindowView: View {
     @ObservedObject var watcher: PRWatcher
     @ObservedObject var coordinator: FixCoordinator
     @ObservedObject var syncDriver: LeaderboardSyncDriver
+    @ObservedObject var systemStats: SystemStatsDriver
     let db: DatabaseQueue
     let config: ConfigYAML
+    let github: GitHubClient
+    let git: GitRunner
     let leaderboard: LeaderboardService
     let githubClientID: String
     var onOpenSettings: () -> Void = {}
@@ -32,6 +35,7 @@ struct StatsWindowView: View {
         return VStack(spacing: 0) {
             WarmSegmented(selection: $selection.tab, items: [
                 (.overview, "Overview"),
+                (.system, "系统"),
                 (.models, "Models"),
                 (.growth, "成长史"),
                 (.work, "工作台"),
@@ -71,9 +75,10 @@ struct StatsWindowView: View {
     private var tabContent: some View {
         switch selection.tab {
         case .overview: OverviewTab(db: db)
+        case .system:   SystemTab(driver: systemStats)
         case .models:   ModelsTab(db: db)
         case .growth:   GrowthHistoryTab(db: db)
-        case .work:     PRWorktableTab(watcher: watcher, coordinator: coordinator, db: db, config: config)
+        case .work:     PRWorktableTab(watcher: watcher, coordinator: coordinator, db: db, config: config, github: github, git: git)
         case .leaderboard:
             LeaderboardTab(driver: syncDriver, service: leaderboard,
                            openSettings: { showLeaderboardSettings = true })

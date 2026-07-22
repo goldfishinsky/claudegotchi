@@ -1,13 +1,13 @@
 import SwiftUI
+import AppKit
 import PetCore
 
 // The dreamy "cream card + warm backlit glow" that IS the menu-bar dropdown.
-// Two soft panels — a system panel (CPU + MEM click-to-expand hero tiles above a
-// compact tray) and an agent panel (active-agent rows + folded usage footer) —
-// crowned by the pet stage and closed by the footer actions. Rendered inside a
-// borderless NSPanel by MenuDropdownController; the transparent glow margin lets
-// the glow spill past the card edge, and onHeightChange lets the panel grow as a
-// hero tile expands in place.
+// Two soft panels — a fixed-height system glance (CPU + MEM tiles above a compact
+// tray, one tap opens the stats window's 系统 tab) and an agent panel (active-agent
+// rows + folded usage footer) — crowned by the pet stage and closed by the footer
+// actions. Rendered inside a borderless NSPanel by MenuDropdownController; the
+// transparent glow margin lets the glow spill past the card edge.
 struct DropdownCard: View {
     @ObservedObject var petModel: PetPanelModel
     @ObservedObject var agentModel: AgentActivityModel
@@ -16,6 +16,7 @@ struct DropdownCard: View {
     @ObservedObject var usageDriver: ClaudeUsageDriver
     @ObservedObject var islandModel: IslandModel
     var onOpenStats: () -> Void
+    var onOpenSystemStats: () -> Void = {}
     var onToggleIsland: (Bool) -> Void
     var onOpenSettings: () -> Void
     var onJump: (AgentActivity) -> Void
@@ -23,15 +24,14 @@ struct DropdownCard: View {
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var expanded: Expanded = .none
+    @State private var systemHovering = ProcessInfo.processInfo.environment["CGHOVER"] == "1"
 
-    enum Expanded { case none, cpu, mem }
     enum Metric { case cpu, mem }
 
     static let cardWidth: CGFloat = 400
     static let glowMargin: CGFloat = 30
     static let totalWidth: CGFloat = cardWidth + glowMargin * 2
-    static let expandSpring = Animation.spring(response: 0.35, dampingFraction: 0.86)
+    static let tileHeight: CGFloat = 50
 
     private var theme: WarmTheme { WarmTheme(scheme: scheme) }
 
@@ -90,26 +90,28 @@ struct DropdownCard: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(t.panelFill))
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(systemHovering ? t.ink.opacity(0.07) : t.panelFill))
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onTapGesture { onOpenSystemStats() }
+        .onHover { hovering in
+            systemHovering = hovering
+            if hovering { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .help("打开系统详情")
     }
 
     private func heroTile(_ t: WarmTheme, _ metric: Metric) -> some View {
-        let open = isOpen(metric)
-        return VStack(alignment: .leading, spacing: 6) {
-            heroHeader(t, metric, open: open)
+        VStack(alignment: .leading, spacing: 5) {
+            heroHeader(t, metric)
             heroLevel(t, metric)
-            if open {
-                expandedDetail(t, metric)
-            } else {
-                Sparkline(values: history(metric), colors: sparkColors(metric), height: 13)
-            }
+            Sparkline(values: history(metric), colors: sparkColors(metric), height: 13)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .contentShape(Rectangle())
-        .onTapGesture { toggle(metric) }
+        .frame(maxWidth: .infinity, minHeight: Self.tileHeight, maxHeight: Self.tileHeight,
+               alignment: .topLeading)
     }
 
-    private func heroHeader(_ t: WarmTheme, _ metric: Metric, open: Bool) -> some View {
+    private func heroHeader(_ t: WarmTheme, _ metric: Metric) -> some View {
         HStack(spacing: 6) {
             CandyIcon(symbol: symbol(metric), colors: iconColors(metric), size: 13)
             Text(valueText(metric)).font(WFont.value).monospacedDigit()
@@ -118,10 +120,6 @@ struct DropdownCard: View {
                 .lineLimit(1).minimumScaleFactor(0.7)
             PulseDot(colors: dotColors(metric), elevated: elevated(metric), reduceMotion: reduceMotion)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(t.inkFaint)
-                .rotationEffect(.degrees(open ? 180 : 0))
         }
     }
 
@@ -139,52 +137,6 @@ struct DropdownCard: View {
             }
         case .mem:
             SoftBar(fraction: memFraction() ?? 0, colors: memBarColors(), track: t.track, height: 9)
-        }
-    }
-
-    private func expandedDetail(_ t: WarmTheme, _ metric: Metric) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Sparkline(values: history(metric), colors: sparkColors(metric), height: 40)
-            detailLine(t, metric)
-            procRows(t, metric)
-        }
-        .padding(.top, 2)
-    }
-
-    @ViewBuilder
-    private func detailLine(_ t: WarmTheme, _ metric: Metric) -> some View {
-        switch metric {
-        case .cpu:
-            if let la = driver.loadAverage {
-                Text("负载 \(LoadAverage.format(la.one, la.five, la.fifteen)) / \(driver.coreCount) 核")
-                    .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
-            }
-        case .mem:
-            Text("压缩 \(ByteFormat.size(driver.compressedBytes)) · 交换 \(ByteFormat.size(driver.swapBytes))")
-                .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
-        }
-    }
-
-    @ViewBuilder
-    private func procRows(_ t: WarmTheme, _ metric: Metric) -> some View {
-        let rows: [(String, String)] = metric == .cpu
-            ? driver.topCPU.prefix(3).map { ($0.name, "\(Int($0.percent.rounded()))%") }
-            : driver.topRAM.prefix(3).map { ($0.name, ByteFormat.size($0.rssBytes)) }
-        if rows.isEmpty {
-            Text("采样中…").font(WFont.caption).foregroundStyle(t.inkFaint)
-        } else {
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 5) {
-                        Text(row.1).font(WFont.caption).monospacedDigit()
-                            .foregroundStyle(t.inkStrong).fixedSize()
-                        Text("/").font(WFont.caption).foregroundStyle(t.inkFaint.opacity(0.6))
-                        Text(row.0).font(WFont.caption).foregroundStyle(t.ink)
-                            .lineLimit(1).truncationMode(.tail)
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
         }
     }
 
@@ -325,21 +277,6 @@ struct DropdownCard: View {
         }
     }
 
-    // MARK: expansion
-
-    private func isOpen(_ metric: Metric) -> Bool {
-        (expanded == .cpu && metric == .cpu) || (expanded == .mem && metric == .mem)
-    }
-
-    private func toggle(_ metric: Metric) {
-        withAnimation(Self.expandSpring) {
-            switch metric {
-            case .cpu: expanded = expanded == .cpu ? .none : .cpu
-            case .mem: expanded = expanded == .mem ? .none : .mem
-            }
-        }
-    }
-
     // MARK: metric helpers
 
     private func symbol(_ m: Metric) -> String { m == .cpu ? "cpu.fill" : "memorychip.fill" }
@@ -414,9 +351,9 @@ struct DropdownCard: View {
     }
 }
 
-// A state dot that stays zero-width (no layout hole) until its metric crosses
-// into an elevated tier, then fires one scale+opacity pulse on that crossing —
-// suppressed under Reduce Motion.
+// A state dot that always reserves its 5pt frame (no data-driven layout shift):
+// it fades opacity in when its metric crosses into an elevated tier and fires one
+// scale+opacity pulse on that crossing — suppressed under Reduce Motion.
 private struct PulseDot: View {
     let colors: [Color]
     let elevated: Bool
@@ -430,7 +367,6 @@ private struct PulseDot: View {
             .shadow(color: colors[colors.count - 1].opacity(0.7), radius: 2)
             .scaleEffect(pulse ? 1.9 : 1.0)
             .opacity(elevated ? 1 : 0)
-            .frame(width: elevated ? 5 : 0, height: 5)
             .animation(.easeInOut(duration: 0.2), value: elevated)
             .onChange(of: elevated) { now in
                 guard now, !reduceMotion else { return }

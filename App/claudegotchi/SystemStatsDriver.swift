@@ -17,6 +17,8 @@ final class SystemStatsDriver: ObservableObject {
     @Published private(set) var cpuHistory: [Double] = []
     @Published private(set) var memHistory: [Double] = []
 
+    static let topProcessCount = 5
+
     let coreCount = ProcessInfo.processInfo.activeProcessorCount
 
     private let sampler: SystemSampling
@@ -27,6 +29,7 @@ final class SystemStatsDriver: ObservableObject {
     private let historyEveryTicks: Int
 
     private var timer: Timer?
+    private var startCount = 0
     private var tickCount = 0
     private var prevNet: (down: UInt64, up: UInt64)?
     private var prevCPUPerCore: [CPUTicks]?
@@ -59,7 +62,10 @@ final class SystemStatsDriver: ObservableObject {
 
     var isRunning: Bool { timer != nil }
 
+    // Refcounted so overlapping owners (dropdown open + 系统 tab visible) share one
+    // timer; only the first start samples, only the last stop tears down.
     func start() {
+        startCount += 1
         guard timer == nil else { return }
         resetBaselines()
         tick()
@@ -72,6 +78,8 @@ final class SystemStatsDriver: ObservableObject {
     }
 
     func stop() {
+        startCount = max(0, startCount - 1)
+        guard startCount == 0 else { return }
         timer?.invalidate()
         timer = nil
     }
@@ -147,9 +155,9 @@ final class SystemStatsDriver: ObservableObject {
         let cur = processSampler.sampleProcesses()
         if let prev = prevProc, let last = lastProcSampleTime {
             let dt = now - last
-            topCPU = ProcessTop.topByCPU(prev: prev, cur: cur, dtSeconds: dt)
+            topCPU = ProcessTop.topByCPU(prev: prev, cur: cur, dtSeconds: dt, limit: Self.topProcessCount)
         }
-        topRAM = ProcessTop.topByRAM(cur)
+        topRAM = ProcessTop.topByRAM(cur, limit: Self.topProcessCount)
         prevProc = cur
         lastProcSampleTime = now
     }

@@ -178,7 +178,7 @@ struct WatchSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("监控仓库").font(.headline)
+            Text("监控仓库").font(WFont.title)
             addRepoForm
             Divider()
             repoList

@@ -33,6 +33,8 @@ final class AppServices: ObservableObject {
     let applier: EventApplier
     let spool: SpoolWatcher
     let watcher: PRWatcher
+    let github: GitHubClient
+    let git: GitRunner
     let coordinator: FixCoordinator
     let midnight: MidnightDriver
     let tick: TickDriver
@@ -65,8 +67,8 @@ final class AppServices: ObservableObject {
         applier = EventApplier(config: config)
 
         let processRunner = SystemProcessRunner()
-        let github = GHCLIClient(runner: processRunner)
-        let git = CLIGitRunner(runner: processRunner)
+        github = GHCLIClient(runner: processRunner)
+        git = CLIGitRunner(runner: processRunner)
         let claude = CLIClaudeRunner(runner: processRunner)
 
         // Both watchers read the same flag instance; no `self` capture needed.
@@ -89,7 +91,7 @@ final class AppServices: ObservableObject {
         let sharedConfig = config
         coordinator = FixCoordinator(
             db: db,
-            makeRunner: {
+            makeRunner: { [git, github] in
                 FixRunner(git: git, claude: claude, gh: github,
                           db: sharedDB, config: sharedConfig, worktreesRoot: worktreesRoot)
             },
@@ -121,7 +123,8 @@ final class AppServices: ObservableObject {
 
         tick = TickDriver(db: db, applier: applier, config: config, pausedProvider: pausedRef)
 
-        systemStats = SystemStatsDriver()
+        let shotHist = ProcessInfo.processInfo.environment["CGSHOT"] != nil ? 2 : 10
+        systemStats = SystemStatsDriver(historyEveryTicks: shotHist)
         claudeUsage = ClaudeUsageDriver()
         thermal = ThermalMonitor()
     }
@@ -182,11 +185,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var iconTimer: Timer?
     private var petChangeObserver: NSObjectProtocol?
 
+    private var shotWindow: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let services = try? AppServices() else { return }
         self.services = services
         services.start()
         installMenuBar(services)
+        if let mode = ProcessInfo.processInfo.environment["CGSHOT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.presentScreenshotHarness(mode)
+            }
+        }
+    }
+
+    private func presentScreenshotHarness(_ mode: String) {
+        guard let services, let petModel = petPanelModel, let agentModel = agentActivityModel,
+              let island = islandModel else { return }
+        services.systemStats.start()
+        let statsTabs: [String: StatsTab] = [
+            "overview": .overview, "system": .system, "models": .models,
+            "growth": .growth, "work": .work, "leaderboard": .leaderboard,
+        ]
+        if let tab = statsTabs[mode] {
+            openStats(services, select: tab)
+            return
+        }
+        let card = DropdownCard(
+            petModel: petModel, agentModel: agentModel, services: services,
+            driver: services.systemStats, usageDriver: services.claudeUsage, islandModel: island,
+            onOpenStats: {}, onOpenSystemStats: {}, onToggleIsland: { _ in },
+            onOpenSettings: {}, onJump: { _ in })
+        let hosting = NSHostingController(rootView: card)
+        hosting.view.layoutSubtreeIfNeeded()
+        let size = hosting.view.fittingSize
+        let win = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        win.contentViewController = hosting
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.center()
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        shotWindow = win
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -256,6 +297,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onOpenStats: { [weak self] in
                     self?.dropdown?.hide()
                     self?.openStats(services, select: .overview)
+                },
+                onOpenSystemStats: { [weak self] in
+                    self?.dropdown?.hide()
+                    self?.openStats(services, select: .system)
                 },
                 onToggleIsland: { [weak self] on in
                     self?.islandController?.setEnabled(on)
@@ -372,8 +417,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             watcher: services.watcher,
             coordinator: services.coordinator,
             syncDriver: services.syncDriver,
+            systemStats: services.systemStats,
             db: services.db,
             config: services.config,
+            github: services.github,
+            git: services.git,
             leaderboard: services.leaderboard,
             githubClientID: services.config.resolvedLeaderboard.githubClientID,
             onOpenSettings: { [weak self] in self?.settingsWindow?.show() }
