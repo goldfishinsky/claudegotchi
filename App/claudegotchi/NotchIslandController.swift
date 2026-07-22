@@ -25,10 +25,10 @@ enum IslandMetric {
     static var bannerReserve: CGFloat { bannerGap + bannerHeight }
 
     // Right-lobe collision clamp: keep the pet lobe this far clear of the nearest
-    // menu-bar status item, and hide the pet entirely once the clamped lobe would
-    // fall below the floor rather than overlap.
+    // menu-bar status item.
     static let lobeGap: CGFloat = 6
     static let lobeFloor: CGFloat = 30
+    static let peekFloor: CGFloat = 16
 }
 
 // MARK: - motion
@@ -41,7 +41,6 @@ enum IslandMotion {
     static let settle = Animation.spring(response: 0.40, dampingFraction: 0.84, blendDuration: 0)
     static let content = Animation.spring(response: 0.32, dampingFraction: 0.82, blendDuration: 0)
     static let hover = Animation.spring(response: 0.26, dampingFraction: 0.72, blendDuration: 0)
-    static let badge = Animation.spring(response: 0.30, dampingFraction: 0.6, blendDuration: 0)
     static let pulseUp = Animation.spring(response: 0.13, dampingFraction: 0.68, blendDuration: 0)
     static let pulseDown = Animation.spring(response: 0.19, dampingFraction: 0.8, blendDuration: 0)
     static let bounceUp = Animation.spring(response: 0.16, dampingFraction: 0.5, blendDuration: 0)
@@ -220,13 +219,9 @@ private struct DisplayStrip: Equatable {
     let completion: CompletionReveal?
 }
 
-private enum MetricEdge: Hashable { case left, drop }
-
-private struct MetricKey: PreferenceKey {
-    static var defaultValue: [MetricEdge: CGFloat] = [:]
-    static func reduce(value: inout [MetricEdge: CGFloat], nextValue: () -> [MetricEdge: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
-    }
+private struct BannerReserveKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// Bookkeeping the pet-wobble edge detector mutates every rendered frame without
@@ -238,18 +233,18 @@ private final class MotionBook {
 
 struct NotchIslandView: View {
     @ObservedObject var petModel: PetPanelModel
-    @ObservedObject var agentModel: AgentActivityModel
     @ObservedObject var island: IslandModel
     @ObservedObject var chrome: IslandChrome
     let notchWidth: CGFloat
-    let lobeWidth: CGFloat
     let petLobeWidth: CGFloat
+    let petRenderWidth: CGFloat
+    let petPeeking: Bool
     let height: CGFloat
     var onHover: (Bool) -> Void
     var onClick: () -> Void
     var onAlertClick: (PermissionRequest) -> Void
     var onCompletionClick: (CompletionReveal) -> Void
-    var onMetrics: (CGFloat, CGFloat) -> Void
+    var onMetrics: (CGFloat) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shownStrip: DisplayStrip?
@@ -261,7 +256,6 @@ struct NotchIslandView: View {
     @State private var book = MotionBook()
 
     private var theme: WarmTheme { WarmTheme(scheme: .dark) }
-    private var hasLeftLobe: Bool { agentModel.agents.count > 0 }
     private let coral = rgb(1.0, 0.62, 0.46)
     private let mint = rgb(0.52, 0.86, 0.56)
     private let glow = rgb(1.0, 0.72, 0.36)
@@ -288,13 +282,13 @@ struct NotchIslandView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.clear.allowsHitTesting(false)
-                .preference(key: MetricKey.self,
-                            value: [.drop: shownStrip != nil ? IslandMetric.bannerReserve : 0])
+                .preference(key: BannerReserveKey.self,
+                            value: shownStrip != nil ? IslandMetric.bannerReserve : 0)
             bannerLayer
             islandChrome
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onPreferenceChange(MetricKey.self) { m in onMetrics(m[.left] ?? 0, m[.drop] ?? 0) }
+        .onPreferenceChange(BannerReserveKey.self) { onMetrics($0) }
         .onChange(of: desiredStrip?.key ?? "") { _ in syncStrip() }
         .onAppear { syncStrip() }
     }
@@ -318,9 +312,6 @@ struct NotchIslandView: View {
 
     private var islandArea: some View {
         HStack(spacing: 0) {
-            badgeLobe
-                .frame(width: hasLeftLobe ? lobeWidth : 0)
-                .background(measure(.left))
             Color.clear.frame(width: notchWidth).allowsHitTesting(false)
             petLobe.frame(width: petLobeWidth)
         }
@@ -336,29 +327,7 @@ struct NotchIslandView: View {
             bottomCornerRadius: IslandMetric.bottomCorner))
         .onHover { hovering = $0; onHover($0) }
         .onTapGesture { onClick() }
-        .animation(IslandMotion.morph, value: hasLeftLobe)
-    }
-
-    private func measure(_ edge: MetricEdge) -> some View {
-        GeometryReader { g in
-            Color.clear.preference(key: MetricKey.self, value: [edge: g.size.width])
-        }
-    }
-
-    private var badgeLobe: some View {
-        let count = agentModel.agents.count
-        return Text(count > 9 ? "9+" : "\(count)")
-            .font(.system(size: 11, weight: .heavy, design: .rounded))
-            .foregroundStyle(.white)
-            .contentTransition(.numericText())
-            .animation(IslandMotion.badge, value: count)
-            .padding(.horizontal, 5)
-            .frame(minWidth: 22, minHeight: 20)
-            .background(Capsule().fill(
-                LinearGradient(colors: Candy.violet, startPoint: .top, endPoint: .bottom)))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .scaleEffect(hasLeftLobe ? 1 : 0.4)
-            .opacity(hasLeftLobe ? 1 : 0)
+        .animation(IslandMotion.morph, value: petLobeWidth)
     }
 
     @ViewBuilder
@@ -376,7 +345,9 @@ struct NotchIslandView: View {
                         onTap: { onClick() },
                         onScene: { scene, _ in reactToPet(scene.behavior) }
                     )
-                    .offset(x: wobble)
+                    .frame(width: petRenderWidth, height: height)
+                    .offset(x: wobble + (petPeeking ? -petRenderWidth / 2 : 0))
+                    .frame(width: petLobeWidth, height: height, alignment: .leading)
                 }
             } else {
                 Text("🥚").font(.system(size: 15))
@@ -573,6 +544,12 @@ enum MenuBarProbe {
 
 // MARK: - controller
 
+private struct PetLobeLayout: Equatable {
+    let visible: CGFloat
+    let render: CGFloat
+    let peeking: Bool
+}
+
 @MainActor
 final class NotchIslandController {
     private let dropdown: MenuDropdownController
@@ -589,10 +566,8 @@ final class NotchIslandController {
     private var geometry: NotchGeometry?
     private var appliedHeightOffset: CGFloat = .nan
     private var appliedWidthOffset: CGFloat = .nan
-    // Latest left-lobe width the SwiftUI layer measured mid-spring plus the
-    // downward banner reserve; the window frame tracks these so its bounds follow
-    // the animated shape and the banner has room to drop below.
-    private var lastLobeW: CGFloat = 0
+    // Latest downward banner reserve the SwiftUI layer measured; the window frame
+    // tracks it so the banner has room to drop below.
     private var lastDrop: CGFloat = 0
     private var repositionScheduled = false
 
@@ -702,7 +677,7 @@ final class NotchIslandController {
     }
 
     /// Re-derive geometry when the user's tuning offsets change, swap the hosted
-    /// root (so the SwiftUI `height`/`lobeWidth` update) and re-frame in place.
+    /// root (so the SwiftUI `height`/`petLobeWidth` update) and re-frame in place.
     private func applyGeometryIfNeeded() {
         let h = CGFloat(settings.islandHeightOffset)
         let w = CGFloat(settings.islandWidthOffset)
@@ -789,15 +764,17 @@ final class NotchIslandController {
     // MARK: panel
 
     private func makeRoot(_ geo: NotchGeometry) -> AnyView {
-        AnyView(NotchIslandView(
-            petModel: petModel, agentModel: agentModel, island: island, chrome: chrome,
-            notchWidth: geo.notchWidth, lobeWidth: geo.lobeWidth,
-            petLobeWidth: effectivePetLobe(geo), height: geo.islandHeight,
+        let lobe = petLobeLayout(geo)
+        return AnyView(NotchIslandView(
+            petModel: petModel, island: island, chrome: chrome,
+            notchWidth: geo.notchWidth,
+            petLobeWidth: lobe.visible, petRenderWidth: lobe.render, petPeeking: lobe.peeking,
+            height: geo.islandHeight,
             onHover: { [weak self] in self?.islandHover($0) },
             onClick: { [weak self] in self?.islandClick() },
             onAlertClick: { [weak self] in self?.alertClick($0) },
             onCompletionClick: { [weak self] in self?.completionClick($0) },
-            onMetrics: { [weak self] lobe, drop in self?.islandMetrics(leftLobe: lobe, drop: drop) }
+            onMetrics: { [weak self] drop in self?.islandMetrics(drop: drop) }
         ))
     }
 
@@ -807,7 +784,7 @@ final class NotchIslandController {
         // tries to drive window-size constraints from its content.
         hosting.sizingOptions = []
         self.hosting = hosting
-        let contentRect = paddedFrame(geo, lobeW: 0, drop: 0)
+        let contentRect = paddedFrame(geo, drop: 0)
         let panel = IslandPanel(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
@@ -835,7 +812,6 @@ final class NotchIslandController {
         panel.isReleasedWhenClosed = false
         panel.orderFrontRegardless()
         self.panel = panel
-        lastLobeW = 0
         lastDrop = 0
         chrome.dropdownOpen = false
         startClampProbe()
@@ -861,29 +837,27 @@ final class NotchIslandController {
         notifyPresence()
     }
 
-    /// The window frame for the measured left-lobe width and downward banner
-    /// reserve: the tight island pinned to the notch, outset by the motion pad so
-    /// the pulse, glow, and slide have room, and extended downward by `drop` so the
-    /// banner can hang below. Left/right edges are computed from the notch, never
-    /// from the leading edge, so the notch-clear column always aligns with the
-    /// cutout; the right edge honours the collision-clamped pet lobe.
-    private func paddedFrame(_ geo: NotchGeometry, lobeW: CGFloat, drop: CGFloat) -> NSRect {
+    /// The window frame for the downward banner reserve: the tight island pinned to
+    /// the notch, outset by the motion pad so the pulse, glow, and slide have room,
+    /// and extended downward by `drop` so the banner can hang below. Left/right edges
+    /// are computed from the notch, never from the leading edge, so the notch-clear
+    /// column always aligns with the cutout; the right edge honours the
+    /// collision-clamped pet lobe.
+    private func paddedFrame(_ geo: NotchGeometry, drop: CGFloat) -> NSRect {
         let n = geo.notchRect
-        let left = n.minX - lobeW - IslandMetric.motionPadX
-        let right = n.minX + geo.notchWidth + effectivePetLobe(geo) + IslandMetric.motionPadX
+        let left = n.minX - IslandMetric.motionPadX
+        let right = n.minX + geo.notchWidth + petLobeLayout(geo).visible + IslandMetric.motionPadX
         let originY = n.maxY - geo.islandHeight - IslandMetric.motionPadBottom - drop
         let heightTotal = geo.islandHeight + IslandMetric.motionPadTop + IslandMetric.motionPadBottom + drop
         return NSRect(x: left, y: originY, width: right - left, height: heightTotal)
     }
 
-    /// The SwiftUI layer measures the animating left-lobe width and the banner
-    /// reserve every frame; the window bounds follow so the black shape morphs with
-    /// visible overshoot and the banner has room to drop, without ever clipping. The
-    /// resize is coalesced onto the next runloop hop so it never reenters the
-    /// SwiftUI display cycle that emitted the measurement.
-    private func islandMetrics(leftLobe lobe: CGFloat, drop: CGFloat) {
-        guard lobe != lastLobeW || drop != lastDrop else { return }
-        lastLobeW = lobe
+    /// The SwiftUI layer measures the banner reserve every frame; the window bounds
+    /// follow so the banner has room to drop, without ever clipping. The resize is
+    /// coalesced onto the next runloop hop so it never reenters the SwiftUI display
+    /// cycle that emitted the measurement.
+    private func islandMetrics(drop: CGFloat) {
+        guard drop != lastDrop else { return }
         lastDrop = drop
         guard !repositionScheduled else { return }
         repositionScheduled = true
@@ -895,7 +869,7 @@ final class NotchIslandController {
 
     private func positionWindow() {
         guard let panel, let geo = geometry else { return }
-        let frame = paddedFrame(geo, lobeW: lastLobeW, drop: lastDrop)
+        let frame = paddedFrame(geo, drop: lastDrop)
         if panel.frame != frame { panel.setFrame(frame, display: false) }
     }
 
@@ -932,14 +906,14 @@ final class NotchIslandController {
 
     // MARK: right-lobe collision clamp
 
-    /// The pet lobe width after clamping against the nearest menu-bar item: the
-    /// full lobe when there is room, a shrunk lobe down to the floor, or 0 (pet
-    /// hidden) once even the floor would overlap.
-    private func effectivePetLobe(_ geo: NotchGeometry) -> CGFloat {
+    /// The pet lobe layout after clamping against the nearest menu-bar item.
+    private func petLobeLayout(_ geo: NotchGeometry) -> PetLobeLayout {
         let base = geo.lobeWidth
-        if rightLobeAllowance >= base { return base }
-        if rightLobeAllowance < IslandMetric.lobeFloor { return 0 }
-        return rightLobeAllowance
+        let allowance = rightLobeAllowance
+        if allowance >= base { return PetLobeLayout(visible: base, render: base, peeking: false) }
+        if allowance >= IslandMetric.lobeFloor { return PetLobeLayout(visible: allowance, render: allowance, peeking: false) }
+        if allowance >= IslandMetric.peekFloor { return PetLobeLayout(visible: allowance, render: base, peeking: true) }
+        return PetLobeLayout(visible: 0, render: 0, peeking: false)
     }
 
     /// Probe the menu bar for the nearest right-side status item and re-derive how
@@ -956,9 +930,9 @@ final class NotchIslandController {
         guard result.trustworthy else { return }
         let allowance = result.nearestMinX.map { $0 - geo.notchRect.maxX - IslandMetric.lobeGap }
             ?? .greatestFiniteMagnitude
-        let oldLobe = effectivePetLobe(geo)
+        let oldLobe = petLobeLayout(geo)
         rightLobeAllowance = allowance
-        guard effectivePetLobe(geo) != oldLobe else { return }
+        guard petLobeLayout(geo) != oldLobe else { return }
         hosting?.rootView = makeRoot(geo)
         positionWindow()
     }
