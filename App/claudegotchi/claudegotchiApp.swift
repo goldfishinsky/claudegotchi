@@ -258,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         petModel.theaterSound = { [weak soundController] scene, nowMs in
             soundController?.theaterScene(scene, nowMs: nowMs)
         }
-        settingsWindow = SettingsWindowController(store: settingsStore, sound: soundController)
+        settingsWindow = SettingsWindowController(store: settingsStore, sound: soundController, db: services.db)
 
         let agentModel = AgentActivityModel(db: services.db)
         agentModel.filterProvider = { [weak settingsStore] in settingsStore?.sessionFilter ?? .empty }
@@ -392,7 +392,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let pet = try? Pet.fetchAlive(from: services.db) else { return }
         let tier = WorkPressure.tier((try? PRStore.allPRs(in: services.db)) ?? [], config: services.config)
         let visual = PetMood.derive(pet: pet, pressure: tier)
-        let image = PixelPetRenderer.renderToNSImage(visual: visual, species: pet.species, size: 18)
+        let image = PixelPetRenderer.renderToNSImage(
+            visual: visual, species: pet.species, size: 18, genome: pet.genome)
         image.isTemplate = false
         statusItem?.button?.image = image
     }

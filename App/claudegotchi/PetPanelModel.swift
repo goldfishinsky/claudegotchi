@@ -6,6 +6,8 @@ import PetCore
 final class PetPanelModel: ObservableObject {
     @Published private(set) var visual: PetVisual?
     @Published private(set) var species: String = ""
+    @Published private(set) var look: PetLook = .base
+    private var lastLookKey: String?
     @Published private(set) var fullness: Double = 0
     @Published private(set) var stamina: Double = 0
     @Published private(set) var intimacy: Double = 0
@@ -66,6 +68,11 @@ final class PetPanelModel: ObservableObject {
         }
         hasPet = true
         species = pet.species
+        let lookKey = "\(pet.genome.map(String.init) ?? "nil"):\(pet.species)"
+        if lookKey != lastLookKey {
+            look = PetLook.make(genome: pet.genome, species: pet.species)
+            lastLookKey = lookKey
+        }
         fullness = pet.fullness
         stamina = pet.stamina
         intimacy = pet.intimacy

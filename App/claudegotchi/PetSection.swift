@@ -89,7 +89,7 @@ struct PetSection: View {
             TheaterPetView(
                 visual: visual, species: petModel.species,
                 signals: petModel.makeSignals(memPressureHigh: memHigh),
-                theme: theme,
+                theme: theme, look: petModel.look,
                 onPet: { petModel.handlePetClick() },
                 onPetting: { petModel.handlePetting() },
                 onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }

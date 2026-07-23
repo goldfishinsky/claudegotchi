@@ -341,6 +341,57 @@ public enum PetTheater {
         }
     }
 
+    /// Personality-biased fidget: neutral (empty weights) keeps the coprime rotation
+    /// unchanged; a genome pet biases the pick via its `fidgetWeights` (mapped to the
+    /// pool, extra dims dropped) with `blinkRate` scaling the blink-hold variant.
+    static func idleFidget(bucket: Int64, personality: TheaterPersonality) -> Behavior {
+        guard !personality.fidgetWeights.isEmpty else { return idleFidget(bucket: bucket) }
+        let builders: [() -> Behavior] = [
+            fidgetEarScratch, fidgetLookLeft, fidgetLookRight, fidgetBlinkHold, fidgetStretch,
+        ]
+        var weights = poolWeights(personality.fidgetWeights, count: builders.count)
+        weights[3] = max(0, weights[3] * personality.blinkRate)
+        return builders[weightedFidget(weights, bucket: bucket)]()
+    }
+
+    static func poolWeights(_ w: [Double], count: Int) -> [Double] {
+        if count <= w.count { return Array(w.prefix(count)) }
+        let avg = w.isEmpty ? 1 : w.reduce(0, +) / Double(w.count)
+        return w + Array(repeating: avg, count: count - w.count)
+    }
+
+    static func weightedFidget(_ weights: [Double], bucket: Int64) -> Int {
+        let total = weights.reduce(0, +)
+        guard total > 0 else { return 0 }
+        let roll = coin(salt: "fidget", bucket: bucket) * total
+        var acc = 0.0
+        for (i, wt) in weights.enumerated() {
+            acc += wt
+            if roll < acc { return i }
+        }
+        return weights.count - 1
+    }
+
+    /// Chatty pets (≥1.0) always speak — identical to the pre-genome behaviour;
+    /// shy pets skip a fraction of speech bubbles, decided once per loop.
+    static func bubbleAllowed(_ chattiness: Double, loopBucket: Int64, kind: TheaterBehavior) -> Bool {
+        guard chattiness < 1.0 else { return true }
+        return coin(salt: "chatter." + kind.rawValue, bucket: loopBucket) < chattiness
+    }
+
+    static func scaledClock(_ timeMs: Int64, _ speed: Double) -> Int64 {
+        guard speed != 1.0 else { return timeMs }
+        return Int64((Double(timeMs) * speed).rounded())
+    }
+
+    private static func coin(salt: String, bucket: Int64) -> Double {
+        var z = GenomeRNG.fnv1a64(salt) ^ UInt64(bitPattern: bucket)
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        z ^= z >> 31
+        return Double(z >> 11) / Double(UInt64(1) << 53)
+    }
+
     public static func loopMs(_ k: TheaterBehavior, signals: TheaterSignals = TheaterSignals()) -> Int64 {
         behavior(k, signals: signals).loopMs
     }
@@ -351,13 +402,16 @@ public enum PetTheater {
         return .foodS
     }
 
-    public static func scene(signals: TheaterSignals, timeMs: Int64) -> SceneFrame {
+    public static func scene(
+        signals: TheaterSignals, timeMs: Int64, personality: TheaterPersonality = .neutral
+    ) -> SceneFrame {
+        let clock = scaledClock(timeMs, personality.motionSpeed)
         let kind = selectBehavior(signals)
         let b = kind == .idle
-            ? idleFidget(bucket: floorDivInt(timeMs, fidgetLoopMs))
+            ? idleFidget(bucket: floorDivInt(clock, fidgetLoopMs), personality: personality)
             : behavior(kind, signals: signals)
         let loop = b.loopMs
-        let loopPos = ((timeMs % loop) + loop) % loop
+        let loopPos = ((clock % loop) + loop) % loop
         let frac = Double(loopPos) / Double(loop)
 
         // locate current phase
@@ -385,7 +439,11 @@ public enum PetTheater {
             frame = Int(localT * s) % 2
             offY -= abs(sin(localT * s * .pi)) * 0.5
         }
-        let squash = lerp(phase.squashFrom, phase.squashTo, e)
+        var squash = lerp(phase.squashFrom, phase.squashTo, e)
+
+        // personality bounce: scale vertical travel + squash deviation (identity at 1.0)
+        offY *= personality.bounceAmplitude
+        squash = 1.0 + (squash - 1.0) * personality.bounceAmplitude
 
         // resolve active emissions across every phase (periodic, seamless)
         var emissions: [ActiveEmission] = []
@@ -410,6 +468,10 @@ public enum PetTheater {
         var bubble = phase.bubble
         if kind == .idle, signals.hungry, bubble == nil, pIndex == 2 { bubble = "…" }
         if kind == .work, signals.memPressureHigh, bubble == nil, pIndex == 3 { bubble = "!" }
+        if bubble != nil,
+           !bubbleAllowed(personality.chattiness, loopBucket: floorDivInt(clock, loop), kind: kind) {
+            bubble = nil
+        }
 
         // Overlay reaction channel: a cooldown-blocked tap composes a small squash
         // bounce + one dim mote over whatever the pet is already doing, without

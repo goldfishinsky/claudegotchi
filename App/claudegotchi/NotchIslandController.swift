@@ -342,6 +342,7 @@ struct NotchIslandView: View {
                     TheaterPetView(
                         visual: visual, species: petModel.species,
                         signals: petModel.makeSignals(memPressureHigh: false), theme: theme,
+                        look: petModel.look,
                         onTap: { onClick() },
                         onScene: { scene, _ in reactToPet(scene.behavior) }
                     )

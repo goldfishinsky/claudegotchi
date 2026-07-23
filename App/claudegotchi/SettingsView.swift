@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import PetCore
 
 enum SettingsTab: String, CaseIterable, Identifiable {
@@ -34,8 +35,10 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
     let sound: SoundController
+    let db: DatabaseQueue
     @Environment(\.colorScheme) private var scheme
     @State private var tab: SettingsTab = .general
+    @State private var rerolling = false
 
     var body: some View {
         let t = WarmTheme(scheme: scheme)
@@ -168,7 +171,27 @@ struct SettingsView: View {
                     subtitle: "需要读取 Claude Code 的钥匙串凭证，可能触发系统授权弹窗",
                     isOn: $store.showSubscriptionUsage)
             }
+            group(t, "宠物") {
+                HStack(alignment: .center, spacing: 10) {
+                    settingLabel(t, "重抽宠物（测试）", "随机换一只宠物，成长数值不变")
+                    Spacer(minLength: 8)
+                    Button { rerollPet() } label: {
+                        Text("🎲 重抽宠物（测试）")
+                    }
+                    .buttonStyle(WarmButtonStyle())
+                    .disabled(rerolling)
+                }
+                .padding(.vertical, 4)
+            }
         }
+    }
+
+    private func rerollPet() {
+        guard !rerolling else { return }
+        rerolling = true
+        try? PetGenomeReroll.reroll(db: db, seed: UInt64.random(in: UInt64.min...UInt64.max))
+        postPetDidChange()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { rerolling = false }
     }
 
     private func offsetRow(

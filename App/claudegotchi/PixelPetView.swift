@@ -13,9 +13,38 @@ enum PixelPalette {
     }
 
     static func color(_ index: UInt8) -> Color? {
+        color(index, in: PixelSpeciesCatalog.palette)
+    }
+
+    static func color(_ index: UInt8, in palette: [UInt32]) -> Color? {
+        guard index != 0, Int(index) < palette.count else { return nil }
+        let (r, g, b, a) = rgba(palette[Int(index)])
+        return Color(.sRGB, red: r, green: g, blue: b, opacity: a)
+    }
+
+    /// Base-palette lookup with a genome hue rotation, used for particles so a
+    /// pet's confetti/sparks pick up its personality tint. 0° is the identity.
+    static func color(_ index: UInt8, hueShiftDegrees: Double) -> Color? {
         guard index != 0, Int(index) < PixelSpeciesCatalog.palette.count else { return nil }
         let (r, g, b, a) = rgba(PixelSpeciesCatalog.palette[Int(index)])
-        return Color(.sRGB, red: r, green: g, blue: b, opacity: a)
+        guard hueShiftDegrees != 0 else { return Color(.sRGB, red: r, green: g, blue: b, opacity: a) }
+        let (h, s, v) = rgbToHSB(r, g, b)
+        var nh = (h + hueShiftDegrees / 360).truncatingRemainder(dividingBy: 1)
+        if nh < 0 { nh += 1 }
+        return Color(hue: nh, saturation: s, brightness: v, opacity: a)
+    }
+
+    private static func rgbToHSB(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
+        let mx = max(r, g, b), mn = min(r, g, b), d = mx - mn
+        var h = 0.0
+        if d != 0 {
+            if mx == r { h = ((g - b) / d).truncatingRemainder(dividingBy: 6) }
+            else if mx == g { h = (b - r) / d + 2 }
+            else { h = (r - g) / d + 4 }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        return (h, mx == 0 ? 0 : d / mx, mx)
     }
 }
 
@@ -29,14 +58,17 @@ struct PixelPetView: View {
     let visual: PetVisual
     let species: String
     let animationSpeed: Double
+    let appearance: PetAppearance
     var onTap: (() -> Void)?
 
     @State private var frameIndex = 0
 
-    init(visual: PetVisual, species: String, animationSpeed: Double = 1.0, onTap: (() -> Void)? = nil) {
+    init(visual: PetVisual, species: String, animationSpeed: Double = 1.0,
+         appearance: PetAppearance = .base, onTap: (() -> Void)? = nil) {
         self.visual = visual
         self.species = species
         self.animationSpeed = animationSpeed
+        self.appearance = appearance
         self.onTap = onTap
     }
 
@@ -64,7 +96,7 @@ struct PixelPetView: View {
             drawGenericFallback(in: &ctx, size: size)
             return
         }
-        let frame = frames[tickCount % frames.count]
+        let frame = appearance.transformedFrame(frames[tickCount % frames.count])
         let gridSize = frame.count
         guard gridSize > 0 else { return }
         let cell = floor(side / CGFloat(gridSize))
@@ -74,7 +106,7 @@ struct PixelPetView: View {
 
         for (r, row) in frame.enumerated() {
             for (c, idx) in row.enumerated() {
-                guard let color = PixelPalette.color(idx) else { continue }
+                guard let color = PixelPalette.color(idx, in: appearance.palette) else { continue }
                 let rect = CGRect(
                     x: originX + CGFloat(c) * cell,
                     y: originY + CGFloat(r) * cell,
@@ -111,14 +143,17 @@ struct PixelPetView: View {
 }
 
 enum PixelPetRenderer {
-    static func renderToNSImage(visual: PetVisual, species: String, size: CGFloat = 18) -> NSImage {
+    static func renderToNSImage(visual: PetVisual, species: String, size: CGFloat = 18,
+                                genome: Int64? = nil) -> NSImage {
+        let appearance = PetLook.make(genome: genome, species: species).appearance
         let image = NSImage(size: NSSize(width: size, height: size))
         image.lockFocus()
         defer { image.unlockFocus() }
         guard let cgctx = NSGraphicsContext.current?.cgContext else { return image }
 
         let frames = framesFor(visual: visual, species: species)
-        if let frames, let frame = frames.first {
+        if let frames, let raw = frames.first {
+            let frame = appearance.transformedFrame(raw)
             let gridSize = frame.count
             guard gridSize > 0 else { return image }
             let cell = floor(size / CGFloat(gridSize))
@@ -127,8 +162,8 @@ enum PixelPetRenderer {
             let originY = (size - used) / 2
             for (r, row) in frame.enumerated() {
                 for (c, idx) in row.enumerated() {
-                    guard idx != 0, Int(idx) < PixelSpeciesCatalog.palette.count else { continue }
-                    let (cr, cg, cb, ca) = PixelPalette.rgba(PixelSpeciesCatalog.palette[Int(idx)])
+                    guard idx != 0, Int(idx) < appearance.palette.count else { continue }
+                    let (cr, cg, cb, ca) = PixelPalette.rgba(appearance.palette[Int(idx)])
                     cgctx.setFillColor(red: cr, green: cg, blue: cb, alpha: ca)
                     // Canvas rows run top→bottom; NSImage origin is bottom-left.
                     let y = originY + (CGFloat(gridSize - 1 - r)) * cell

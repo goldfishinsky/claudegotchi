@@ -10,6 +10,7 @@ struct TheaterPetView: View {
     let species: String
     let signals: TheaterSignals
     let theme: WarmTheme
+    var look: PetLook = .base
     var onTap: (() -> Void)? = nil
     /// Interactive dropdown theater: returns whether the tap was cooldown-counted.
     var onPet: (() -> Bool)? = nil
@@ -60,7 +61,7 @@ struct TheaterPetView: View {
             if petting { s.pettingActive = true }
             if let comboUntilMs, timeMs < comboUntilMs { s.comboTap = true }
         }
-        let scene = PetTheater.scene(signals: s, timeMs: timeMs)
+        let scene = PetTheater.scene(signals: s, timeMs: timeMs, personality: look.personality)
         onScene?(scene, timeMs)
         return ZStack(alignment: .topLeading) {
             Canvas { ctx, canvasSize in draw(scene, in: &ctx, size: canvasSize) }
@@ -145,7 +146,7 @@ struct TheaterPetView: View {
             drawMatrix(PixelProps.matrix(prop.sprite), petHomeX + prop.x, petHomeY + prop.y, fill)
         }
         if let frames = framesFor(scene.frameKey), !frames.isEmpty {
-            drawPet(frames[scene.frame % frames.count],
+            drawPet(look.appearance.transformedFrame(frames[scene.frame % frames.count]),
                     offX: scene.petOffsetX, offY: scene.petOffsetY, squash: scene.squash, fill)
         }
         for prop in scene.props where prop.front {
@@ -180,7 +181,7 @@ struct TheaterPetView: View {
         let anchorGY = petHomeY + offY + 16
         for (r, row) in frame.enumerated() {
             for (col, idx) in row.enumerated() {
-                guard let color = PixelPalette.color(idx) else { continue }
+                guard let color = PixelPalette.color(idx, in: look.appearance.palette) else { continue }
                 let gx = anchorGX + (Double(col) - 8) * squashX
                 let gy = anchorGY + (Double(r) - 16) * squash
                 fill(gx, gy, squashX, squash, color)
@@ -195,24 +196,27 @@ struct TheaterPetView: View {
                               _ fill: (Double, Double, Double, Double, Color) -> Void) {
         let a = max(0, min(1, p.alpha))
         if a <= 0.02 { return }
+        let hue = look.personality.particleHueShift
+        func tint(_ idx: UInt8, _ fallback: Color) -> Color {
+            (PixelPalette.color(idx, hueShiftDegrees: hue) ?? fallback).opacity(a)
+        }
         let ax = petHomeX + p.x, ay = petHomeY + p.y
         switch kind {
         case .heartRise:
-            let col = (PixelPalette.color(22) ?? .pink).opacity(a)
+            let col = tint(22, .pink)
             for (dr, dc) in heartShape { fill(ax + Double(dc) * 0.6, ay + Double(dr) * 0.6, 0.6, 0.6, col) }
         case .zDrift:
-            let col = (PixelPalette.color(5) ?? .blue).opacity(a)
+            let col = tint(5, .blue)
             for (dr, dc) in zShape { fill(ax + Double(dc) * 0.55, ay + Double(dr) * 0.55, 0.55, 0.55, col) }
         case .confettiFall:
             let cols: [UInt8] = [22, 25, 8, 4, 21]
-            let col = (PixelPalette.color(cols[seed % cols.count]) ?? .orange).opacity(a)
-            fill(ax, ay, 1, 1, col)
+            fill(ax, ay, 1, 1, tint(cols[seed % cols.count], .orange))
         case .keystrokeSparks:
-            fill(ax, ay, 0.7, 0.7, (PixelPalette.color(21) ?? .cyan).opacity(a))
+            fill(ax, ay, 0.7, 0.7, tint(21, .cyan))
         case .crumbBurst:
-            fill(ax, ay, 0.7, 0.7, (PixelPalette.color(23) ?? .brown).opacity(a))
+            fill(ax, ay, 0.7, 0.7, tint(23, .brown))
         case .tapDust:
-            fill(ax, ay, 0.55, 0.55, (PixelPalette.color(20) ?? .gray).opacity(a))
+            fill(ax, ay, 0.55, 0.55, tint(20, .gray))
         }
     }
 }
