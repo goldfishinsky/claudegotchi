@@ -23,7 +23,7 @@ final class PixelPropsTests: XCTestCase {
     }
 
     func testPaletteStillWithinCap() {
-        XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 32)
+        XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 64)
     }
 
     func testPropsHaveVisiblePixels() {

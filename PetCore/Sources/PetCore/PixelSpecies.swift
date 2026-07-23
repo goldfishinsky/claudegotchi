@@ -5,6 +5,7 @@ public typealias PixelFrame = [[UInt8]]
 public struct PixelSpeciesDef: Equatable {
     public let id: String
     public let nameZh: String
+    public let ink: InkIndices
     public let stages: [(id: String, minXp: Int)]
     public let frames: [String: [PixelFrame]]
 
@@ -44,9 +45,40 @@ public enum PixelSpeciesCatalog {
         0xFFE0_A96B, // 23 prop: bento box (tan)
         0xFFF2_946B, // 24 prop: salmon (food accent)
         0xFFFF_D36B, // 25 prop: confetti gold
+        0xFFC8_965A, // 26 dog body (tan)
+        0xFF8A_5A34, // 27 dog dark (brown ear/tail)
+        0xFFF3_E2C4, // 28 dog muzzle (cream)
+        0xFF4A_3020, // 29 dog nose (dark brown)
+        0xFFFF_8A3C, // 30 goldfish body (orange)
+        0xFFE8_5A28, // 31 goldfish dark (red-orange fin)
+        0xFFFF_D9A0, // 32 goldfish belly (pale gold)
+        0xFFA9_E4F0, // 33 goldfish bubble (cyan)
+        0xFFFF_D24A, // 34 bird body (yellow)
+        0xFFE0_A028, // 35 bird dark (amber beak)
+        0xFFFF_F0BE, // 36 bird belly (cream)
+        0xFF5C_9FE2, // 37 bird wing (blue)
+        0xFFF2_EEE8, // 38 rabbit body (off-white)
+        0xFFCB_C0B6, // 39 rabbit dark (gray shadow)
+        0xFFFF_FFF4, // 40 rabbit light (bright)
+        0xFFF7_A8C0, // 41 rabbit ear/nose (pink)
+        0xFFE7_B564, // 42 hamster body (golden)
+        0xFFB0_7A3C, // 43 hamster dark (brown)
+        0xFFFB_EBC8, // 44 hamster belly (cream)
+        0xFFF0_A87A, // 45 hamster ear/pouch (rosy tan)
+        0xFF77_B85E, // 46 turtle shell (green)
+        0xFF4C_8B3A, // 47 turtle dark (deep green)
+        0xFFCB_E6A6, // 48 turtle shell light
+        0xFFA8_D07C, // 49 turtle skin (yellow-green)
+        0xFFD8_A874, // 50 hedgehog face (tan)
+        0xFF7A_5638, // 51 hedgehog spikes (brown)
+        0xFFF0_D8B4, // 52 hedgehog light (cream)
+        0xFF54_3A22, // 53 hedgehog spike tip (dark)
     ]
 
-    public static let all: [PixelSpeciesDef] = [frog(), slime(), cat(), dragon()]
+    public static let all: [PixelSpeciesDef] = [
+        frog(), slime(), cat(), dragon(),
+        dog(), goldfish(), bird(), rabbit(), hamster(), turtle(), hedgehog(),
+    ]
 
     public static var ids: [String] { all.map(\.id) }
 
@@ -172,6 +204,7 @@ public enum PixelSpeciesCatalog {
         for (k, v) in anims(adult.base, ink, adult.feat, sleep: adult.sleep) { frames[k] = v }
         return PixelSpeciesDef(
             id: id, nameZh: nameZh,
+            ink: InkIndices(body: ink.body, dark: ink.dark, light: ink.light, accent: ink.accent),
             stages: [("baby", 0), ("child", 100), ("adult", 400)],
             frames: frames
         )
@@ -452,6 +485,479 @@ public enum PixelSpeciesCatalog {
             ("baby", baby, Feat(mouthRow: 8, mouthCols: [6, 7, 8, 9], cheek: [(8, 4), (8, 5), (8, 10), (8, 11)], z: [(3, 13), (1, 13)], sweat: (4, 12)), nil),
             ("child", child, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(6, 2), (6, 13)], z: [(3, 13), (1, 13)], sweat: (4, 12)), nil),
             ("adult", adult, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(7, 3), (7, 4), (7, 11), (7, 12)], z: [(2, 13), (0, 13)], sweat: (4, 12)), nil),
+        ])
+    }
+
+    // MARK: - dog 小狗
+
+    private static func dog() -> PixelSpeciesDef {
+        let ink = Ink(body: 26, dark: 27, light: 28, accent: 29)
+        let baby = [
+            "................",
+            "....########....",
+            "..o#OOOOOOOO#o..",
+            ".oo#OOOOOOOO#oo.",
+            ".oo#Oww##wwO#oo.",
+            ".oo#Owx##xwO#oo.",
+            ".oo#OOOOOOOO#oo.",
+            "...#O++++++O#...",
+            "...#O++^^++O#...",
+            "...#OOOOOOOO#...",
+            "...#OOOOOOOO#o..",
+            "...#OOOOOOOO#oo.",
+            "...#oo..oo#.....",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "................",
+            "...##########...",
+            "..o#OOOOOOOO#o..",
+            ".oo#OOOOOOOO#oo.",
+            ".oo#Oww##wwO#oo.",
+            ".oo#Owx##xwO#oo.",
+            ".oo#OOOOOOOO#oo.",
+            ".oo#O++++++O#oo.",
+            "..o#O++^^++O#o..",
+            "...#OO++++OO#...",
+            "...#OOOOOOOO#o..",
+            "...#OOOOOOOO#oo.",
+            "...#OOOOOOOO#...",
+            "...#oo#..#oo#...",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "................",
+            "...##########...",
+            "..o#OOOOOOOO#o..",
+            ".oo#OOOOOOOO#oo.",
+            "ooo#Oww##wwO#ooo",
+            "ooo#Owx##xwO#ooo",
+            ".oo#OOOOOOOO#oo.",
+            ".oo#O++++++O#oo.",
+            "..o#O++^^++O#o..",
+            "...#OO++++OO#...",
+            "...#OOOOOOOO#o..",
+            "...#OOOOOOOO#oo.",
+            "...#OOOOOOOO#oo.",
+            "...#OOOOOOOO#...",
+            "...#oo#..#oo#...",
+            "................",
+        ]
+        return assemble(id: "dog", nameZh: "小狗", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 9, mouthCols: [6, 7, 8, 9], cheek: [(6, 4), (6, 5), (6, 10), (6, 11)], z: [(2, 14), (0, 14)], sweat: (1, 12)), nil),
+            ("child", child, Feat(mouthRow: 9, mouthCols: [6, 7, 8, 9], cheek: [(6, 4), (6, 5), (6, 10), (6, 11)], z: [(2, 14), (0, 14)], sweat: (1, 13)), nil),
+            ("adult", adult, Feat(mouthRow: 9, mouthCols: [6, 7, 8, 9], cheek: [(6, 4), (6, 5), (6, 10), (6, 11)], z: [(2, 14), (0, 14)], sweat: (1, 13)), nil),
+        ])
+    }
+
+    // MARK: - goldfish 小金鱼
+
+    private static func goldfish() -> PixelSpeciesDef {
+        let ink = Ink(body: 30, dark: 31, light: 32, accent: 33)
+        let baby = [
+            "................",
+            "....^^^^^^^.....",
+            "..^^OOOOOO^^....",
+            ".^^OOOOOOOO^^...",
+            ".^OO#ww#ww#OO^..",
+            ".^OO#wx#xw#OO^..",
+            ".^oOOOOOOOOo^...",
+            "..^OO++++OO^....",
+            "...^OOOOOO^.....",
+            "...^^oOOo^^.....",
+            "....^^^^^^......",
+            ".....oooo.......",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "................",
+            "....^^^^^^^.....",
+            "..^^OOOOOOOO^^..",
+            ".^^OOOOOOOOOO^^.",
+            ".^OO#ww#ww#OOO^.",
+            ".^OO#wx#xw#OOO^.",
+            ".^oOOOOOOOOOOo^.",
+            ".^OOO++++++OOO^.",
+            "..^OOO++++OOO^..",
+            "..^^OOOOOOOO^^..",
+            "...^^oOOOOo^^...",
+            "....^^^^^^^^....",
+            ".....oooooo.....",
+            "................",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "................",
+            "...^^^^^^^^^....",
+            ".^^OOOOOOOOOO^^.",
+            ".^OOOOOOOOOOOO^.",
+            "^^OO#ww#ww#OOO^^",
+            "^^OO#wx#xw#OOO^^",
+            "^^oOOOOOOOOOOo^^",
+            "^^OOO++++++OOO^^",
+            ".^OOO++++++OOO^.",
+            ".^^OOOOOOOOOO^^.",
+            "..^^oOOOOOOo^^..",
+            "...^^^^^^^^^^...",
+            "..o..oooooo..o..",
+            "...oo......oo...",
+            "................",
+            "................",
+        ]
+        return assemble(id: "goldfish", nameZh: "小金鱼", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 7, mouthCols: [6, 7, 8], cheek: [(6, 3), (6, 4), (6, 10), (6, 11)], z: [(2, 13), (0, 13)], sweat: (1, 12)), nil),
+            ("child", child, Feat(mouthRow: 7, mouthCols: [6, 7, 8], cheek: [(6, 3), (6, 4), (6, 11), (6, 12)], z: [(2, 14), (0, 14)], sweat: (1, 12)), nil),
+            ("adult", adult, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(6, 3), (6, 4), (6, 11), (6, 12)], z: [(1, 13), (0, 13)], sweat: (1, 12)), nil),
+        ])
+    }
+
+    // MARK: - bird 小鸟
+
+    private static func bird() -> PixelSpeciesDef {
+        let ink = Ink(body: 34, dark: 35, light: 36, accent: 37)
+        let baby = [
+            "................",
+            "....######......",
+            "...#OOOOOOOO#...",
+            "..#OOOOOOOOOO#..",
+            "..#OOww##wwOO#..",
+            "..#OOwx##xwOO#..",
+            "..#O^OOooOO^O#..",
+            "..#O^O++++O^O#..",
+            "...#^O++++O^#...",
+            "...#OOOOOOOO#...",
+            "....#OOOOOO#....",
+            ".....o#..#o.....",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "................",
+            "...##########...",
+            "..#OOOOOOOOOO#..",
+            ".#OOOOOOOOOOOO#.",
+            ".#OOOww##wwOOO#.",
+            ".#OOOwx##xwOOO#.",
+            ".#O^OOOooOOO^O#.",
+            ".#O^OO++++OO^O#.",
+            ".#O^OO++++OO^O#.",
+            ".#O^OOOOOOOO^O#.",
+            "..#OO++++++OO#..",
+            "...#OOOOOOOO#...",
+            "....o#..#o......",
+            "................",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "................",
+            "...##########...",
+            "..#OOOOOOOOOO#..",
+            "..#OOOOOOOOOO#..",
+            "^^#OOww##wwOO#^^",
+            "^^#OOwx##xwOO#^^",
+            "^^#OOOOooOOOO#^^",
+            "^^#OO++++++OO#^^",
+            "^^#OO++++++OO#^^",
+            "^^#OOO++++OOO#^^",
+            "..#OOOOOOOOOO#..",
+            "..#OOOOOOOOOO#..",
+            "....o#..#o......",
+            "................",
+            "................",
+            "................",
+        ]
+        return assemble(id: "bird", nameZh: "小鸟", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 3), (5, 12), (6, 3), (6, 12)], z: [(2, 13), (0, 13)], sweat: (1, 12)), nil),
+            ("child", child, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 3), (5, 12), (6, 4), (6, 11)], z: [(2, 14), (0, 14)], sweat: (1, 13)), nil),
+            ("adult", adult, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 4), (5, 11), (6, 4), (6, 11)], z: [(2, 14), (0, 14)], sweat: (1, 13)), nil),
+        ])
+    }
+
+    // MARK: - rabbit 小兔
+
+    private static func rabbit() -> PixelSpeciesDef {
+        let ink = Ink(body: 38, dark: 39, light: 40, accent: 41)
+        let baby = [
+            "....#^#..#^#....",
+            "....#^#..#^#....",
+            "....#O#..#O#....",
+            "...#OOOOOOOO#...",
+            "..#OOOOOOOOOO#..",
+            "..#OOww##wwOO#..",
+            "..#OOwx##xwOO#..",
+            "..#OOOO^^OOOO#..",
+            "...#OO++++OO#...",
+            "...#OOOOOOOO#...",
+            "...#OOOOOOOO#o..",
+            "...#OO#..#OO#...",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "....#^#..#^#....",
+            "....#^#..#^#....",
+            "....#^#..#^#....",
+            "....#O#..#O#....",
+            "...#OOOOOOOO#...",
+            "..#OOOOOOOOOO#..",
+            "..#OOww##wwOO#..",
+            "..#OOwx##xwOO#..",
+            "..#OOOO^^OOOO#..",
+            "..#OOO++++OOO#..",
+            "..#OOOOOOOOOO#..",
+            "..#OOOOOOOOOO#o.",
+            "..#OO#OOOO#OO#..",
+            "...#OO#..#OO#...",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "....#^#..#^#....",
+            "....#^#..#^#....",
+            "....#^#..#^#....",
+            "....#O#..#O#....",
+            "...#OOOOOOOO#...",
+            "..#OOOOOOOOOO#..",
+            ".#OOOOOOOOOOOO#.",
+            ".#OOww#..#wwOO#.",
+            ".#OOwx#..#xwOO#.",
+            ".#OOOO^^^^OOOO#.",
+            ".#OOO++++++OOO#.",
+            ".#OOOOOOOOOOOO#.",
+            "..#OOOOOOOOOO#o.",
+            "..#OO#OOOO#OO#..",
+            "..#OO#....#OO#..",
+            "................",
+        ]
+        return assemble(id: "rabbit", nameZh: "小兔", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 8, mouthCols: [6, 7, 8, 9], cheek: [(6, 3), (6, 4), (6, 11), (6, 12)], z: [(2, 13), (0, 13)], sweat: (3, 13)), nil),
+            ("child", child, Feat(mouthRow: 9, mouthCols: [6, 7, 8, 9], cheek: [(7, 3), (7, 4), (7, 11), (7, 12)], z: [(2, 13), (0, 13)], sweat: (4, 13)), nil),
+            ("adult", adult, Feat(mouthRow: 10, mouthCols: [6, 7, 8, 9], cheek: [(7, 2), (7, 3), (7, 12), (7, 13)], z: [(2, 13), (0, 13)], sweat: (5, 13)), nil),
+        ])
+    }
+
+    // MARK: - hamster 小仓鼠
+
+    private static func hamster() -> PixelSpeciesDef {
+        let ink = Ink(body: 42, dark: 43, light: 44, accent: 45)
+        let baby = [
+            "................",
+            "..oo......oo....",
+            ".#OOOOOOOOOOOO#.",
+            "#OOOOOOOOOOOOOO#",
+            "#OO#ww#OO#ww#OO#",
+            "#OO#wx#OO#xw#OO#",
+            "#OOOOOO^^OOOOOO#",
+            "#OOO++++++++OOO#",
+            ".#OO++++++++OO#.",
+            ".#OOOOOOOOOOOO#.",
+            "..#OOOOOOOOOO#..",
+            "...oo#....#oo...",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "................",
+            "..oo......oo....",
+            ".oOOOOOOOOOOOOo.",
+            "#OOOOOOOOOOOOOO#",
+            "#OO#ww#OO#ww#OO#",
+            "#OO#wx#OO#xw#OO#",
+            "#OOOOOO^^OOOOOO#",
+            "#OOO++++++++OOO#",
+            "#OOO++++++++OOO#",
+            ".#OO++++++++OO#.",
+            ".#OOOOOOOOOOOO#.",
+            "..#OOOOOOOOOO#..",
+            "...oo#....#oo...",
+            "................",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "..oo......oo....",
+            ".oOOOOOOOOOOOOo.",
+            "#OOOOOOOOOOOOOO#",
+            "#OOOOOOOOOOOOOO#",
+            "#OO#ww#OO#ww#OO#",
+            "#OO#wx#OO#xw#OO#",
+            "#OOOOOO^^OOOOOO#",
+            "#OOOO++++++OOOO#",
+            "#OOO++++++++OOO#",
+            "#OOO++++++++OOO#",
+            "#OOO++++++++OOO#",
+            ".#OOOOOOOOOOOO#.",
+            ".#OOOOOOOOOOOO#.",
+            "..oo#OO..OO#oo..",
+            "................",
+            "................",
+        ]
+        return assemble(id: "hamster", nameZh: "小仓鼠", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 1), (5, 14), (6, 1), (6, 14)], z: [(1, 13), (0, 14)], sweat: (1, 12)), nil),
+            ("child", child, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 1), (5, 14), (6, 1), (6, 14)], z: [(1, 13), (0, 14)], sweat: (1, 12)), nil),
+            ("adult", adult, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(5, 1), (5, 14), (6, 1), (6, 14)], z: [(0, 13), (0, 14)], sweat: (1, 15)), nil),
+        ])
+    }
+
+    // MARK: - turtle 小乌龟
+
+    private static func turtle() -> PixelSpeciesDef {
+        let ink = Ink(body: 46, dark: 47, light: 48, accent: 49)
+        let turtleSleep = [
+            "................",
+            "................",
+            "................",
+            "....oooooooo....",
+            "..oo++++++++oo..",
+            ".o++OOOOOOOO++o.",
+            ".o+OOOOOOOOOO+o.",
+            ".o+OOOOOOOOOO+o.",
+            ".o++OOOOOOOO++o.",
+            "..oo++++++++oo..",
+            "...oooooooooo...",
+            "....^......^....",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let baby = [
+            "................",
+            "......^^^^......",
+            ".....^wwww^.....",
+            ".....^wxxw^.....",
+            "......^^^^......",
+            "...oo++++++oo...",
+            "..o++OOOOOO++o..",
+            "..o++OOOOOO++o..",
+            "..o++OOOOOO++o..",
+            "...oo++++++oo...",
+            "..^^OO....OO^^..",
+            "................",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            "................",
+            "......^^^^......",
+            ".....^wwww^.....",
+            ".....^wxxw^.....",
+            "......^^^^......",
+            "..oo++++++++oo..",
+            ".o++OOOOOOOO++o.",
+            ".o+OOO++++OOO+o.",
+            ".o+OOOOOOOOOO+o.",
+            ".o++OOOOOOOO++o.",
+            "..oo++++++++oo..",
+            ".^^..o....o..^^.",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "......^^^^......",
+            ".....^wwww^.....",
+            ".....^wxxw^.....",
+            "......^^^^......",
+            "..oooooooooo....",
+            ".o++++++++++++o.",
+            "o++OOOOOOOOOO++o",
+            "o+OOO++++++OOO+o",
+            "o+OOO++++++OOO+o",
+            "o++OOOOOOOOOO++o",
+            ".o++++++++++++o.",
+            "..oooooooooo....",
+            ".^^O......O^^o..",
+            "................",
+            "................",
+            "................",
+        ]
+        return assemble(id: "turtle", nameZh: "小乌龟", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 4, mouthCols: [6, 7, 8, 9], cheek: [(2, 5), (2, 10), (3, 5), (3, 10)], z: [(2, 12), (0, 12)], sweat: (1, 10)), turtleSleep),
+            ("child", child, Feat(mouthRow: 4, mouthCols: [6, 7, 8, 9], cheek: [(2, 5), (2, 10), (3, 5), (3, 10)], z: [(2, 12), (0, 12)], sweat: (1, 10)), turtleSleep),
+            ("adult", adult, Feat(mouthRow: 3, mouthCols: [6, 7, 8, 9], cheek: [(1, 5), (1, 10), (2, 5), (2, 10)], z: [(1, 12), (0, 12)], sweat: (0, 10)), turtleSleep),
+        ])
+    }
+
+    // MARK: - hedgehog 小刺猬
+
+    private static func hedgehog() -> PixelSpeciesDef {
+        let ink = Ink(body: 50, dark: 51, light: 52, accent: 53)
+        let baby = [
+            ".^.^.^.^.^.^.^..",
+            "o^o^o^o^o^o^o^o.",
+            ".oooooooooooooo.",
+            ".ooOOOOOOOOOOoo.",
+            ".oO#ww#OO#ww#Oo.",
+            ".oO#wx#OO#xw#Oo.",
+            ".ooOO++++++OOoo.",
+            "..oOO++++++OOo..",
+            "...oOO+^^+OOo...",
+            ".....oo^^oo.....",
+            ".....#o..o#.....",
+            "................",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let child = [
+            ".^.^.^.^.^.^.^.^",
+            "o^o^o^o^o^o^o^o^",
+            "oooooooooooooooo",
+            ".oooooooooooooo.",
+            ".oOOOOOOOOOOOOo.",
+            ".oO#ww#OO#ww#Oo.",
+            ".oO#wx#OO#xw#Oo.",
+            ".ooOO++++++OOoo.",
+            "..oOO++^^++OOo..",
+            "...ooo^^^^ooo...",
+            "....#oo..oo#....",
+            "................",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        let adult = [
+            "^.^.^.^.^.^.^.^.",
+            "^o^o^o^o^o^o^o^o",
+            "oooooooooooooooo",
+            "oooooooooooooooo",
+            ".oOOOOOOOOOOOOo.",
+            ".oOOOOOOOOOOOOo.",
+            ".oO#ww#OO#ww#Oo.",
+            ".oO#wx#OO#xw#Oo.",
+            ".ooOO++++++OOoo.",
+            "..oOO++^^++OOo..",
+            "...ooo^^^^ooo...",
+            "....#oo..oo#....",
+            "................",
+            "................",
+            "................",
+            "................",
+        ]
+        return assemble(id: "hedgehog", nameZh: "小刺猬", ink: ink, stages: [
+            ("baby", baby, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(6, 3), (6, 4), (6, 11), (6, 12)], z: [(4, 15), (2, 15)], sweat: (3, 15)), nil),
+            ("child", child, Feat(mouthRow: 7, mouthCols: [6, 7, 8, 9], cheek: [(6, 3), (6, 4), (6, 11), (6, 12)], z: [(5, 15), (3, 15)], sweat: (4, 15)), nil),
+            ("adult", adult, Feat(mouthRow: 8, mouthCols: [6, 7, 8, 9], cheek: [(6, 2), (6, 13), (7, 2), (7, 13)], z: [(6, 15), (4, 15)], sweat: (5, 15)), nil),
         ])
     }
 }

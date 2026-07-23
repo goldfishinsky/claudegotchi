@@ -5,8 +5,12 @@ final class PixelSpriteTests: XCTestCase {
     let anims = ["idle", "happy", "sick", "sleeping"]
     let stageIds = ["baby", "child", "adult"]
 
-    func testCatalogHasFourKnownIds() {
-        XCTAssertEqual(Set(PixelSpeciesCatalog.ids), ["frog", "slime", "cat", "dragon"])
+    func testCatalogHasAllKnownIds() {
+        XCTAssertEqual(
+            Set(PixelSpeciesCatalog.ids),
+            ["frog", "slime", "cat", "dragon",
+             "dog", "goldfish", "bird", "rabbit", "hamster", "turtle", "hedgehog"]
+        )
     }
 
     func testEveryDefHasAllAnimationsWithFrames() {
@@ -62,7 +66,7 @@ final class PixelSpriteTests: XCTestCase {
     }
 
     func testPaletteWithinCapAndOutlineIsWarmBrown() {
-        XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 32)
+        XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 64)
         XCTAssertEqual(PixelSpeciesCatalog.palette[1], 0xFF3A_2E28, "index 1 warm-brown outline")
     }
 
