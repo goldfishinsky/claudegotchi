@@ -18,6 +18,7 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
     public var deathWindowState: String
     public var lastEventAt: Int64
     public var uid: String?
+    public var genome: Int64?
 
     public static let databaseTableName = "pet"
 
@@ -31,21 +32,24 @@ public struct Pet: Codable, FetchableRecord, MutablePersistableRecord, Equatable
         case lastStaminaChargeAt = "last_stamina_charge_at"
         case deathWindowState = "death_window_state"
         case lastEventAt = "last_event_at"
-        case uid
+        case uid, genome
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {
         id = inserted.rowID
     }
 
-    public static func fresh(species: String, at ts: Int64, uid: String = ULID.generate()) -> Pet {
+    public static func fresh(
+        species: String, at ts: Int64, uid: String = ULID.generate(),
+        genomeSeed: UInt64 = UInt64.random(in: UInt64.min...UInt64.max)
+    ) -> Pet {
         Pet(
             id: nil, species: species, name: nil,
             birthday: ts, deathAt: nil,
             fullness: 100, stamina: 100, intimacy: 50,
             xp: 0, lastTickAt: ts, lastAppliedEventId: 0,
             hibernationSince: nil, lastStaminaChargeAt: nil, deathWindowState: "[]",
-            lastEventAt: ts, uid: uid
+            lastEventAt: ts, uid: uid, genome: Genome.pack(genomeSeed)
         )
     }
 

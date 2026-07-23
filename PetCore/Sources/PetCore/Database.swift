@@ -144,6 +144,21 @@ public enum Database {
         m.registerMigration("v5_stamina_charge_marker") { db in
             try db.execute(sql: "ALTER TABLE pet ADD COLUMN last_stamina_charge_at INTEGER;")
         }
+        m.registerMigration("v6_genome") { db in
+            try db.execute(sql: "ALTER TABLE pet ADD COLUMN genome INTEGER;")
+            let availableIDs = PixelSpeciesCatalog.ids
+            let rows = try Row.fetchAll(db, sql: "SELECT id, uid, species FROM pet WHERE genome IS NULL")
+            for row in rows {
+                let id: Int64 = row["id"]
+                let uid: String? = row["uid"]
+                let species: String = row["species"]
+                let start = PetGenomeBackfill.startingSeed(uid: uid, fallback: id)
+                guard let seed = PetGenomeBackfill.findSeed(
+                    startingFrom: start, targetSpecies: species, availableIDs: availableIDs
+                ) else { continue }
+                try db.execute(sql: "UPDATE pet SET genome = ? WHERE id = ?", arguments: [Genome.pack(seed), id])
+            }
+        }
         return m
     }
 }
