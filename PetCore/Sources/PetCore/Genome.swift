@@ -74,6 +74,12 @@ public struct MarkingGene: Equatable {
     public func apply(to grid: [[UInt8]], bodyIndex: UInt8, darkIndex: UInt8) -> [[UInt8]] {
         guard !grid.isEmpty, kind != .none else { return grid }
         let rows = grid.count
+        let widestCols = grid.map(\.count).max() ?? 0
+        guard widestCols > 0 else { return grid }
+        // Denser grids (32×32) get 2x feature sizes so spots/stripes read at the
+        // same visual scale as they did on the 16×16 art. Region-based markings
+        // (star radius, belly box) are already proportional to grid size.
+        let scale = widestCols >= 24 ? 2 : 1
         var out = grid
         switch kind {
         case .none:
@@ -81,26 +87,25 @@ public struct MarkingGene: Equatable {
         case .spots:
             for r in 0..<rows {
                 for c in 0..<grid[r].count where grid[r][c] == bodyIndex {
-                    if Self.pixelHash(patternSeed, r, c) % 100 < 22 { out[r][c] = darkIndex }
+                    if Self.pixelHash(patternSeed, r / scale, c / scale) % 100 < 22 { out[r][c] = darkIndex }
                 }
             }
         case .stripes:
-            let period = 3 + Int(patternSeed % 3)
-            let bandWidth = max(1, period / 2)
-            let offset = Int((patternSeed >> 8) % UInt64(period))
+            let basePeriod = 3 + Int(patternSeed % 3)
+            let period = basePeriod * scale
+            let bandWidth = max(1, basePeriod / 2) * scale
+            let offset = Int((patternSeed >> 8) % UInt64(basePeriod)) * scale
             for r in 0..<rows where (r + offset) % period < bandWidth {
                 for c in 0..<grid[r].count where grid[r][c] == bodyIndex { out[r][c] = darkIndex }
             }
         case .starPatch:
-            let widestCols = grid.map(\.count).max() ?? 0
-            guard widestCols > 0 else { return grid }
             let centerR = Int(patternSeed % UInt64(rows))
             let centerC = Int((patternSeed >> 16) % UInt64(widestCols))
             let radius = max(1, min(rows, widestCols) / 5)
             for r in 0..<rows {
                 for c in 0..<grid[r].count where grid[r][c] == bodyIndex {
                     let dist = abs(r - centerR) + abs(c - centerC)
-                    if dist <= radius && Self.pixelHash(patternSeed, r, c) % 100 < 70 { out[r][c] = darkIndex }
+                    if dist <= radius && Self.pixelHash(patternSeed, r / scale, c / scale) % 100 < 70 { out[r][c] = darkIndex }
                 }
             }
         case .bellyPatch:

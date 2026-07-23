@@ -151,8 +151,11 @@ enum PixelPetRenderer {
         defer { image.unlockFocus() }
         guard let cgctx = NSGraphicsContext.current?.cgContext else { return image }
 
-        let frames = framesFor(visual: visual, species: species)
-        if let frames, let raw = frames.first {
+        // The 18pt status icon renders the 16×16 icon variant; the 32×32 stage
+        // sprite would floor to a zero-size cell at this scale.
+        let def = PixelSpeciesCatalog.def(species)
+        let icon = def?.iconGrids[visual.stage] ?? def?.iconGrids["adult"]
+        if let raw = icon {
             let frame = appearance.transformedFrame(raw)
             let gridSize = frame.count
             guard gridSize > 0 else { return image }

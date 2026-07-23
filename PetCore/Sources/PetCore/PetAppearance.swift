@@ -23,14 +23,25 @@ public struct PetAppearance: Equatable {
         bodyIndex: 0, darkIndex: 0
     )
 
+    /// The NULL-genome look for a known species: its authored base-four expanded
+    /// into the render slots, no markings. Reproduces the pre-genome palette.
+    public static func resolvedBase(species: String) -> PetAppearance {
+        guard let def = PixelSpeciesCatalog.def(species) else { return .base }
+        return PetAppearance(
+            palette: PixelSpeciesCatalog.resolvedPalette(base4: def.base4),
+            marking: MarkingGene(kind: .none, patternSeed: 0),
+            bodyIndex: def.ink.body, darkIndex: def.ink.dark
+        )
+    }
+
     public static func make(seed: UInt64, species: String) -> PetAppearance {
         guard let def = PixelSpeciesCatalog.def(species) else { return .base }
-        let ink = def.ink
-        let palette = Genome.paletteTransform(seed: seed).apply(to: PixelSpeciesCatalog.palette, ink: ink)
+        let gene = Genome.paletteTransform(seed: seed)
+        let base4 = SpeciesBase4(body: gene.body, dark: gene.dark, light: gene.light, accent: gene.accent)
         return PetAppearance(
-            palette: palette,
+            palette: PixelSpeciesCatalog.resolvedPalette(base4: base4),
             marking: Genome.markings(seed: seed),
-            bodyIndex: ink.body, darkIndex: ink.dark
+            bodyIndex: def.ink.body, darkIndex: def.ink.dark
         )
     }
 
@@ -96,7 +107,9 @@ public struct PetLook: Equatable {
     public static let base = PetLook(appearance: .base, personality: .neutral, genome: nil)
 
     public static func make(genome: Int64?, species: String) -> PetLook {
-        guard let genome else { return .base }
+        guard let genome else {
+            return PetLook(appearance: PetAppearance.resolvedBase(species: species), personality: .neutral, genome: nil)
+        }
         let seed = Genome.unpack(genome)
         return PetLook(
             appearance: PetAppearance.make(seed: seed, species: species),

@@ -41,17 +41,31 @@ final class SpeciesCatalogTests: XCTestCase {
         }
     }
 
-    func testEveryFrameIsLegal16x16WithinPalette() {
+    func testEveryFrameIsLegal32x32WithinPalette() {
         let cap = UInt8(PixelSpeciesCatalog.palette.count)
         for def in PixelSpeciesCatalog.all {
             for (key, frames) in def.frames {
                 XCTAssertGreaterThanOrEqual(frames.count, 1, "\(def.id)/\(key) empty")
                 for frame in frames {
-                    XCTAssertEqual(frame.count, 16, "\(def.id)/\(key) row count")
+                    XCTAssertEqual(frame.count, 32, "\(def.id)/\(key) row count")
                     for row in frame {
-                        XCTAssertEqual(row.count, 16, "\(def.id)/\(key) col count")
+                        XCTAssertEqual(row.count, 32, "\(def.id)/\(key) col count")
                         for px in row { XCTAssertLessThan(px, cap, "\(def.id)/\(key) index in palette") }
                     }
+                }
+            }
+        }
+    }
+
+    func testEveryIconGridIs16x16() {
+        let cap = UInt8(PixelSpeciesCatalog.palette.count)
+        for def in PixelSpeciesCatalog.all {
+            XCTAssertEqual(Set(def.iconGrids.keys), ["baby", "child", "adult"], "\(def.id) icon stages")
+            for (stage, grid) in def.iconGrids {
+                XCTAssertEqual(grid.count, 16, "\(def.id)/\(stage) icon row count")
+                for row in grid {
+                    XCTAssertEqual(row.count, 16, "\(def.id)/\(stage) icon col count")
+                    for px in row { XCTAssertLessThan(px, cap, "\(def.id)/\(stage) icon index in palette") }
                 }
             }
         }

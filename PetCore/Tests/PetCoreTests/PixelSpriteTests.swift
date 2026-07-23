@@ -46,14 +46,14 @@ final class PixelSpriteTests: XCTestCase {
         XCTAssertNotNil(lookup(frog, "unknown-stage", "unknown-anim"), "falls back to idle")
     }
 
-    func testEveryFrameIs16x16WithInRangeIndices() {
+    func testEveryFrameIs32x32WithInRangeIndices() {
         let count = UInt8(PixelSpeciesCatalog.palette.count)
         for def in PixelSpeciesCatalog.all {
             for (_, frames) in def.frames {
                 for frame in frames {
-                    XCTAssertEqual(frame.count, 16)
+                    XCTAssertEqual(frame.count, 32)
                     for row in frame {
-                        XCTAssertEqual(row.count, 16)
+                        XCTAssertEqual(row.count, 32)
                         for px in row { XCTAssertLessThan(px, count) }
                     }
                 }

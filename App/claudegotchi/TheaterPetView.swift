@@ -176,15 +176,19 @@ struct TheaterPetView: View {
 
     private func drawPet(_ frame: PixelFrame, offX: Double, offY: Double, squash: Double,
                          _ fill: (Double, Double, Double, Double, Color) -> Void) {
+        let n = frame.count
+        guard n > 0 else { return }
+        let s = 16.0 / Double(n)            // stage-units per sprite cell: keeps a 32×32 pet the same footprint as 16×16
+        let half = Double(n) / 2
         let squashX = min(1.3, max(0.75, 2 - squash))
         let anchorGX = petHomeX + offX + 8
         let anchorGY = petHomeY + offY + 16
         for (r, row) in frame.enumerated() {
             for (col, idx) in row.enumerated() {
                 guard let color = PixelPalette.color(idx, in: look.appearance.palette) else { continue }
-                let gx = anchorGX + (Double(col) - 8) * squashX
-                let gy = anchorGY + (Double(r) - 16) * squash
-                fill(gx, gy, squashX, squash, color)
+                let gx = anchorGX + (Double(col) - half) * squashX * s
+                let gy = anchorGY + (Double(r) - Double(n)) * squash * s
+                fill(gx, gy, squashX * s, squash * s, color)
             }
         }
     }
