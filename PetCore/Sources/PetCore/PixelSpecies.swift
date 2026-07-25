@@ -65,12 +65,21 @@ public enum PixelSpeciesCatalog {
         0xFFFF_D36B, // 25 prop: confetti gold
     ]
 
+    /// Prop-only colours, appended after the render slots so slot indices stay put.
+    static let propExtras: [UInt32] = [
+        0xFF2E_3540, // 34 prop: laptop ink (cool charcoal)
+        0xFF5E_6878, // 35 prop: keycap slate
+        0xFF23_8F55, // 36 prop: terminal green
+        0xFF36_4A43, // 37 prop: nori
+        0xFFE4_DAC4, // 38 prop: rice shade
+    ]
+
     static let frogBase4 = SpeciesBase4(body: 0xFF83_CE63, dark: 0xFF4E_9B3A, light: 0xFFE7_F3C0, accent: 0xFF4E_9B3A)
 
     /// Common colours plus the eight render slots filled from a base-four set.
     /// `slotBody` is the first appended index (`commonBase.count == 26`).
     public static func resolvedPalette(base4: SpeciesBase4) -> [UInt32] {
-        commonBase + PaletteRamp.expand(base4)
+        commonBase + PaletteRamp.expand(base4) + propExtras
     }
 
     /// The default palette (frog ramp): a self-contained fallback for an unknown

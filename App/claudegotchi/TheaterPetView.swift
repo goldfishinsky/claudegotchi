@@ -166,10 +166,11 @@ struct TheaterPetView: View {
 
     private func drawMatrix(_ m: PixelFrame, _ ox: Double, _ oy: Double,
                             _ fill: (Double, Double, Double, Double, Color) -> Void) {
+        let u = PixelProps.cellUnits
         for (r, row) in m.enumerated() {
             for (col, idx) in row.enumerated() {
                 guard let color = PixelPalette.color(idx) else { continue }
-                fill(ox + Double(col), oy + Double(r), 1, 1, color)
+                fill(ox + Double(col) * u, oy + Double(r) * u, u, u, color)
             }
         }
     }

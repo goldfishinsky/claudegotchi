@@ -2,14 +2,15 @@ import XCTest
 @testable import PetCore
 
 final class PixelPropsTests: XCTestCase {
-    func testAllPropsAreWithinTwelveByTwelve() {
+    func testAllPropsStayUnderStageBudget() {
         for p in PropSprite.allCases {
             let m = PixelProps.matrix(p)
             XCTAssertGreaterThan(m.count, 0, "\(p) not empty")
-            XCTAssertLessThanOrEqual(m.count, 12, "\(p) height ≤ 12")
             let width = m.first?.count ?? 0
-            XCTAssertLessThanOrEqual(width, 12, "\(p) width ≤ 12")
             for row in m { XCTAssertEqual(row.count, width, "\(p) rows are rectangular") }
+            let size = PixelProps.size(p)
+            XCTAssertLessThanOrEqual(size.height, 6.5, "\(p) height ≤ 6.5 stage units")
+            XCTAssertLessThanOrEqual(size.width, 10, "\(p) width ≤ 10 stage units")
         }
     }
 

@@ -621,10 +621,17 @@ public enum PetTheater {
         ])
     }
 
+    /// Places a prop by its centre line and the stage floor rather than its
+    /// top-left corner, so resizing the art keeps it planted and centred.
+    static func grounded(_ sprite: PropSprite, centerX: Double, baseY: Double) -> PropInstance {
+        let s = PixelProps.size(sprite)
+        return PropInstance(sprite: sprite, x: centerX - s.width / 2, y: baseY - s.height, front: true)
+    }
+
     private static func work() -> Behavior {
-        let laptop = PropInstance(sprite: .laptop, x: 2.5, y: 10.0, front: true)
+        let laptop = grounded(.laptop, centerX: 8, baseY: 16.5)
         let spark = { (seed: UInt64) in
-            Emit(kind: .keystrokeSparks, localX: 8, localY: 8, count: 3, seed: seed)
+            Emit(kind: .keystrokeSparks, localX: 8, localY: 11, count: 3, seed: seed)
         }
         return Behavior(kind: .work, loopMs: 3200, phases: [
             Phase(duration: 0.26, frameKey: "idle", frame: 0,
@@ -671,12 +678,11 @@ public enum PetTheater {
         let full = foodSize(tokens: tokens)
         let bite1: PropSprite = full == .foodL ? .foodM : .foodS
         let bite2: PropSprite = .foodS
-        let foodX = 5.0, foodY = 9.0
         func food(_ s: PropSprite) -> PropInstance {
-            PropInstance(sprite: s, x: foodX, y: foodY, front: true)
+            grounded(s, centerX: 9.6, baseY: 16.4)
         }
-        let crumb1 = Emit(kind: .crumbBurst, localX: 8, localY: 10, count: 6, seed: 0xE1)
-        let crumb2 = Emit(kind: .crumbBurst, localX: 8, localY: 10, count: 6, seed: 0xE2)
+        let crumb1 = Emit(kind: .crumbBurst, localX: 9.6, localY: 13, count: 6, seed: 0xE1)
+        let crumb2 = Emit(kind: .crumbBurst, localX: 9.6, localY: 13, count: 6, seed: 0xE2)
         return Behavior(kind: .eat, loopMs: 4600, phases: [
             Phase(duration: 0.14, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0.3, ease: .easeOut,

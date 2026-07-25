@@ -60,10 +60,11 @@ final class PaletteRampTests: XCTestCase {
         }
     }
 
-    func testResolvedPaletteHasThirtyFourEntriesWithSlotsAtTop() {
+    func testResolvedPaletteKeepsSlotsAtFixedIndicesAheadOfPropExtras() {
         let pal = PixelSpeciesCatalog.resolvedPalette(base4: SpeciesBase4(body: body, dark: dark, light: light, accent: accent))
-        XCTAssertEqual(pal.count, 34)
+        XCTAssertEqual(pal.count, 34 + PixelSpeciesCatalog.propExtras.count)
         XCTAssertEqual(pal[Int(PixelSpeciesCatalog.slotBody)], body)
         XCTAssertEqual(pal[Int(PixelSpeciesCatalog.slotAccent)], accent)
+        XCTAssertEqual(Array(pal.suffix(PixelSpeciesCatalog.propExtras.count)), PixelSpeciesCatalog.propExtras)
     }
 }
