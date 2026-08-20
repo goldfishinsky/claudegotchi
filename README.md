@@ -34,8 +34,14 @@ The current preview is distributed for Apple Silicon only.
 
 1. Download the DMG from [GitHub Releases](https://github.com/goldfishinsky/claudegotchi/releases).
 2. Open it and drag **claudegotchi.app** into **Applications**.
-3. Because the preview is not yet notarized, right-click the app in Applications
-   and choose **Open** the first time.
+3. Try to open the app once. If macOS shows “Apple could not verify…”, choose
+   **Done** — do not move the app to Trash.
+4. Open **System Settings → Privacy & Security**, scroll to **Security**, then
+   choose **Open Anyway** for claudegotchi and confirm **Open**. This option is
+   available for about an hour after the blocked launch attempt.
+
+This one-time override is necessary because the preview is not yet signed and
+notarized. Future builds should remove this extra installation step.
 
 Installing a newer build over the existing app does not remove your pet or
 statistics. Local data lives in:
