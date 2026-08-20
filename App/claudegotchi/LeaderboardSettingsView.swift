@@ -7,11 +7,10 @@ struct LeaderboardSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var scheme
 
-    init(driver: LeaderboardSyncDriver, service: LeaderboardService, githubClientID: String) {
+    init(driver: LeaderboardSyncDriver, service: LeaderboardService) {
         self.driver = driver
         _auth = StateObject(wrappedValue: LeaderboardAuthModel(
             service: service,
-            githubClientID: githubClientID,
             onAuthorized: { account in driver.didLogin(account) }
         ))
     }
@@ -29,8 +28,6 @@ struct LeaderboardSettingsView: View {
 
             if let account = driver.snapshot.account {
                 loggedIn(account, t)
-            } else if case let .waiting(userCode, _) = auth.phase {
-                waiting(userCode: userCode, t)
             } else {
                 loggedOut(t)
             }
@@ -60,10 +57,10 @@ struct LeaderboardSettingsView: View {
             .fixedSize(horizontal: false, vertical: true)
 
         HStack(spacing: 8) {
-            Button("使用 GitHub 登录") { auth.begin() }
+            Button("继续使用 GitHub") { auth.begin() }
                 .buttonStyle(WarmButtonStyle(prominent: true))
-                .disabled(auth.phase == .starting)
-            if auth.phase == .starting {
+                .disabled(auth.phase == .starting || auth.phase == .authorizing)
+            if auth.phase == .starting || auth.phase == .authorizing {
                 ProgressView().controlSize(.small)
             }
         }
@@ -74,30 +71,6 @@ struct LeaderboardSettingsView: View {
                 .foregroundStyle(t.danger)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private func waiting(userCode: String, _ t: WarmTheme) -> some View {
-        Text("在浏览器中输入以下验证码：")
-            .font(WFont.body)
-            .foregroundStyle(t.ink)
-        HStack(spacing: 8) {
-            Text(userCode)
-                .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                .foregroundStyle(t.inkStrong)
-                .textSelection(.enabled)
-            Button("复制") { auth.copyCode() }
-                .buttonStyle(WarmButtonStyle())
-        }
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("已打开浏览器，请完成授权…")
-                .font(WFont.caption)
-                .foregroundStyle(t.inkFaint)
-            Spacer()
-            Button("取消") { auth.cancel() }
-                .buttonStyle(WarmButtonStyle())
         }
     }
 

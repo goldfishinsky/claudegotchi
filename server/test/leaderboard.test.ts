@@ -93,6 +93,23 @@ it("excludes hidden users from the tokens board", async ({ expect }) => {
   expect(body.total).toBe(1);
 });
 
+it("uses per-platform totals when filtering a dual-platform user", async ({ expect }) => {
+  await insertUser({ id: 1, login: "dual", tokens_in: 1000, tokens_out: 0 });
+  await testEnv.DB.prepare(
+    `INSERT INTO user_platform_stats
+       (user_id, platform, tokens_in, tokens_out, models_json, updated_at)
+     VALUES (?, ?, ?, 0, '{}', ?), (?, ?, ?, 0, '{}', ?)`
+  ).bind(1, "claude-code", 100, Date.now(), 1, "codex", 900, Date.now()).run();
+
+  const claudeResponse = await getLeaderboard("dual-claude", "board=tokens&platform=claude-code&page=1");
+  const codexResponse = await getLeaderboard("dual-codex", "board=tokens&platform=codex&page=1");
+  const claude = (await claudeResponse.json()) as { rows: { login: string; value: number }[] };
+  const codex = (await codexResponse.json()) as { rows: { login: string; value: number }[] };
+
+  expect(claude.rows).toEqual([expect.objectContaining({ login: "dual", value: 100 })]);
+  expect(codex.rows).toEqual([expect.objectContaining({ login: "dual", value: 900 })]);
+});
+
 it("orders survival_best by best_survival_ms descending using the historical best pet", async ({ expect }) => {
   await insertUser({ id: 1, login: "champion", best_survival_ms: 999_000, best_pet_species: "dragon", best_pet_name: "Rex" });
   await insertUser({ id: 2, login: "rookie", best_survival_ms: 1_000 });

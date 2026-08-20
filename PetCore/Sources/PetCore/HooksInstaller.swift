@@ -156,14 +156,21 @@ public enum HooksInstaller {
         let data = try JSONSerialization.data(
             withJSONObject: root, options: [.prettyPrinted, .sortedKeys]
         )
-        if FileManager.default.fileExists(atPath: url.path) {
+        let fm = FileManager.default
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let existed = fm.fileExists(atPath: url.path)
+        if existed {
             let backup = url.appendingPathExtension("bak-\(nowISO)")
-            try? FileManager.default.removeItem(at: backup)
-            try? FileManager.default.copyItem(at: url, to: backup)
+            try? fm.removeItem(at: backup)
+            try? fm.copyItem(at: url, to: backup)
         }
         let tmp = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
         try data.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        if existed {
+            _ = try fm.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            try fm.moveItem(at: tmp, to: url)
+        }
     }
 }

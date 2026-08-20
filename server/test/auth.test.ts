@@ -20,6 +20,13 @@ function githubUserResponse(id: number, login: string): Response {
   });
 }
 
+async function codeChallenge(verifier: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+  let binary = "";
+  for (const byte of digest) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -112,4 +119,90 @@ it("rejects unauthenticated and bogus-token requests to /v1/me with 401", async 
     headers: { Authorization: "Bearer not-a-real-token" },
   });
   expect(badToken.status).toBe(401);
+});
+
+it("runs browser OAuth and exchanges a one-time PKCE-bound grant", async ({ expect }) => {
+  const verifier = "test-verifier-that-is-long-enough-for-pkce-1234567890";
+  const challenge = await codeChallenge(verifier);
+  const start = await callWorker("https://example.com/v1/auth/github/web/start", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code_challenge: challenge }),
+  });
+  expect(start.status).toBe(200);
+  const startBody = (await start.json()) as { authorization_url: string };
+  const authorization = new URL(startBody.authorization_url);
+  expect(authorization.origin + authorization.pathname).toBe("https://github.com/login/oauth/authorize");
+  expect(authorization.searchParams.get("client_id")).toBe("test-client-id");
+  expect(authorization.searchParams.get("redirect_uri"))
+    .toBe("https://example.com/v1/auth/github/web/callback");
+  const state = authorization.searchParams.get("state");
+  expect(state).toBeTruthy();
+
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const request = new Request(input as Request | string, init);
+    if (request.url === "https://github.com/login/oauth/access_token") {
+      expect(await request.text()).toContain("client_secret=test-client-secret");
+      return new Response(JSON.stringify({ access_token: "gh-web-token" }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    }
+    expect(request.url).toBe("https://api.github.com/user");
+    expect(request.headers.get("Authorization")).toBe("Bearer gh-web-token");
+    return githubUserResponse(314, "web-user");
+  });
+
+  const callback = await callWorker(
+    `https://example.com/v1/auth/github/web/callback?code=temporary-code&state=${encodeURIComponent(state!)}`
+  );
+  expect(callback.status).toBe(302);
+  const appCallback = new URL(callback.headers.get("Location")!);
+  expect(appCallback.protocol).toBe("claudegotchi:");
+  const grant = appCallback.searchParams.get("grant");
+  expect(grant?.startsWith("cgg_")).toBe(true);
+
+  const exchange = await callWorker("https://example.com/v1/auth/github/web/exchange", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ grant, code_verifier: verifier }),
+  });
+  expect(exchange.status).toBe(200);
+  const payload = (await exchange.json()) as { token: string; user: { login: string } };
+  expect(payload.token.startsWith("cg_")).toBe(true);
+  expect(payload.user.login).toBe("web-user");
+
+  const replay = await callWorker("https://example.com/v1/auth/github/web/exchange", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ grant, code_verifier: verifier }),
+  });
+  expect(replay.status).toBe(401);
+});
+
+it("rejects a web OAuth grant with the wrong PKCE verifier", async ({ expect }) => {
+  const verifier = "another-verifier-that-is-long-enough-for-pkce-123456";
+  const challenge = await codeChallenge(verifier);
+  const start = await callWorker("https://example.com/v1/auth/github/web/start", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code_challenge: challenge }),
+  });
+  const authorization = new URL(((await start.json()) as { authorization_url: string }).authorization_url);
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new Request(input as Request | string).url;
+    if (url === "https://github.com/login/oauth/access_token") {
+      return new Response(JSON.stringify({ access_token: "gh-token" }), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return githubUserResponse(315, "pkce-user");
+  });
+  const callback = await callWorker(
+    `https://example.com/v1/auth/github/web/callback?code=code&state=${encodeURIComponent(authorization.searchParams.get("state")!)}`
+  );
+  const grant = new URL(callback.headers.get("Location")!).searchParams.get("grant");
+  const exchange = await callWorker("https://example.com/v1/auth/github/web/exchange", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ grant, code_verifier: "wrong-verifier" }),
+  });
+  expect(exchange.status).toBe(401);
 });

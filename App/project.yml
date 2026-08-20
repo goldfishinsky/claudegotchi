@@ -44,8 +44,13 @@ targets:
       properties:
         LSUIElement: true
         CFBundleName: claudegotchi
+        CFBundleIconFile: AppIcon
         CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        CFBundleVersion: "4"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.goldfishinsky.claudegotchi.oauth
+            CFBundleURLSchemes:
+              - claudegotchi
         NSHumanReadableCopyright: "© 2026 jalen"
     settings:
       base:

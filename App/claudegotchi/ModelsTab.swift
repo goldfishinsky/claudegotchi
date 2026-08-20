@@ -30,7 +30,7 @@ struct ModelsTab: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(visibleRows, id: \.model) { row in modelRow(row, t) }
+                        ForEach(visibleRows, id: \.stableID) { row in modelRow(row, t) }
                         if rows.count > inlineCap {
                             Button(showAll ? "收起" : "查看全部 (\(rows.count))") { showAll.toggle() }
                                 .buttonStyle(.plain)
@@ -64,6 +64,11 @@ struct ModelsTab: View {
                 HStack(spacing: 8) {
                     Text(row.model).font(WFont.label).foregroundStyle(t.inkStrong)
                         .lineLimit(1).truncationMode(.middle)
+                    Text(row.platform == ModelPlatform.codex ? "Codex" : "Claude")
+                        .font(WFont.caption)
+                        .foregroundStyle(row.platform == ModelPlatform.codex ? t.accent : t.inkFaint)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(t.panelFill))
                     Spacer()
                     Text(TokenFormat.compact(tokens) + " tok")
                         .font(WFont.value).monospacedDigit().foregroundStyle(t.ink)
@@ -83,4 +88,8 @@ struct ModelsTab: View {
     private func reload() {
         rows = (try? StatsQueries.modelUsage(db)) ?? []
     }
+}
+
+private extension ModelUsage {
+    var stableID: String { "\(platform)\u{1}\(model)" }
 }

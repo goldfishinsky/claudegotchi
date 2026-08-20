@@ -93,4 +93,17 @@ final class SpeciesCatalogTests: XCTestCase {
             }
         }
     }
+
+    func testSickFramesKeepIdentityColorInsteadOfLegacyGrayGreenWash() {
+        for def in PixelSpeciesCatalog.all {
+            for stage in ["baby", "child", "adult"] {
+                for frame in def.frames["\(stage)/sick"] ?? [] {
+                    XCTAssertFalse(
+                        frame.flatMap { $0 }.contains(6),
+                        "\(def.id)/\(stage) sick frame must not replace the body with the legacy sick tint"
+                    )
+                }
+            }
+        }
+    }
 }

@@ -44,6 +44,7 @@ public final class ApplyTransaction {
             pet.lastEventAt = max(pet.lastEventAt, event.ts)
             if event.type == .postToolUse || event.type == .stop, let model = event.model {
                 try ModelUsageStore.bump(
+                    platform: event.platform ?? ModelPlatform.infer(model: model),
                     model: model,
                     tokensIn: event.tokensIn ?? 0,
                     tokensOut: event.tokensOut ?? 0,

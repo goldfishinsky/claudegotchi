@@ -1,21 +1,23 @@
 import SwiftUI
+import AppKit
 import PetCore
 
 // Pet-focused top of the dropdown card: identity strip, hero pixel pet on a warm
 // halo (keeps the SystemMood overlay + animationSpeed wiring), vitals bars, XP
-// progress, today's numbers, and the current activity line.
+// progress and one compact, decision-relevant daily usage figure.
 struct PetSection: View {
     @ObservedObject var petModel: PetPanelModel
     @ObservedObject var driver: SystemStatsDriver
     let theme: WarmTheme
+
+    private let heroWidth: CGFloat = 184
+    private let heroHeight: CGFloat = 158
 
     var body: some View {
         VStack(spacing: 10) {
             topStrip
             if petModel.hasPet {
                 heroRow
-                todayRow
-                activityRow
             } else {
                 eggHero
             }
@@ -23,8 +25,8 @@ struct PetSection: View {
     }
 
     private var heroRow: some View {
-        HStack(alignment: .center, spacing: 16) {
-            hero.frame(width: 168)
+        HStack(alignment: .center, spacing: 12) {
+            hero.frame(width: heroWidth)
             VStack(spacing: 10) {
                 vitalRow(Candy.full, "饱食", petModel.fullness)
                 vitalRow(Candy.stam, "体力", petModel.stamina)
@@ -44,8 +46,21 @@ struct PetSection: View {
             Text("·").opacity(0.45)
             Text("Lv \(petModel.level)").monospacedDigit()
             Spacer(minLength: 6)
-            Circle().fill(statusColor).frame(width: 5, height: 5)
-            Text(statusLabel)
+            if petModel.todayTokens > 0 {
+                Text("今日 \(TokenFormat.compact(petModel.todayTokens)) tokens")
+                    .monospacedDigit()
+            }
+            if petModel.isAgentWorking {
+                HStack(spacing: 4) {
+                    ForEach(petModel.activePlatforms, id: \.self) { platform in
+                        platformMark(platform)
+                    }
+                }
+                .transition(.scale.combined(with: .opacity))
+            } else {
+                Circle().fill(statusColor).frame(width: 5, height: 5)
+                Text(statusLabel)
+            }
         }
         .font(WFont.strip)
         .foregroundStyle(theme.inkFaint)
@@ -55,14 +70,12 @@ struct PetSection: View {
     private var statusLabel: String {
         let a = petModel.activity
         if a.contains("休眠") { return "休眠" }
-        if a.contains("正在") { return "工作" }
         return "空闲"
     }
 
     private var statusColor: Color {
         let a = petModel.activity
         if a.contains("休眠") { return rgb(0.52, 0.55, 0.90) }
-        if a.contains("正在") { return rgb(1.0, 0.62, 0.30) }
         return theme.ink.opacity(0.45)
     }
 
@@ -73,13 +86,25 @@ struct PetSection: View {
             Circle()
                 .fill(RadialGradient(
                     colors: [theme.halo.opacity(theme.isDark ? 0.28 : 0.50), theme.halo.opacity(0)],
-                    center: .center, startRadius: 2, endRadius: 80))
-                .frame(width: 156, height: 156)
+                    center: .center, startRadius: 2, endRadius: 88))
+                .frame(width: 174, height: 174)
                 .blur(radius: 5)
                 .offset(y: -6)
             theaterStage
         }
-        .frame(width: 168, height: 145)
+        .frame(width: heroWidth, height: heroHeight)
+    }
+
+    private func platformMark(_ platform: String) -> some View {
+        let codex = platform == ModelPlatform.codex
+        let label = codex ? "Codex" : "Claude Code"
+        let mark = codex
+            ? theme.inkStrong
+            : Color(red: 0.85, green: 0.39, blue: 0.27)
+        return AgentBrandMark(platform: platform, color: mark)
+            .frame(width: 20, height: 20)
+            .accessibilityLabel("\(label) 正在工作")
+            .help("\(label) 正在工作")
     }
 
     @ViewBuilder
@@ -94,9 +119,9 @@ struct PetSection: View {
                 onPetting: { petModel.handlePetting() },
                 onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }
             )
-            .frame(width: 168, height: 145)
+            .frame(width: heroWidth, height: heroHeight)
         } else {
-            Color.clear.frame(width: 168, height: 145)
+            Color.clear.frame(width: heroWidth, height: heroHeight)
         }
     }
 
@@ -104,7 +129,7 @@ struct PetSection: View {
         Text("🥚 孵化中…")
             .font(.system(size: 15, weight: .medium, design: .rounded))
             .foregroundStyle(theme.inkFaint)
-            .frame(height: 145)
+            .frame(height: heroHeight)
             .frame(maxWidth: .infinity)
     }
 
@@ -142,32 +167,33 @@ struct PetSection: View {
         }
     }
 
-    private var todayRow: some View {
-        HStack(spacing: 0) {
-            todayMetric(TokenFormat.compact(petModel.todayTokens), "今日")
-            Spacer(minLength: 0)
-            todayMetric(WorkPanelFormat.cappedCount(petModel.todaySessions), "会话")
-            Spacer(minLength: 0)
-            todayMetric(WorkPanelFormat.cappedCount(petModel.todayTools), "工具")
+}
+
+/// Transparent, high-resolution product marks for the compact status strip.
+struct AgentBrandMark: View {
+    let platform: String
+    let color: Color
+
+    private var image: NSImage? {
+        let name = platform == ModelPlatform.codex ? "CodexMark" : "ClaudeMark"
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else {
+            return nil
         }
-        .padding(.top, 1)
+        return NSImage(contentsOf: url)
     }
 
-    private func todayMetric(_ value: String, _ label: String) -> some View {
-        HStack(spacing: 5) {
-            Text(value).font(WFont.vValue).monospacedDigit().foregroundStyle(theme.inkStrong)
-            Text(label).font(WFont.caption).foregroundStyle(theme.ink)
-        }
-    }
-
-    private var activityRow: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(petModel.activity.contains("正在") ? rgb(0.46, 0.85, 0.45) : theme.ink.opacity(0.4))
-                .frame(width: 6, height: 6)
-            Text(petModel.activity).font(WFont.caption).foregroundStyle(theme.ink)
-                .lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 0)
+    @ViewBuilder
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+        } else {
+            Color.clear
         }
     }
 }

@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { Env, Variables } from "./types";
-import { authMiddleware, handleAuthGithub } from "./auth";
+import {
+  authMiddleware, handleAuthGithub, handleGithubWebStart,
+  handleGithubWebCallback, handleGithubWebExchange,
+} from "./auth";
 import { handleSync } from "./sync";
 import { handleLeaderboard, handleMe, handleDeleteMe } from "./leaderboard";
 import { handleStats } from "./stats";
@@ -11,6 +14,9 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 app.get("/v1/health", (c) => c.json({ ok: true, time: Date.now() }));
 
 app.post("/v1/auth/github", handleAuthGithub);
+app.post("/v1/auth/github/web/start", handleGithubWebStart);
+app.get("/v1/auth/github/web/callback", handleGithubWebCallback);
+app.post("/v1/auth/github/web/exchange", handleGithubWebExchange);
 
 app.use("/v1/sync", authMiddleware);
 app.post("/v1/sync", handleSync);

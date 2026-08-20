@@ -1,5 +1,13 @@
 import type { Context } from "hono";
-import type { Env, ModelAbsolute, SyncBest, SyncPet, SyncRequestBody, Variables } from "./types";
+import type {
+  Env,
+  ModelAbsolute,
+  PlatformAbsolute,
+  SyncBest,
+  SyncPet,
+  SyncRequestBody,
+  Variables,
+} from "./types";
 
 const RATE_LIMIT_MS = 15 * 60 * 1000;
 const TOKEN_CAP_PER_HOUR = 100_000_000;
@@ -9,8 +17,16 @@ const MAX_SPECIES_LEN = 40;
 const MAX_PET_AGE_MS = 20 * 365 * 24 * 60 * 60 * 1000;
 const MODEL_NAME_RE = /^[A-Za-z0-9._:/-]{1,64}$/;
 const PLATFORM_RE = /^[a-z0-9-]{1,32}$/;
+const SUPPORTED_PLATFORMS = new Set(["claude-code", "codex"]);
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
+
+interface UserPlatformRow {
+  platform: string;
+  tokens_in: number;
+  tokens_out: number;
+  models_json: string;
+}
 
 export async function handleSync(c: AppContext): Promise<Response> {
   const user = c.get("user");
@@ -108,34 +124,117 @@ export async function handleSync(c: AppContext): Promise<Response> {
   const storedModels = safeParseModels(user.models_json);
   const newModels: Record<string, ModelAbsolute> = { ...storedModels };
   const modelStatements: D1PreparedStatement[] = [];
+  const platformStatements: D1PreparedStatement[] = [];
+  const explicitPlatforms = sanitizePlatforms(body.platforms);
 
-  for (const [name, reported] of Object.entries(body.models)) {
-    if (!MODEL_NAME_RE.test(name) || !isModelAbsolute(reported)) {
-      clamped = true;
-      continue;
+  if (body.platforms !== undefined && explicitPlatforms === null) {
+    clamped = true;
+  }
+
+  if (explicitPlatforms && Object.keys(explicitPlatforms).length > 0) {
+    for (const [name, reported] of Object.entries(body.models)) {
+      if (!MODEL_NAME_RE.test(name) || !isModelAbsolute(reported)) {
+        clamped = true;
+        continue;
+      }
+      newModels[name] = {
+        in: sanitizeCount(reported.in),
+        out: sanitizeCount(reported.out),
+        calls: sanitizeCount(reported.calls),
+      };
     }
-    const baseline = storedModels[name] ?? { in: 0, out: 0, calls: 0 };
-    const reportedIn = sanitizeCount(reported.in);
-    const reportedOut = sanitizeCount(reported.out);
-    const reportedCalls = sanitizeCount(reported.calls);
-    newModels[name] = { in: reportedIn, out: reportedOut, calls: reportedCalls };
+    const storedResult = await c.env.DB.prepare(
+      "SELECT platform, tokens_in, tokens_out, models_json FROM user_platform_stats WHERE user_id = ?"
+    ).bind(user.id).all<UserPlatformRow>();
+    const storedByPlatform = new Map(storedResult.results.map((row) => [row.platform, row]));
 
-    const modelDeltaIn = Math.max(0, reportedIn - baseline.in);
-    const modelDeltaOut = Math.max(0, reportedOut - baseline.out);
-    const modelDeltaCalls = Math.max(0, reportedCalls - baseline.calls);
-    if (modelDeltaIn === 0 && modelDeltaOut === 0 && modelDeltaCalls === 0) continue;
+    for (const [platformName, reportedPlatform] of Object.entries(explicitPlatforms)) {
+      const storedPlatform = storedByPlatform.get(platformName);
+      const baselineModels = safeParseModels(storedPlatform?.models_json ?? "{}");
+      const sanitizedModels: Record<string, ModelAbsolute> = {};
 
-    modelStatements.push(
-      c.env.DB.prepare(
-        `INSERT INTO model_stats (platform, model, tokens_in, tokens_out, calls, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(platform, model) DO UPDATE SET
-           tokens_in = tokens_in + excluded.tokens_in,
-           tokens_out = tokens_out + excluded.tokens_out,
-           calls = calls + excluded.calls,
-           updated_at = excluded.updated_at`
-      ).bind(platform, name, modelDeltaIn, modelDeltaOut, modelDeltaCalls, now)
-    );
+      for (const [name, reported] of Object.entries(reportedPlatform.models)) {
+        if (!MODEL_NAME_RE.test(name) || !isModelAbsolute(reported)) {
+          clamped = true;
+          continue;
+        }
+        const sanitized = {
+          in: sanitizeCount(reported.in),
+          out: sanitizeCount(reported.out),
+          calls: sanitizeCount(reported.calls),
+        };
+        sanitizedModels[name] = sanitized;
+        const baseline = baselineModels[name] ?? { in: 0, out: 0, calls: 0 };
+        appendModelDelta(
+          modelStatements, c.env.DB, platformName, name, sanitized, baseline, now
+        );
+      }
+
+      const platformIn = sanitizeCount(reportedPlatform.tokens_in);
+      const platformOut = sanitizeCount(reportedPlatform.tokens_out);
+      const platformUnchanged =
+        storedPlatform?.tokens_in === platformIn &&
+        storedPlatform?.tokens_out === platformOut &&
+        sameModels(safeParseModels(storedPlatform?.models_json ?? "{}"), sanitizedModels);
+      if (!platformUnchanged) {
+        platformStatements.push(
+          c.env.DB.prepare(
+            `INSERT INTO user_platform_stats
+               (user_id, platform, tokens_in, tokens_out, models_json, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id, platform) DO UPDATE SET
+               tokens_in = excluded.tokens_in,
+               tokens_out = excluded.tokens_out,
+               models_json = excluded.models_json,
+               updated_at = excluded.updated_at`
+          ).bind(
+            user.id, platformName, platformIn, platformOut,
+            JSON.stringify(sanitizedModels), now
+          )
+        );
+      }
+    }
+  } else {
+    // Legacy clients report one dominant platform and one flat model map.
+    for (const [name, reported] of Object.entries(body.models)) {
+      if (!MODEL_NAME_RE.test(name) || !isModelAbsolute(reported)) {
+        clamped = true;
+        continue;
+      }
+      const baseline = storedModels[name] ?? { in: 0, out: 0, calls: 0 };
+      const sanitized = {
+        in: sanitizeCount(reported.in),
+        out: sanitizeCount(reported.out),
+        calls: sanitizeCount(reported.calls),
+      };
+      newModels[name] = sanitized;
+      appendModelDelta(modelStatements, c.env.DB, platform, name, sanitized, baseline, now);
+    }
+    const storedPlatform = await c.env.DB.prepare(
+      `SELECT platform, tokens_in, tokens_out, models_json
+       FROM user_platform_stats WHERE user_id = ? AND platform = ?`
+    ).bind(user.id, platform).first<UserPlatformRow>();
+    if (
+      storedPlatform?.tokens_in !== totals.tokens_in ||
+      storedPlatform?.tokens_out !== totals.tokens_out ||
+      !sameModels(safeParseModels(storedPlatform?.models_json ?? "{}"), newModels)
+    ) {
+      platformStatements.push(
+        c.env.DB.prepare(
+          `INSERT INTO user_platform_stats
+             (user_id, platform, tokens_in, tokens_out, models_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, platform) DO UPDATE SET
+             tokens_in = excluded.tokens_in,
+             tokens_out = excluded.tokens_out,
+             models_json = excluded.models_json,
+             updated_at = excluded.updated_at`
+        ).bind(
+          user.id, platform, totals.tokens_in, totals.tokens_out,
+          JSON.stringify(newModels), now
+        )
+      );
+    }
   }
 
   const petUnchanged =
@@ -161,6 +260,7 @@ export async function handleSync(c: AppContext): Promise<Response> {
     totalsUnchanged &&
     platform === user.platform &&
     flagged === user.flagged &&
+    platformStatements.length === 0 &&
     modelStatements.length === 0;
 
   if (!isNoOp && user.last_sync_at !== null && now - user.last_sync_at < RATE_LIMIT_MS) {
@@ -195,6 +295,7 @@ export async function handleSync(c: AppContext): Promise<Response> {
         now,
         user.id
       ),
+      ...platformStatements,
       ...modelStatements,
     ]);
   }
@@ -203,6 +304,32 @@ export async function handleSync(c: AppContext): Promise<Response> {
   const nextSyncAfterMs = effectiveLastSync === null ? 0 : Math.max(0, RATE_LIMIT_MS - (now - effectiveLastSync));
 
   return c.json({ ok: true, clamped: isNoOp ? false : clamped, next_sync_after_ms: nextSyncAfterMs });
+}
+
+function appendModelDelta(
+  statements: D1PreparedStatement[],
+  db: D1Database,
+  platform: string,
+  name: string,
+  reported: ModelAbsolute,
+  baseline: ModelAbsolute,
+  now: number
+): void {
+  const deltaIn = Math.max(0, reported.in - baseline.in);
+  const deltaOut = Math.max(0, reported.out - baseline.out);
+  const deltaCalls = Math.max(0, reported.calls - baseline.calls);
+  if (deltaIn === 0 && deltaOut === 0 && deltaCalls === 0) return;
+  statements.push(
+    db.prepare(
+      `INSERT INTO model_stats (platform, model, tokens_in, tokens_out, calls, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(platform, model) DO UPDATE SET
+         tokens_in = tokens_in + excluded.tokens_in,
+         tokens_out = tokens_out + excluded.tokens_out,
+         calls = calls + excluded.calls,
+         updated_at = excluded.updated_at`
+    ).bind(platform, name, deltaIn, deltaOut, deltaCalls, now)
+  );
 }
 
 function sanitizeCount(n: unknown): number {
@@ -234,6 +361,40 @@ function safeParseModels(json: string): Record<string, ModelAbsolute> {
   }
 }
 
+function sameModels(a: Record<string, ModelAbsolute>, b: Record<string, ModelAbsolute>): boolean {
+  const aKeys = Object.keys(a).sort();
+  const bKeys = Object.keys(b).sort();
+  if (aKeys.length !== bKeys.length || aKeys.some((key, index) => key !== bKeys[index])) return false;
+  return aKeys.every((key) => {
+    const left = a[key];
+    const right = b[key];
+    return left.in === right.in && left.out === right.out && left.calls === right.calls;
+  });
+}
+
+function sanitizePlatforms(
+  platforms: Record<string, PlatformAbsolute> | undefined
+): Record<string, PlatformAbsolute> | null {
+  if (platforms === undefined) return null;
+  const result: Record<string, PlatformAbsolute> = {};
+  for (const [name, value] of Object.entries(platforms)) {
+    if (!SUPPORTED_PLATFORMS.has(name) || !isPlatformAbsolute(value)) return null;
+    result[name] = value;
+  }
+  return result;
+}
+
+function isPlatformAbsolute(v: unknown): v is PlatformAbsolute {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    typeof (v as PlatformAbsolute).tokens_in === "number" &&
+    typeof (v as PlatformAbsolute).tokens_out === "number" &&
+    typeof (v as PlatformAbsolute).models === "object" &&
+    (v as PlatformAbsolute).models !== null
+  );
+}
+
 function isValidBody(body: unknown): body is SyncRequestBody {
   if (typeof body !== "object" || body === null) return false;
   const b = body as Record<string, unknown>;
@@ -260,5 +421,6 @@ function isValidBody(body: unknown): body is SyncRequestBody {
     if (best.name != null && typeof best.name !== "string") return false;
   }
   if (typeof b.models !== "object" || b.models === null) return false;
+  if (b.platforms !== undefined && (typeof b.platforms !== "object" || b.platforms === null)) return false;
   return true;
 }

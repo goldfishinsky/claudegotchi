@@ -11,13 +11,10 @@ import PetCore
 struct DropdownCard: View {
     @ObservedObject var petModel: PetPanelModel
     @ObservedObject var agentModel: AgentActivityModel
-    @ObservedObject var services: AppServices
     @ObservedObject var driver: SystemStatsDriver
     @ObservedObject var usageDriver: ClaudeUsageDriver
-    @ObservedObject var islandModel: IslandModel
     var onOpenStats: () -> Void
     var onOpenSystemStats: () -> Void = {}
-    var onToggleIsland: (Bool) -> Void
     var onOpenSettings: () -> Void
     var onJump: (AgentActivity) -> Void
     var onHeightChange: (CGFloat) -> Void = { _ in }
@@ -251,26 +248,15 @@ struct DropdownCard: View {
             .controlSize(.regular)
             .tint(rgb(1.0, 0.62, 0.34))
 
-            if islandModel.notchAvailable {
-                Toggle(isOn: Binding(get: { islandModel.enabled }, set: { onToggleIsland($0) })) {
-                    Text("灵动岛").font(WFont.label).foregroundStyle(t.ink)
-                }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .fixedSize()
-            }
-
-            Toggle(isOn: Binding(get: { services.paused }, set: { services.setPaused($0) })) {
-                Text("暂停").font(WFont.label).foregroundStyle(t.ink)
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .fixedSize()
-
             Button(action: onOpenSettings) {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(t.ink)
+                    .frame(width: 30, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(t.panelFill)
+                    )
             }
             .buttonStyle(.plain)
             .help("设置")
@@ -397,14 +383,11 @@ private struct AgentRowView: View {
                         .frame(width: 6, height: 6)
                     Text(a.repoLabel).font(WFont.vLabel).foregroundStyle(t.ink)
                         .lineLimit(1).truncationMode(.middle).layoutPriority(1)
-                    if a.isCodex {
-                        Text("codex").font(WFont.caption)
-                            .foregroundStyle(rgb(0.55, 0.45, 0.95))
-                            .padding(.horizontal, 4).padding(.vertical, 0.5)
-                            .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(rgb(0.72, 0.57, 1.0).opacity(0.18)))
-                            .fixedSize()
-                    }
+                    AgentBrandMark(
+                        platform: a.platform,
+                        color: a.isCodex ? t.inkStrong : rgb(0.88, 0.46, 0.30)
+                    )
+                    .frame(width: 12, height: 12)
                     if let model = a.model {
                         Text(model).font(WFont.caption).foregroundStyle(t.inkFaint)
                             .lineLimit(1).fixedSize()
@@ -451,6 +434,6 @@ private struct AgentRowView: View {
             .fill(hovering ? t.ink.opacity(0.09) : .clear))
         .onHover { hovering = $0 }
         .onTapGesture { onJump(a) }
-        .help("跳到发起该会话的终端窗口")
+        .help(a.isCodex ? "在 Codex 中打开此任务" : "跳到发起该会话的终端窗口")
     }
 }

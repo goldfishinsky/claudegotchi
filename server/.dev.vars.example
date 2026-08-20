@@ -1,0 +1,2 @@
+GITHUB_CLIENT_SECRET=replace-with-github-oauth-client-secret
+OAUTH_STATE_SECRET=replace-with-a-long-random-secret

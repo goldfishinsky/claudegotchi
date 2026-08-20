@@ -108,4 +108,24 @@ final class LeaderboardPayloadTests: XCTestCase {
         let payload = try XCTUnwrap(try LeaderboardPayload.build(db: db, nowMs: nowMs))
         XCTAssertEqual(payload.platform, "claude-code")
     }
+
+    func testPayloadCarriesExplicitCountsForBothPlatforms() throws {
+        _ = try Pet.insert(.fresh(species: "frog", at: nowMs - day), into: db)
+        try db.write {
+            try ModelUsageStore.bump(
+                platform: ModelPlatform.claudeCode, model: "claude-sonnet-5",
+                tokensIn: 80, tokensOut: 20, in: $0
+            )
+            try ModelUsageStore.bump(
+                platform: ModelPlatform.codex, model: "gpt-5-codex",
+                tokensIn: 300, tokensOut: 50, in: $0
+            )
+        }
+        let payload = try XCTUnwrap(try LeaderboardPayload.build(db: db, nowMs: nowMs))
+        XCTAssertEqual(payload.platforms[ModelPlatform.claudeCode]?.tokensIn, 80)
+        XCTAssertEqual(payload.platforms[ModelPlatform.claudeCode]?.tokensOut, 20)
+        XCTAssertEqual(payload.platforms[ModelPlatform.codex]?.tokensIn, 300)
+        XCTAssertEqual(payload.platforms[ModelPlatform.codex]?.tokensOut, 50)
+        XCTAssertEqual(payload.platforms[ModelPlatform.codex]?.models["gpt-5-codex"]?.calls, 1)
+    }
 }

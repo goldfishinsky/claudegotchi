@@ -109,12 +109,39 @@ enum TerminalJumpPlanner {
     }
 }
 
+/// Codex hooks are stored as `codex-<thread UUID>` so they cannot collide with
+/// Claude sessions. The desktop client accepts the raw UUID in its deeplink.
+enum CodexThreadLink {
+    static let sessionPrefix = "codex-"
+
+    static func threadID(from sessionID: String) -> String? {
+        guard sessionID.hasPrefix(sessionPrefix) else { return nil }
+        let raw = String(sessionID.dropFirst(sessionPrefix.count))
+        guard UUID(uuidString: raw) != nil else { return nil }
+        return raw
+    }
+
+    static func url(for sessionID: String) -> URL? {
+        guard let threadID = threadID(from: sessionID) else { return nil }
+        return URL(string: "codex://threads/\(threadID)")
+    }
+}
+
 // MARK: - live controller
 
 @MainActor
 final class SessionJumper {
     static let shared = SessionJumper()
     private let promptedKey = "claudegotchi.jumper.axPrompted"
+
+    /// Opens the exact task in the Codex/ChatGPT desktop client. Returns false
+    /// for non-Codex IDs or when macOS has no handler for the `codex` scheme, so
+    /// callers can fall back to the existing terminal jump.
+    @discardableResult
+    func jumpToCodex(sessionId: String) -> Bool {
+        guard let url = CodexThreadLink.url(for: sessionId) else { return false }
+        return NSWorkspace.shared.open(url)
+    }
 
     func jump(cwd: String, tty: String? = nil, markerToken: String? = nil) {
         guard !cwd.isEmpty || (tty?.isEmpty == false) else { return }

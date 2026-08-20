@@ -1,9 +1,10 @@
 import type { Context } from "hono";
 import type { Env, Variables } from "./types";
 
-const VALID_PLATFORMS = new Set(["all", "claude-code"]);
+const VALID_PLATFORMS = new Set(["all", "claude-code", "codex"]);
 
 interface ModelStatRow {
+  platform: string;
   model: string;
   tokens_in: number;
   tokens_out: number;
@@ -11,6 +12,7 @@ interface ModelStatRow {
 }
 
 interface ModelUsersRow {
+  platform: string;
   model: string;
   users: number;
 }
@@ -23,13 +25,17 @@ export async function handleStats(c: Context<{ Bindings: Env; Variables: Variabl
   const db = c.env.DB;
 
   const statsSql = platformFilter
-    ? "SELECT model, tokens_in, tokens_out, calls FROM model_stats WHERE platform = ?"
-    : "SELECT model, SUM(tokens_in) as tokens_in, SUM(tokens_out) as tokens_out, SUM(calls) as calls FROM model_stats GROUP BY model";
+    ? "SELECT platform, model, tokens_in, tokens_out, calls FROM model_stats WHERE platform = ?"
+    : "SELECT platform, model, tokens_in, tokens_out, calls FROM model_stats";
   const statsArgs = platformFilter ? [platformFilter] : [];
 
   const usersSql = platformFilter
-    ? "SELECT je.key as model, COUNT(DISTINCT u.id) as users FROM users u, json_each(u.models_json) je WHERE u.platform = ? GROUP BY je.key"
-    : "SELECT je.key as model, COUNT(DISTINCT u.id) as users FROM users u, json_each(u.models_json) je GROUP BY je.key";
+    ? `SELECT ups.platform, je.key as model, COUNT(DISTINCT ups.user_id) as users
+       FROM user_platform_stats ups, json_each(ups.models_json) je
+       WHERE ups.platform = ? GROUP BY ups.platform, je.key`
+    : `SELECT ups.platform, je.key as model, COUNT(DISTINCT ups.user_id) as users
+       FROM user_platform_stats ups, json_each(ups.models_json) je
+       GROUP BY ups.platform, je.key`;
   const usersArgs = platformFilter ? [platformFilter] : [];
 
   const [statsResult, usersResult] = await Promise.all([
@@ -37,15 +43,16 @@ export async function handleStats(c: Context<{ Bindings: Env; Variables: Variabl
     db.prepare(usersSql).bind(...usersArgs).all<ModelUsersRow>(),
   ]);
 
-  const usersByModel = new Map(usersResult.results.map((r) => [r.model, r.users]));
+  const usersByModel = new Map(usersResult.results.map((r) => [`${r.platform}\u0001${r.model}`, r.users]));
 
   const models = statsResult.results
     .map((row) => ({
+      platform: row.platform,
       model: row.model,
       tokens_in: row.tokens_in,
       tokens_out: row.tokens_out,
       calls: row.calls,
-      users: usersByModel.get(row.model) ?? 0,
+      users: usersByModel.get(`${row.platform}\u0001${row.model}`) ?? 0,
     }))
     .sort((a, b) => b.calls - a.calls);
 

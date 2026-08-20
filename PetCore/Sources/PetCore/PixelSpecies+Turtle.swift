@@ -142,9 +142,9 @@ extension PixelSpeciesCatalog {
             "...............##...............",
         ]
         return assemble(id: "turtle", nameZh: "小乌龟", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 6, mouthCols: [7, 8], cheek: [(5, 4), (5, 11)], z: [(2, 12), (0, 12)], sweat: (2, 11)), turtleSleep),
-            ("child", child, Feat(mouthRow: 5, mouthCols: [7, 8], cheek: [(4, 4), (4, 11)], z: [(2, 12), (0, 12)], sweat: (2, 11)), turtleSleep),
-            ("adult", adult, Feat(mouthRow: 5, mouthCols: [7, 8], cheek: [(4, 4), (4, 11)], z: [(1, 12), (0, 12)], sweat: (2, 11)), turtleSleep),
+            ("baby", baby, Feat(mouthRow: 6, mouthCols: [7, 8], cheek: [(5, 4), (5, 11)], z: [(2, 12), (0, 12)], sweat: (2, 11), pawL: (12, 4), pawR: (12, 11), feetRow: 14), turtleSleep),
+            ("child", child, Feat(mouthRow: 5, mouthCols: [7, 8], cheek: [(4, 4), (4, 11)], z: [(2, 12), (0, 12)], sweat: (2, 11), pawL: (13, 4), pawR: (13, 11), feetRow: 15), turtleSleep),
+            ("adult", adult, Feat(mouthRow: 5, mouthCols: [7, 8], cheek: [(4, 4), (4, 11)], z: [(1, 12), (0, 12)], sweat: (2, 11), pawL: (13, 4), pawR: (13, 11), feetRow: 15), turtleSleep),
         ])
     }
 }

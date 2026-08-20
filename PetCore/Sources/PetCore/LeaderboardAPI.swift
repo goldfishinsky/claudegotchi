@@ -17,6 +17,11 @@ public enum DevicePollResult: Equatable, Sendable {
     case failed(String)
 }
 
+public struct WebAuthStart: Codable, Equatable, Sendable {
+    public let authorizationUrl: String
+    public init(authorizationUrl: String) { self.authorizationUrl = authorizationUrl }
+}
+
 public struct AuthUser: Decodable, Equatable, Sendable {
     public let id: Int64
     public let login: String
@@ -70,15 +75,33 @@ public struct SyncPayload: Codable, Equatable, Sendable {
         }
     }
 
+    public struct PlatformCounts: Codable, Equatable, Sendable {
+        public let tokensIn: Int64
+        public let tokensOut: Int64
+        public let models: [String: ModelCounts]
+
+        public init(tokensIn: Int64, tokensOut: Int64, models: [String: ModelCounts]) {
+            self.tokensIn = tokensIn
+            self.tokensOut = tokensOut
+            self.models = models
+        }
+    }
+
+    /// Legacy dominant-platform field, kept so older servers can still accept a sync.
     public let platform: String
     public let totals: Totals
     public let pet: PetSnapshot?
     public let best: Best?
+    /// Legacy flat model map. New servers use `platforms` as the source of truth.
     public let models: [String: ModelCounts]
+    public let platforms: [String: PlatformCounts]
 
-    public init(platform: String, totals: Totals, pet: PetSnapshot?, best: Best?, models: [String: ModelCounts]) {
+    public init(
+        platform: String, totals: Totals, pet: PetSnapshot?, best: Best?,
+        models: [String: ModelCounts], platforms: [String: PlatformCounts] = [:]
+    ) {
         self.platform = platform; self.totals = totals
-        self.pet = pet; self.best = best; self.models = models
+        self.pet = pet; self.best = best; self.models = models; self.platforms = platforms
     }
 }
 
@@ -109,6 +132,7 @@ public struct LeaderboardPage: Decodable, Equatable, Sendable {
 }
 
 public struct GlobalModelStat: Decodable, Equatable, Sendable {
+    public let platform: String?
     public let model: String
     public let tokensIn: Int64
     public let tokensOut: Int64
@@ -147,6 +171,8 @@ public enum LeaderboardError: Error, Equatable {
 }
 
 public protocol LeaderboardService: Sendable {
+    func startWebAuth(codeChallenge: String) async throws -> WebAuthStart
+    func exchangeWebAuth(grant: String, codeVerifier: String) async throws -> AuthResponse
     func startDeviceFlow() async throws -> DeviceCodeStart
     func pollDeviceFlow(deviceCode: String) async throws -> DevicePollResult
     func authenticate(githubToken: String) async throws -> AuthResponse
@@ -179,6 +205,20 @@ public final class HTTPLeaderboardClient: LeaderboardService, @unchecked Sendabl
         let dec = JSONDecoder()
         dec.keyDecodingStrategy = .convertFromSnakeCase
         decoder = dec
+    }
+
+    public func startWebAuth(codeChallenge: String) async throws -> WebAuthStart {
+        let body = try encoder.encode(["code_challenge": codeChallenge])
+        let req = request(path: "/v1/auth/github/web/start", method: "POST", token: nil, jsonBody: body)
+        let (data, response) = try await perform(req)
+        return try decodeResponse(WebAuthStart.self, from: data, response: response)
+    }
+
+    public func exchangeWebAuth(grant: String, codeVerifier: String) async throws -> AuthResponse {
+        let body = try encoder.encode(["grant": grant, "code_verifier": codeVerifier])
+        let req = request(path: "/v1/auth/github/web/exchange", method: "POST", token: nil, jsonBody: body)
+        let (data, response) = try await perform(req)
+        return try decodeResponse(AuthResponse.self, from: data, response: response)
     }
 
     public func startDeviceFlow() async throws -> DeviceCodeStart {

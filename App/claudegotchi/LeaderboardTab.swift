@@ -8,7 +8,7 @@ struct LeaderboardTab: View {
 
     enum Board: Hashable { case survival, tokens, models }
     enum SurvivalMode: Hashable { case current, best }
-    enum PlatformFilter: Hashable { case all, claudeCode }
+    enum PlatformFilter: Hashable { case all, claudeCode, codex }
     private enum LoadState { case loading, loaded, failed }
 
     @State private var board: Board = .survival
@@ -28,7 +28,21 @@ struct LeaderboardTab: View {
         }
     }
 
-    private var platformParam: String? { platform == .all ? nil : "claude-code" }
+    private var platformParam: String? {
+        switch platform {
+        case .all: return nil
+        case .claudeCode: return ModelPlatform.claudeCode
+        case .codex: return ModelPlatform.codex
+        }
+    }
+
+    private var platformLabel: String {
+        switch platform {
+        case .all: return "全部平台"
+        case .claudeCode: return "Claude Code"
+        case .codex: return "Codex"
+        }
+    }
 
     private var fetchKey: String { "\(boardString)|\(platformParam ?? "-")|\(reloadToken)" }
 
@@ -40,7 +54,7 @@ struct LeaderboardTab: View {
                 (.models, "全球模型"),
             ])
 
-            if board != .models { controls }
+            controls
 
             if driver.snapshot.account == nil { loggedOutBanner }
 
@@ -70,8 +84,9 @@ struct LeaderboardTab: View {
             Menu {
                 Button("全部平台") { platform = .all }
                 Button("Claude Code") { platform = .claudeCode }
+                Button("Codex") { platform = .codex }
             } label: {
-                Label(platform == .all ? "全部平台" : "Claude Code",
+                Label(platformLabel,
                       systemImage: "line.3.horizontal.decrease.circle")
                     .font(WFont.section).foregroundStyle(t.ink)
             }
@@ -181,6 +196,12 @@ struct LeaderboardTab: View {
                 HStack(spacing: 8) {
                     Text(model.model).font(WFont.label).foregroundStyle(t.inkStrong)
                         .lineLimit(1).truncationMode(.middle)
+                    if platform == .all, let source = model.platform {
+                        Text(source == ModelPlatform.codex ? "Codex" : "Claude")
+                            .font(WFont.caption).foregroundStyle(t.inkFaint)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(t.panelFill))
+                    }
                     Spacer()
                     Text(TokenFormat.compact(model.tokensIn + model.tokensOut) + " tok")
                         .font(WFont.value).monospacedDigit().foregroundStyle(t.ink)

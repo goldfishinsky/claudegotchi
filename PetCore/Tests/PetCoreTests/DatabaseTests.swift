@@ -163,6 +163,25 @@ final class DatabaseTests: XCTestCase {
         XCTAssertTrue(try petColumns(db).contains("genome"))
     }
 
+    func testV7AddsPlatformToModelUsageAndBackfillsByModel() throws {
+        let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: dbPath) }
+        let queue = try DatabaseQueue(path: dbPath)
+        try Database.migrator.migrate(queue, upTo: "v6_genome")
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO model_usage (model, tokens_in, tokens_out, calls) VALUES (?, 10, 2, 1), (?, 30, 4, 2)",
+                arguments: ["claude-sonnet-5", "gpt-5-codex"]
+            )
+        }
+
+        try Database.migrator.migrate(queue)
+
+        let rows = try ModelUsageStore.all(in: queue)
+        XCTAssertEqual(rows.first { $0.model == "claude-sonnet-5" }?.platform, ModelPlatform.claudeCode)
+        XCTAssertEqual(rows.first { $0.model == "gpt-5-codex" }?.platform, ModelPlatform.codex)
+    }
+
     func testV6BackfillsGenomeMatchingExistingSpecies() throws {
         let dbPath = NSTemporaryDirectory() + "dbtest-\(UUID()).sqlite"
         defer { try? FileManager.default.removeItem(atPath: dbPath) }

@@ -27,6 +27,18 @@ private struct MockTTYEnv: TerminalEnvironment {
 }
 
 final class SessionJumperTests: XCTestCase {
+    func testCodexSessionBuildsDesktopThreadDeeplink() {
+        let id = "019fb1cf-cc6f-7b81-8b8b-4ffbe3613f1e"
+        XCTAssertEqual(CodexThreadLink.threadID(from: "codex-\(id)"), id)
+        XCTAssertEqual(CodexThreadLink.url(for: "codex-\(id)")?.absoluteString,
+                       "codex://threads/\(id)")
+    }
+
+    func testCodexDeeplinkRejectsClaudeAndMalformedSessionIDs() {
+        XCTAssertNil(CodexThreadLink.url(for: "claude-session"))
+        XCTAssertNil(CodexThreadLink.url(for: "codex-not-a-thread-id"))
+    }
+
     func testMatchTargetsBasenameAndLastTwo() {
         XCTAssertEqual(
             TerminalJumpPlanner.matchTargets(cwd: "/Users/jalen/Documents/code/claudegotchi"),

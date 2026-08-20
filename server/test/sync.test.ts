@@ -254,6 +254,49 @@ it("accepts a pet with the name key omitted and stores name as NULL without clam
   expect(row?.pet_birthday).toBe(birthday);
 });
 
+it("stores a dual-platform payload in separate baselines and global model buckets", async ({ expect }) => {
+  const { token } = await insertUser({ id: 8 });
+  const response = await syncRequest(token, {
+    platform: "codex",
+    totals: { tokens_in: 500, tokens_out: 100, sessions: 2, tools_used: 4 },
+    pet: null,
+    best: null,
+    models: {
+      "claude-sonnet-5": { in: 100, out: 20, calls: 2 },
+      "gpt-5-codex": { in: 400, out: 80, calls: 3 },
+    },
+    platforms: {
+      "claude-code": {
+        tokens_in: 100,
+        tokens_out: 20,
+        models: { "claude-sonnet-5": { in: 100, out: 20, calls: 2 } },
+      },
+      codex: {
+        tokens_in: 400,
+        tokens_out: 80,
+        models: { "gpt-5-codex": { in: 400, out: 80, calls: 3 } },
+      },
+    },
+  });
+  expect(response.status).toBe(200);
+
+  const baselines = await testEnv.DB.prepare(
+    "SELECT platform, tokens_in, tokens_out FROM user_platform_stats WHERE user_id = ? ORDER BY platform"
+  ).bind(8).all<{ platform: string; tokens_in: number; tokens_out: number }>();
+  expect(baselines.results).toEqual([
+    { platform: "claude-code", tokens_in: 100, tokens_out: 20 },
+    { platform: "codex", tokens_in: 400, tokens_out: 80 },
+  ]);
+
+  const stats = await testEnv.DB.prepare(
+    "SELECT platform, model, tokens_in, tokens_out, calls FROM model_stats ORDER BY platform"
+  ).all();
+  expect(stats.results).toEqual([
+    { platform: "claude-code", model: "claude-sonnet-5", tokens_in: 100, tokens_out: 20, calls: 2 },
+    { platform: "codex", model: "gpt-5-codex", tokens_in: 400, tokens_out: 80, calls: 3 },
+  ]);
+});
+
 it("rejects sync requests without a valid bearer token", async ({ expect }) => {
   const response = await callWorker("https://example.com/v1/sync", {
     method: "POST",

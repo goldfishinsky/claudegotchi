@@ -19,4 +19,13 @@ final class LevelTests: XCTestCase {
         XCTAssertEqual(Level.xpForLevel(5), 2_500)
         XCTAssertEqual(Level.xpForLevel(10), 10_000)
     }
+
+    func testGrowthJourneyHasLongHorizonAndLocalProgress() {
+        XCTAssertEqual(GrowthJourney.current(xp: 0).nameZh, "初生")
+        XCTAssertEqual(GrowthJourney.current(xp: 280_000).nameZh, "觉醒")
+        XCTAssertEqual(GrowthJourney.next(xp: 280_000)?.nameZh, "星辉")
+        XCTAssertEqual(GrowthJourney.milestones.last?.minXp, 100_000_000)
+        XCTAssertEqual(GrowthJourney.progress(xp: 625_000), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(GrowthJourney.progress(xp: 100_000_000), 1)
+    }
 }

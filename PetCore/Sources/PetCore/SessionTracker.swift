@@ -3,6 +3,7 @@ import GRDB
 
 public struct ActiveSession: Equatable {
     public let sessionId: String
+    public let platform: String
     public let cwd: String?
     public let repo: String
     public let startedAtMs: Int64
@@ -12,10 +13,12 @@ public struct ActiveSession: Equatable {
     /// latest event is not a stop, or the stop carried none).
     public let backgroundTasks: Int
 
-    public init(sessionId: String, cwd: String?, repo: String,
+    public init(sessionId: String, platform: String = ModelPlatform.claudeCode,
+                cwd: String?, repo: String,
                 startedAtMs: Int64, lastActivityMs: Int64, lastTool: String?,
                 backgroundTasks: Int = 0) {
         self.sessionId = sessionId
+        self.platform = platform
         self.cwd = cwd
         self.repo = repo
         self.startedAtMs = startedAtMs
@@ -71,8 +74,11 @@ public enum SessionTracker {
             if last.ts < cutoff { continue }
 
             let cwd = last.cwd ?? start.cwd
+            let platform = rows.reversed().compactMap { platformFromPayload($0.payload) }.first
+                ?? (sid.hasPrefix("codex-") ? ModelPlatform.codex : ModelPlatform.claudeCode)
             result.append(ActiveSession(
                 sessionId: sid,
+                platform: platform,
                 cwd: cwd,
                 repo: repoLabel(cwd: cwd, repoPaths: repoPaths),
                 startedAtMs: start.ts,
@@ -103,6 +109,14 @@ public enum SessionTracker {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return obj["tool"] as? String
+    }
+
+    private static func platformFromPayload(_ payload: String?) -> String? {
+        guard let payload, let data = payload.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let platform = obj["platform"] as? String, !platform.isEmpty
+        else { return nil }
+        return platform
     }
 
     private static func backgroundTasks(_ payload: String?) -> Int {

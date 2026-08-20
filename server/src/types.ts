@@ -1,6 +1,8 @@
 export interface Env {
   DB: D1Database;
   GITHUB_CLIENT_ID: string;
+  GITHUB_CLIENT_SECRET: string;
+  OAUTH_STATE_SECRET: string;
 }
 
 export interface UserRow {
@@ -36,6 +38,12 @@ export interface ModelAbsolute {
   calls: number;
 }
 
+export interface PlatformAbsolute {
+  tokens_in: number;
+  tokens_out: number;
+  models: Record<string, ModelAbsolute>;
+}
+
 export interface SyncTotals {
   tokens_in: number;
   tokens_out: number;
@@ -63,6 +71,7 @@ export interface SyncRequestBody {
   pet?: SyncPet | null;
   best?: SyncBest | null;
   models: Record<string, ModelAbsolute>;
+  platforms?: Record<string, PlatformAbsolute>;
 }
 
 export type Variables = {

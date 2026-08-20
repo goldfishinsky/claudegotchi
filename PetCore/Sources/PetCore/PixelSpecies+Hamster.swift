@@ -108,9 +108,9 @@ extension PixelSpeciesCatalog {
             "................................",
         ]
         return assemble(id: "hamster", nameZh: "小仓鼠", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 10, mouthCols: [7, 8], cheek: [(6, 3), (6, 12), (7, 3), (7, 12)], z: [(3, 13), (1, 13)], sweat: (4, 13)), nil),
-            ("child", child, Feat(mouthRow: 10, mouthCols: [7, 8], cheek: [(6, 2), (6, 13), (7, 2), (7, 13)], z: [(3, 13), (1, 13)], sweat: (4, 13)), nil),
-            ("adult", adult, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(6, 2), (6, 13), (7, 2), (7, 13)], z: [(2, 13), (0, 13)], sweat: (3, 13)), nil),
+            ("baby", baby, Feat(mouthRow: 10, mouthCols: [7, 8], cheek: [(6, 3), (6, 12), (7, 3), (7, 12)], z: [(3, 13), (1, 13)], sweat: (4, 13), pawL: (12, 4), pawR: (12, 11), feetRow: 14), nil),
+            ("child", child, Feat(mouthRow: 10, mouthCols: [7, 8], cheek: [(6, 2), (6, 13), (7, 2), (7, 13)], z: [(3, 13), (1, 13)], sweat: (4, 13), pawL: (12, 4), pawR: (12, 11), feetRow: 14), nil),
+            ("adult", adult, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(6, 2), (6, 13), (7, 2), (7, 13)], z: [(2, 13), (0, 13)], sweat: (3, 13), pawL: (13, 4), pawR: (13, 11), feetRow: 15), nil),
         ])
     }
 }

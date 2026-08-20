@@ -10,6 +10,7 @@ public struct PixelSpeciesDef: Equatable {
     public let stages: [(id: String, minXp: Int)]
     public let frames: [String: [PixelFrame]]
     public let iconGrids: [String: PixelFrame]
+    public let anchors: [String: SpriteAnchors]
 
     public static func == (lhs: PixelSpeciesDef, rhs: PixelSpeciesDef) -> Bool {
         lhs.id == rhs.id && lhs.nameZh == rhs.nameZh
@@ -43,7 +44,7 @@ public enum PixelSpeciesCatalog {
         0xFF4A_3A34, // 3 pupil
         0xFFFF_9DB4, // 4 blush
         0xFFC2_CCEE, // 5 sleep Z
-        0xFFAF_C894, // 6 sick body tint
+        0xFFF2_C6A0, // 6 legacy recovery tint (warm peach; never replace the whole body)
         0xFF8C_C4F2, // 7 sweat
         0xFF83_CE63, // 8 prop veggie / confetti green
         0xFF4E_9B3A, // 9 legacy
@@ -57,7 +58,7 @@ public enum PixelSpeciesCatalog {
         0xFFB4_9BF0, // 17 legacy
         0xFF84_68CE, // 18 legacy
         0xFFF6_E1A8, // 19 legacy
-        0xFFB7_ADA0, // 20 prop: laptop shell (warm gray)
+        0xFF9A_A6B4, // 20 prop: laptop shell (cool gray)
         0xFF9F_E0E8, // 21 prop: screen glow / spark (soft cyan)
         0xFFF0_6A82, // 22 prop: umeboshi / heart (warm red)
         0xFFE0_A96B, // 23 prop: bento box (tan)
@@ -72,6 +73,7 @@ public enum PixelSpeciesCatalog {
         0xFF23_8F55, // 36 prop: terminal green
         0xFF36_4A43, // 37 prop: nori
         0xFFE4_DAC4, // 38 prop: rice shade
+        0xFF6F_A9B8, // 39 screen spill, off-beat
     ]
 
     static let frogBase4 = SpeciesBase4(body: 0xFF83_CE63, dark: 0xFF4E_9B3A, light: 0xFFE7_F3C0, accent: 0xFF4E_9B3A)
@@ -106,36 +108,38 @@ public enum PixelSpeciesCatalog {
 
     // MARK: - symbol → slot mapping
 
-    private static func px(_ ch: Character) -> UInt8 {
-        switch ch {
-        case "#": return 1
-        case "w": return 2
-        case "x": return 3
-        case "*": return 4
-        case "z": return 5
-        case "s": return 6
-        case ",": return 7
-        case "O": return slotBody
-        case "o": return slotBodyDark
-        case "L": return slotBodyLight
-        case "D": return slotOutline
-        case "+": return slotLight
-        case "S": return slotSecondary
-        case "d": return slotSecondaryDark
-        case "^": return slotAccent
+    private static func px(_ ascii: UInt8) -> UInt8 {
+        switch ascii {
+        case UInt8(ascii: "#"): return 1
+        case UInt8(ascii: "w"): return 2
+        case UInt8(ascii: "x"): return 3
+        case UInt8(ascii: "*"): return 4
+        case UInt8(ascii: "z"): return 5
+        case UInt8(ascii: "s"): return 6
+        case UInt8(ascii: ","): return 7
+        case UInt8(ascii: "G"): return 21
+        case UInt8(ascii: "g"): return 39
+        case UInt8(ascii: "O"): return slotBody
+        case UInt8(ascii: "o"): return slotBodyDark
+        case UInt8(ascii: "L"): return slotBodyLight
+        case UInt8(ascii: "D"): return slotOutline
+        case UInt8(ascii: "+"): return slotLight
+        case UInt8(ascii: "S"): return slotSecondary
+        case UInt8(ascii: "d"): return slotSecondaryDark
+        case UInt8(ascii: "^"): return slotAccent
         default: return 0
         }
     }
 
     private static func f(_ rows: [String]) -> PixelFrame {
-        rows.map { $0.map(px) }
+        rows.map { row in row.utf8.map(px) }
     }
 
     // MARK: - grid transforms (scale-aware: a 32×32 grid animates as an exact 2x
     // of the same 16×16 art, so the mechanical upscale is visually lossless).
     // Feature coordinates are authored in 16-space; `unit = side / 16`.
 
-    private static func unit(_ g: [String]) -> Int { max(1, g.count / 16) }
+    static func unit(_ g: [String]) -> Int { max(1, g.count / 16) }
 
     private static func stamp(_ g: [String], _ pts: [(Int, Int, Character)]) -> [String] {
         let n = g.count, u = unit(g)
@@ -149,7 +153,7 @@ public enum PixelSpeciesCatalog {
         return m.map { String($0) }
     }
 
-    private static func squash(_ g: [String]) -> [String] {
+    static func squash(_ g: [String]) -> [String] {
         let n = g.count, u = unit(g)
         var m = g.map(Array.init)
         let split = 9 * u
@@ -158,7 +162,7 @@ public enum PixelSpeciesCatalog {
         return m.map { String($0) }
     }
 
-    private static func bounce(_ g: [String], up n: Int) -> [String] {
+    static func bounce(_ g: [String], up n: Int) -> [String] {
         let side = g.count, shift = n * unit(g)
         let src = g.map(Array.init)
         var out = Array(repeating: Array(repeating: Character("."), count: side), count: side)
@@ -166,20 +170,19 @@ public enum PixelSpeciesCatalog {
         return out.map { String($0) }
     }
 
-    private static func sickly(_ g: [String]) -> [String] {
-        g.map { row in String(row.map { "OLSd+^".contains($0) ? Character("s") : $0 }) }
-    }
-
-    private static func closeEyes(_ g: [String]) -> [String] {
+    /// Drops the lid over `fraction` of each eye: 1.0 shuts it, 0.5 leaves a
+    /// half-open sleepy squint.
+    static func closeEyes(_ g: [String], fraction: Double = 1.0) -> [String] {
         let n = g.count
         var m = g.map(Array.init)
         var pts: [(Int, Int)] = []
         for r in 0..<n { for c in 0..<n where m[r][c] == "w" || m[r][c] == "x" { pts.append((r, c)) } }
         for side in [pts.filter { $0.1 < n / 2 }, pts.filter { $0.1 >= n / 2 }] where !side.isEmpty {
-            let maxR = side.map(\.0).max()!
+            let minR = side.map(\.0).min()!, maxR = side.map(\.0).max()!
+            let lid = minR + Int((Double(maxR - minR) * fraction).rounded())
             let minC = side.map(\.1).min()!, maxC = side.map(\.1).max()!
-            for (r, c) in side { m[r][c] = "O" }
-            for c in minC...maxC { m[maxR][c] = "#" }
+            for (r, c) in side where r <= lid { m[r][c] = "O" }
+            for c in minC...maxC { m[lid][c] = "#" }
         }
         return m.map { String($0) }
     }
@@ -192,6 +195,22 @@ public enum PixelSpeciesCatalog {
         let cheek: [(Int, Int)]
         let z: [(Int, Int)]
         let sweat: (Int, Int)
+        let pawL: (Int, Int)
+        let pawR: (Int, Int)
+        let feetRow: Int
+
+        var anchors: SpriteAnchors {
+            let left = cheek.min { $0.1 < $1.1 } ?? (mouthRow, 0)
+            let right = cheek.max { $0.1 < $1.1 } ?? (mouthRow, 15)
+            return SpriteAnchors(
+                mouth: GridPoint(mouthRow, mouthCols[mouthCols.count / 2]),
+                pawL: GridPoint(pawL.0, pawL.1),
+                pawR: GridPoint(pawR.0, pawR.1),
+                feetRow: feetRow,
+                cheekL: GridPoint(left.0, left.1),
+                cheekR: GridPoint(right.0, right.1)
+            )
+        }
     }
 
     private static func anims(_ base: [String], _ ft: Feat, sleep: [String]? = nil) -> [String: [PixelFrame]] {
@@ -201,7 +220,10 @@ public enum PixelSpeciesCatalog {
         let blush = ft.cheek.map { ($0.0, $0.1, Character("*")) }
         let happy = stamp(base, smile + blush)
 
-        let sickBase = sickly(closeEyes(base))
+        // Preserve the pet's identity palette in low-health states. A full-body
+        // gray-green wash reads as mouldy/dead; posture, expression, sweat, and
+        // warm cheeks communicate "needs care" without making the pet repellent.
+        let sickBase = stamp(closeEyes(base), blush)
         let frown = ft.mouthCols.map { (ft.mouthRow, $0, Character("o")) }
         let sick0 = stamp(sickBase, frown + [(ft.sweat.0, ft.sweat.1, Character(","))])
         let sick1 = stamp(squash(sickBase), [(ft.sweat.0 + 1, ft.sweat.1, Character(","))])
@@ -210,11 +232,19 @@ public enum PixelSpeciesCatalog {
         let z0 = stamp(slp, [(ft.z[0].0, ft.z[0].1, Character("z"))])
         let z1 = stamp(slp, [(ft.z[0].0, ft.z[0].1, Character("z")), (ft.z[1].0, ft.z[1].1, Character("z"))])
 
+        let a = ft.anchors
         return [
             "idle": [f(base), f(squash(base))],
             "happy": [f(bounce(happy, up: 1)), f(happy)],
             "sick": [f(sick0), f(sick1)],
             "sleeping": [f(z0), f(z1)],
+            "eat": BehaviorActions.eat(base, a).map(f),
+            "work": BehaviorActions.work(base, a).map(f),
+            "walk": BehaviorActions.walk(base, a).map(f),
+            "nap": BehaviorActions.nap(z0).map(f),
+            "cheer": BehaviorActions.cheer(happy, a).map(f),
+            "wave": BehaviorActions.wave(happy, a).map(f),
+            "petting": BehaviorActions.petting(happy, a).map(f),
         ]
     }
 
@@ -236,20 +266,22 @@ public enum PixelSpeciesCatalog {
     ) -> PixelSpeciesDef {
         var frames: [String: [PixelFrame]] = [:]
         var iconGrids: [String: PixelFrame] = [:]
+        var anchors: [String: SpriteAnchors] = [:]
         for s in stages {
             let stageAnims = anims(s.base, s.feat, sleep: s.sleep)
             for (k, v) in stageAnims { frames["\(s.stage)/\(k)"] = v }
             if let idle = stageAnims["idle"]?.first { iconGrids[s.stage] = iconDownsample(idle) }
+            anchors[s.stage] = s.feat.anchors
+            if s.stage == "adult" { for (k, v) in stageAnims { frames[k] = v } }
         }
-        let adult = stages.first { $0.stage == "adult" }!
-        for (k, v) in anims(adult.base, adult.feat, sleep: adult.sleep) { frames[k] = v }
         return PixelSpeciesDef(
             id: id, nameZh: nameZh,
             ink: InkIndices(body: slotBody, dark: slotBodyDark, light: slotLight, accent: slotAccent),
             base4: base4,
             stages: [("baby", 0), ("child", 100), ("adult", 400)],
             frames: frames,
-            iconGrids: iconGrids
+            iconGrids: iconGrids,
+            anchors: anchors
         )
     }
 }

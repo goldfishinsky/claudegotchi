@@ -142,9 +142,9 @@ extension PixelSpeciesCatalog {
             ".........#####....#####.........",
         ]
         return assemble(id: "cat", nameZh: "小猫", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(2, 13), (0, 13)], sweat: (4, 12)), sleepPose),
-            ("child", child, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 3), (8, 12)], z: [(2, 14), (0, 14)], sweat: (4, 12)), sleepPose),
-            ("adult", adult, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 3), (8, 12)], z: [(1, 14), (-1, 14)], sweat: (4, 12)), sleepPose),
+            ("baby", baby, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(2, 13), (0, 13)], sweat: (4, 12), pawL: (12, 5), pawR: (12, 10), feetRow: 15), sleepPose),
+            ("child", child, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 3), (8, 12)], z: [(2, 14), (0, 14)], sweat: (4, 12), pawL: (12, 5), pawR: (12, 10), feetRow: 15), sleepPose),
+            ("adult", adult, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(8, 3), (8, 12)], z: [(1, 14), (-1, 14)], sweat: (4, 12), pawL: (12, 5), pawR: (12, 10), feetRow: 15), sleepPose),
         ])
     }
 }

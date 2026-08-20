@@ -6,6 +6,12 @@ import PetCore
 /// frontmost app's focused-window title only when accessibility is already
 /// trusted; it never prompts for AX from here.
 enum FocusInspector {
+    /// Codex Desktop owns its approval sheet itself. Bundle-ID detection does not
+    /// need Accessibility permission and is enough to let our overlay yield.
+    static func frontmostOwnsNativeApprovalUI() -> Bool {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.openai.codex"
+    }
+
     static func frontmostFocusedWindowTitle() -> String? {
         guard AXIsProcessTrusted(),
               let app = NSWorkspace.shared.frontmostApplication else { return nil }

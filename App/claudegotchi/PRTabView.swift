@@ -96,9 +96,6 @@ struct PRWorktableTab: View {
     @ObservedObject var watcher: PRWatcher
     @ObservedObject var coordinator: FixCoordinator
     let db: DatabaseQueue
-    let config: ConfigYAML
-    let github: GitHubClient
-    let git: GitRunner
 
     @State private var prs: [PR] = []
     @State private var repos: [WatchedRepo] = []
@@ -106,7 +103,6 @@ struct PRWorktableTab: View {
     @State private var history: [FixJob] = []
     @State private var logViewerJob: FixJob?
     @State private var scope: PRScope = .mine
-    @State private var showWatchSettings = false
     @Environment(\.colorScheme) private var scheme
 
     private var scoped: [PR] {
@@ -138,9 +134,6 @@ struct PRWorktableTab: View {
         .onReceive(coordinator.$progress) { _ in reloadHistory() }
         .onAppear { reload() }
         .sheet(item: $logViewerJob) { job in LogViewer(job: job) }
-        .sheet(isPresented: $showWatchSettings, onDismiss: onWatchSettingsDismiss) {
-            WatchSettingsView(db: db, github: github, git: git, config: config)
-        }
     }
 
     @ViewBuilder
@@ -153,11 +146,6 @@ struct PRWorktableTab: View {
                 Text("\(PRTabFormat.cappedCount(pendingCount)) 待处理")
                     .font(WFont.section).foregroundStyle(t.accent)
             }
-            Button { showWatchSettings = true } label: {
-                Image(systemName: "gearshape").font(.system(size: 13, weight: .semibold)).foregroundStyle(t.ink)
-            }
-            .buttonStyle(.plain)
-            .help("配置监控仓库")
         }
         WarmSegmented(selection: $scope, items: PRScope.allCases.map { ($0, $0.rawValue) })
         ForEach(erroredRepos, id: \.self) { slug in
@@ -373,11 +361,6 @@ struct PRWorktableTab: View {
 
     private func branch(for job: FixJob) -> String {
         prs.first { $0.repoSlug == job.repoSlug && $0.number == job.prNumber }?.headBranch ?? ""
-    }
-
-    private func onWatchSettingsDismiss() {
-        reload()
-        Task { await watcher.pollOnce() }
     }
 
     private func reload() {

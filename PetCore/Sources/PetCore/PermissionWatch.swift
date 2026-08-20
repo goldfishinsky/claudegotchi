@@ -5,16 +5,20 @@ public struct PermissionRequest: Equatable {
     public let sessionId: String
     public let cwd: String?
     public let message: String
+    public let requestedAtMs: Int64
     public let ageMs: Int64
 
-    public init(sessionId: String, cwd: String?, message: String, ageMs: Int64) {
+    public init(sessionId: String, cwd: String?, message: String,
+                requestedAtMs: Int64, ageMs: Int64) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.message = message
+        self.requestedAtMs = requestedAtMs
         self.ageMs = ageMs
     }
 
     public var repoName: String { AgentActivityTracker.repoName(cwd: cwd) }
+    public var requestKey: String { "\(sessionId):\(requestedAtMs)" }
 }
 
 /// Surfaces Claude Code permission-request notifications so the island can alert.
@@ -70,7 +74,8 @@ public enum PermissionWatch {
                 let ts: Int64 = r["ts"]
                 out.append(PermissionRequest(
                     sessionId: sid, cwd: cwd,
-                    message: message ?? messagePrefix, ageMs: max(0, nowMs - ts)
+                    message: message ?? messagePrefix,
+                    requestedAtMs: ts, ageMs: max(0, nowMs - ts)
                 ))
             }
             return out

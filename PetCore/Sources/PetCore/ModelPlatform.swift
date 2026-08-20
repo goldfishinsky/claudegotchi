@@ -11,13 +11,13 @@ public enum ModelPlatform {
         return claudeCode
     }
 
-    /// Dominant platform by lifetime tokens; a tie (incl. no usage) resolves to claude-code.
+    /// Dominant platform by lifetime tokens; retained for the legacy sync field.
     public static func dominant(models: [ModelUsage]) -> String {
         var codexTokens: Int64 = 0
         var claudeTokens: Int64 = 0
         for u in models {
             let total = u.tokensIn + u.tokensOut
-            if infer(model: u.model) == codex { codexTokens += total } else { claudeTokens += total }
+            if u.platform == codex { codexTokens += total } else { claudeTokens += total }
         }
         return codexTokens > claudeTokens ? codex : claudeCode
     }

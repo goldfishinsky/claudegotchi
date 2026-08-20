@@ -108,9 +108,9 @@ extension PixelSpeciesCatalog {
             "................................",
         ]
         return assemble(id: "frog", nameZh: "小青蛙", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 11, mouthCols: [6, 7, 8, 9], cheek: [(9, 3), (9, 12)], z: [(3, 13), (1, 13)], sweat: (5, 13)), nil),
-            ("child", child, Feat(mouthRow: 10, mouthCols: [6, 7, 8, 9], cheek: [(9, 3), (9, 12)], z: [(3, 13), (1, 13)], sweat: (5, 13)), nil),
-            ("adult", adult, Feat(mouthRow: 11, mouthCols: [5, 6, 7, 8, 9, 10], cheek: [(10, 2), (10, 13)], z: [(3, 14), (1, 14)], sweat: (6, 13)), nil),
+            ("baby", baby, Feat(mouthRow: 11, mouthCols: [6, 7, 8, 9], cheek: [(9, 3), (9, 12)], z: [(3, 13), (1, 13)], sweat: (5, 13), pawL: (11, 4), pawR: (11, 11), feetRow: 12), nil),
+            ("child", child, Feat(mouthRow: 10, mouthCols: [6, 7, 8, 9], cheek: [(9, 3), (9, 12)], z: [(3, 13), (1, 13)], sweat: (5, 13), pawL: (12, 4), pawR: (12, 11), feetRow: 13), nil),
+            ("adult", adult, Feat(mouthRow: 11, mouthCols: [5, 6, 7, 8, 9, 10], cheek: [(10, 2), (10, 13)], z: [(3, 14), (1, 14)], sweat: (6, 13), pawL: (13, 4), pawR: (13, 11), feetRow: 14), nil),
         ])
     }
 }

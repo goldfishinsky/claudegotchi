@@ -2,6 +2,14 @@ import Foundation
 import ServiceManagement
 import PetCore
 
+enum PetDisplayMode: String, CaseIterable, Identifiable {
+    case island
+    case floating
+
+    var id: String { rawValue }
+    var title: String { self == .island ? "灵动岛" : "桌面悬浮" }
+}
+
 /// Single source of truth for the P0 agent-manager preferences. Persists to
 /// UserDefaults, publishes for live SwiftUI binding, and hands PetCore a plain
 /// `SessionFilter`. `onChange` lets the (non-SwiftUI) island controller re-apply
@@ -25,6 +33,12 @@ final class SettingsStore: ObservableObject {
     @Published var quietOnCapture: Bool { didSet { persist(quietOnCapture, .quietOnCapture); notify() } }
     @Published var nativeApprovalsEnabled: Bool { didSet { persist(nativeApprovalsEnabled, .nativeApprovals); notify() } }
     @Published var showSubscriptionUsage: Bool { didSet { persist(showSubscriptionUsage, .showSubscriptionUsage); notify() } }
+    @Published var petDisplayMode: PetDisplayMode {
+        didSet {
+            defaults.set(petDisplayMode.rawValue, forKey: Key.petDisplayMode.rawValue)
+            notify()
+        }
+    }
 
     /// Precise-jump toggles are file-backed, not UserDefaults: markers live behind a
     /// flag file the hook checks, and the native-title switch edits ~/.claude/settings.json.
@@ -69,6 +83,9 @@ final class SettingsStore: ObservableObject {
         quietOnCapture = Self.readBool(defaults, .quietOnCapture, true)
         nativeApprovalsEnabled = Self.readBool(defaults, .nativeApprovals, false)
         showSubscriptionUsage = Self.readBool(defaults, .showSubscriptionUsage, false)
+        petDisplayMode = PetDisplayMode(
+            rawValue: defaults.string(forKey: Key.petDisplayMode.rawValue) ?? ""
+        ) ?? .island
         titleMarkersEnabled = TitleMarker.isEnabled()
         disableClaudeNativeTitle = (try? NativeTitleSetting.isDisabled(
             settingsPath: FileManager.default.homeDirectoryForCurrentUser
@@ -202,6 +219,7 @@ final class SettingsStore: ObservableObject {
         case quietOnCapture = "claudegotchi.settings.quietOnCapture"
         case nativeApprovals = "claudegotchi.settings.nativeApprovals"
         case showSubscriptionUsage = "claudegotchi.settings.showSubscriptionUsage"
+        case petDisplayMode = "claudegotchi.settings.petDisplayMode"
         case islandHeightOffset = "claudegotchi.settings.islandHeightOffset"
         case islandWidthOffset = "claudegotchi.settings.islandWidthOffset"
         case soundEnabled = "claudegotchi.settings.soundEnabled"

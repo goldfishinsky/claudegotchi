@@ -29,6 +29,32 @@ final class LeaderboardClientTests: XCTestCase {
         XCTAssertTrue(bodyString(fake).contains("client_id=cid-123"))
     }
 
+    func testWebAuthStartUsesBackendAndDecodesAuthorizationURL() async throws {
+        let fake = FakeHTTPTransport()
+        fake.enqueue(status: 200, json: #"{"authorization_url":"https://github.com/login/oauth/authorize?state=abc"}"#)
+        let start = try await makeClient(fake).startWebAuth(codeChallenge: String(repeating: "a", count: 43))
+        XCTAssertTrue(start.authorizationUrl.hasPrefix("https://github.com/login/oauth/authorize"))
+        XCTAssertEqual(fake.calls[0].url?.absoluteString, "https://api.test/v1/auth/github/web/start")
+        XCTAssertEqual(fake.calls[0].method, "POST")
+        XCTAssertTrue(bodyString(fake).contains("code_challenge"))
+    }
+
+    func testWebAuthExchangeSendsGrantAndVerifier() async throws {
+        let fake = FakeHTTPTransport()
+        fake.enqueue(status: 200, json: """
+            {"token":"cg_web","user":{"id":9,"login":"octocat","avatar_url":null}}
+            """)
+        let response = try await makeClient(fake).exchangeWebAuth(
+            grant: "cgg_once", codeVerifier: "verifier-value"
+        )
+        XCTAssertEqual(response.token, "cg_web")
+        XCTAssertEqual(response.user.login, "octocat")
+        XCTAssertEqual(fake.calls[0].url?.absoluteString, "https://api.test/v1/auth/github/web/exchange")
+        let body = bodyString(fake)
+        XCTAssertTrue(body.contains("cgg_once"))
+        XCTAssertTrue(body.contains("code_verifier"))
+    }
+
     func testPollPending() async throws {
         let fake = FakeHTTPTransport()
         fake.enqueue(status: 200, json: #"{"error":"authorization_pending"}"#)

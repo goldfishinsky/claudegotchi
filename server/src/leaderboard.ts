@@ -4,7 +4,7 @@ import type { Env, Variables } from "./types";
 const PAGE_SIZE = 50;
 const MAX_PAGE = 10;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
-const VALID_PLATFORMS = new Set(["all", "claude-code"]);
+const VALID_PLATFORMS = new Set(["all", "claude-code", "codex"]);
 const VALID_BOARDS = new Set(["tokens", "survival_current", "survival_best"]);
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -31,46 +31,56 @@ export async function handleLeaderboard(c: AppContext): Promise<Response> {
   const offset = (page - 1) * PAGE_SIZE;
   const now = Date.now();
 
-  const baseWhere = ["hidden = 0"];
+  const baseWhere = ["u.hidden = 0"];
   const baseArgs: unknown[] = [];
-  if (platformFilter) {
-    baseWhere.push("platform = ?");
-    baseArgs.push(platformFilter);
-  }
+  let fromSql = "users u";
 
   let valueExpr: string;
   let orderExpr: string;
-  let petSpeciesExpr = "pet_species";
-  let petNameExpr = "pet_name";
+  let petSpeciesExpr = "u.pet_species";
+  let petNameExpr = "u.pet_name";
   const selectArgs: unknown[] = [];
 
   if (board === "tokens") {
-    valueExpr = "(tokens_in + tokens_out)";
-    orderExpr = "(tokens_in + tokens_out) DESC";
+    if (platformFilter) {
+      fromSql = "users u JOIN user_platform_stats ups ON ups.user_id = u.id AND ups.platform = ?";
+      baseArgs.push(platformFilter);
+      valueExpr = "(ups.tokens_in + ups.tokens_out)";
+      orderExpr = "(ups.tokens_in + ups.tokens_out) DESC";
+    } else {
+      valueExpr = "(u.tokens_in + u.tokens_out)";
+      orderExpr = "(u.tokens_in + u.tokens_out) DESC";
+    }
   } else if (board === "survival_best") {
-    valueExpr = "best_survival_ms";
-    orderExpr = "best_survival_ms DESC";
-    petSpeciesExpr = "best_pet_species";
-    petNameExpr = "best_pet_name";
+    valueExpr = "u.best_survival_ms";
+    orderExpr = "u.best_survival_ms DESC";
+    petSpeciesExpr = "u.best_pet_species";
+    petNameExpr = "u.best_pet_name";
   } else {
-    valueExpr = "(? - pet_birthday)";
+    valueExpr = "(? - u.pet_birthday)";
     selectArgs.push(now);
-    orderExpr = "pet_birthday ASC";
-    baseWhere.push("pet_birthday IS NOT NULL", "last_sync_at IS NOT NULL", "last_sync_at >= ?");
+    orderExpr = "u.pet_birthday ASC";
+    baseWhere.push("u.pet_birthday IS NOT NULL", "u.last_sync_at IS NOT NULL", "u.last_sync_at >= ?");
     baseArgs.push(now - STALE_MS);
+  }
+  if (platformFilter && board !== "tokens") {
+    baseWhere.push(
+      "EXISTS (SELECT 1 FROM user_platform_stats ups WHERE ups.user_id = u.id AND ups.platform = ?)"
+    );
+    baseArgs.push(platformFilter);
   }
 
   const whereSql = baseWhere.join(" AND ");
 
-  const countRow = await c.env.DB.prepare(`SELECT COUNT(*) as total FROM users WHERE ${whereSql}`)
+  const countRow = await c.env.DB.prepare(`SELECT COUNT(*) as total FROM ${fromSql} WHERE ${whereSql}`)
     .bind(...baseArgs)
     .first<{ total: number }>();
   const total = countRow?.total ?? 0;
   const totalPages = Math.min(MAX_PAGE, Math.max(1, Math.ceil(total / PAGE_SIZE)));
 
   const rowsResult = await c.env.DB.prepare(
-    `SELECT id, login, avatar_url, ${petSpeciesExpr} as pet_species, ${petNameExpr} as pet_name, ${valueExpr} as value
-     FROM users
+    `SELECT u.id, u.login, u.avatar_url, ${petSpeciesExpr} as pet_species, ${petNameExpr} as pet_name, ${valueExpr} as value
+     FROM ${fromSql}
      WHERE ${whereSql}
      ORDER BY ${orderExpr}
      LIMIT ? OFFSET ?`

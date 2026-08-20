@@ -108,9 +108,9 @@ extension PixelSpeciesCatalog {
             "................................",
         ]
         return assemble(id: "goldfish", nameZh: "小金鱼", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(9, 5), (9, 10)], z: [(2, 13), (0, 13)], sweat: (1, 12)), nil),
-            ("child", child, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(2, 14), (0, 14)], sweat: (1, 12)), nil),
-            ("adult", adult, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(1, 13), (0, 13)], sweat: (1, 12)), nil),
+            ("baby", baby, Feat(mouthRow: 8, mouthCols: [7, 8], cheek: [(9, 5), (9, 10)], z: [(2, 13), (0, 13)], sweat: (1, 12), pawL: (10, 5), pawR: (10, 10), feetRow: 12), nil),
+            ("child", child, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(2, 14), (0, 14)], sweat: (1, 12), pawL: (10, 4), pawR: (10, 11), feetRow: 14), nil),
+            ("adult", adult, Feat(mouthRow: 9, mouthCols: [7, 8], cheek: [(8, 4), (8, 11)], z: [(1, 13), (0, 13)], sweat: (1, 12), pawL: (10, 4), pawR: (10, 11), feetRow: 14), nil),
         ])
     }
 }

@@ -57,6 +57,16 @@ enum IslandMotion {
     static let wobbleCooldown: TimeInterval = 5
 }
 
+enum IslandPetDrag {
+    /// Far enough to feel intentional, while still letting the pet detach before
+    /// the pointer has travelled beyond the menu bar by a large distance.
+    static let activationDistance: CGFloat = 24
+
+    static func downwardDistance(from start: NSPoint, to current: NSPoint) -> CGFloat {
+        max(0, start.y - current.y)
+    }
+}
+
 // MARK: - notch shape
 
 // The wrapping-island silhouette: top corners flare concavely into the menu-bar
@@ -145,7 +155,14 @@ struct NotchGeometry {
 struct CompletionReveal: Equatable {
     let sessionId: String
     let repoName: String
+    let title: String?
     let cwd: String?
+
+    var message: String {
+        guard let title = title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return "任务完成" }
+        return "\(title)完成"
+    }
 }
 
 @MainActor
@@ -207,6 +224,7 @@ final class IslandModel: ObservableObject {
 final class IslandChrome: ObservableObject {
     @Published var dropdownOpen = false
     @Published var hidden = false
+    @Published var petBeingDragged = false
 }
 
 // MARK: - island view
@@ -217,11 +235,6 @@ private struct DisplayStrip: Equatable {
     let repoName: String
     let permission: PermissionRequest?
     let completion: CompletionReveal?
-}
-
-private struct BannerReserveKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// Bookkeeping the pet-wobble edge detector mutates every rendered frame without
@@ -265,13 +278,13 @@ struct NotchIslandView: View {
     private var desiredStrip: DisplayStrip? {
         if island.showPermissionStrip, let req = island.pendingPermission {
             return DisplayStrip(
-                key: "p:\(req.sessionId)", isCompletion: false,
+                key: "p:\(req.requestKey)", isCompletion: false,
                 repoName: req.repoName, permission: req, completion: nil)
         }
         if island.showCompletionStrip, let comp = island.completion {
             return DisplayStrip(
                 key: "c:\(comp.sessionId)", isCompletion: true,
-                repoName: comp.repoName, permission: nil, completion: comp)
+                repoName: comp.message, permission: nil, completion: comp)
         }
         return nil
     }
@@ -282,19 +295,22 @@ struct NotchIslandView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.clear.allowsHitTesting(false)
-                .preference(key: BannerReserveKey.self,
-                            value: shownStrip != nil ? IslandMetric.bannerReserve : 0)
             bannerLayer
             islandChrome
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onPreferenceChange(BannerReserveKey.self) { onMetrics($0) }
         .onChange(of: desiredStrip?.key ?? "") { _ in syncStrip() }
         .onAppear { syncStrip() }
     }
 
     private var islandChrome: some View {
-        islandArea
+        // When the native approval UI is already on screen the controller marks
+        // the island hidden. Yield quickly: the approval is the useful action and
+        // keeping even the pet lobe above it only obscures the target.
+        let hideAnimation: Animation = chrome.hidden
+            ? .easeOut(duration: 0.08)
+            : (reduceMotion ? .easeInOut(duration: 0.18) : IslandMotion.settle)
+        return islandArea
             .scaleEffect(reduceMotion ? 1 : pulse, anchor: .top)
             .scaleEffect(x: 1, y: reduceMotion ? 1 : wobbleY, anchor: .top)
             .scaleEffect(!reduceMotion && blooming ? IslandMotion.hoverScale : 1, anchor: .top)
@@ -303,7 +319,7 @@ struct NotchIslandView: View {
             .animation(IslandMotion.hover, value: chrome.dropdownOpen)
             .opacity(chrome.hidden ? 0 : 1)
             .offset(y: chrome.hidden && !reduceMotion ? -IslandMotion.hideSlide : 0)
-            .animation(reduceMotion ? .easeInOut(duration: 0.25) : IslandMotion.settle, value: chrome.hidden)
+            .animation(hideAnimation, value: chrome.hidden)
             .allowsHitTesting(!chrome.hidden)
             .padding(.top, IslandMetric.motionPadTop)
             .padding(.horizontal, IslandMetric.motionPadX)
@@ -356,6 +372,8 @@ struct NotchIslandView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+        .opacity(chrome.petBeingDragged ? 0 : 1)
+        .animation(.easeOut(duration: 0.1), value: chrome.petBeingDragged)
     }
 
     // The island bottom (with the motion pad) and the resting/tucked banner tops,
@@ -379,7 +397,7 @@ struct NotchIslandView: View {
                         .frame(width: 6, height: 6)
                         .shadow(color: Candy.coral[1].opacity(0.7), radius: 2)
                 }
-                Text("\(strip.repoName) · \(strip.isCompletion ? "完成" : "请求权限")")
+                Text(strip.isCompletion ? strip.repoName : "\(strip.repoName) · 请求权限")
                     .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(color)
                     .lineLimit(1).truncationMode(.middle)
@@ -417,6 +435,10 @@ struct NotchIslandView: View {
 
     private func syncStrip() {
         if let want = desiredStrip {
+            // A transparent borderless NSPanel does not reliably propagate a
+            // SwiftUI PreferenceKey when its content is manually autoresized.
+            // Reserve the banner's window space explicitly before animating it.
+            onMetrics(IslandMetric.bannerReserve)
             let wasDown = bannerDown
             shownStrip = want
             if wasDown {
@@ -453,7 +475,10 @@ struct NotchIslandView: View {
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + IslandMotion.departClear) {
-                if desiredStrip == nil { shownStrip = nil }
+                if desiredStrip == nil {
+                    shownStrip = nil
+                    onMetrics(0)
+                }
             }
         }
     }
@@ -486,9 +511,69 @@ struct NotchIslandView: View {
 // MARK: - panel
 
 private final class IslandPanel: NSPanel {
+    var petDragHitRect = NSRect.zero
+    var onPetDragChanged: ((NSPoint, CGFloat) -> Void)?
+    var onPetDragEnded: ((NSPoint, CGFloat) -> Void)?
+
+    private var petDragStart: NSPoint?
+
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    /// Capture a drag that starts specifically on the pet lobe. The window keeps
+    /// receiving the mouse stream after the pointer leaves its narrow menu-bar
+    /// frame, which lets a preview follow all the way onto the desktop.
+    override func sendEvent(_ event: NSEvent) {
+        var endedDrag: (point: NSPoint, distance: CGFloat)?
+        switch event.type {
+        case .leftMouseDown:
+            let point = NSEvent.mouseLocation
+            petDragStart = petDragHitRect.contains(event.locationInWindow) ? point : nil
+        case .leftMouseDragged:
+            if let start = petDragStart {
+                let point = NSEvent.mouseLocation
+                onPetDragChanged?(point, IslandPetDrag.downwardDistance(from: start, to: point))
+            }
+        case .leftMouseUp:
+            if let start = petDragStart {
+                let point = NSEvent.mouseLocation
+                endedDrag = (point, IslandPetDrag.downwardDistance(from: start, to: point))
+            }
+            petDragStart = nil
+        default:
+            break
+        }
+        super.sendEvent(event)
+        // A successful release switches modes and tears this panel down. Do it
+        // only after AppKit has finished dispatching the mouse-up to SwiftUI.
+        if let endedDrag { onPetDragEnded?(endedDrag.point, endedDrag.distance) }
+    }
+}
+
+private struct IslandPetDragPreview: View {
+    @ObservedObject var petModel: PetPanelModel
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        Group {
+            if let visual = petModel.visual {
+                TheaterPetView(
+                    visual: visual,
+                    species: petModel.species,
+                    signals: petModel.makeSignals(memPressureHigh: false),
+                    theme: WarmTheme(scheme: scheme),
+                    look: petModel.look
+                )
+            } else {
+                Text("🥚").font(.system(size: 46))
+            }
+        }
+        .frame(
+            width: FloatingPetController.windowSize.width,
+            height: FloatingPetController.windowSize.height
+        )
+    }
 }
 
 // MARK: - menu-bar collision probe
@@ -562,8 +647,10 @@ final class NotchIslandController {
     private let sound: SoundController
 
     private let chrome = IslandChrome()
-    private var panel: NSPanel?
+    private var panel: IslandPanel?
     private var hosting: NSHostingController<AnyView>?
+    private var petDragPreviewPanel: NSPanel?
+    private var petDragPreviewHosting: NSHostingController<IslandPetDragPreview>?
     private var geometry: NotchGeometry?
     private var appliedHeightOffset: CGFloat = .nan
     private var appliedWidthOffset: CGFloat = .nan
@@ -587,6 +674,7 @@ final class NotchIslandController {
     private var localClickMon: Any?
 
     private var completionDetector = CompletionDetector()
+    private var dismissedPermissionKey: String?
     private var completionTimer: Timer?
     private var escMonitor: Any?
     private var screenObserver: Any?
@@ -595,6 +683,9 @@ final class NotchIslandController {
     /// torn down, or a screen-topology shift added/removed the notch) so the
     /// status item can mirror it: shown only while the island is absent.
     var onPresenceChange: (() -> Void)?
+    /// The app owns display-mode state and the real floating panel; the island
+    /// only reports the screen point where its temporary drag preview landed.
+    var onPetDraggedOut: ((NSPoint) -> Void)?
 
     init(dropdown: MenuDropdownController, petModel: PetPanelModel,
          agentModel: AgentActivityModel, island: IslandModel,
@@ -699,17 +790,27 @@ final class NotchIslandController {
     /// keep the strip collapsed (badge-only) and mute the alert sound.
     private func updatePermissionSuppression() {
         guard let req = island.pendingPermission else {
+            dismissedPermissionKey = nil
             island.setPermissionStripSuppressed(false)
             sound.permissionCleared()
             return
         }
+        if let dismissedPermissionKey, dismissedPermissionKey != req.requestKey {
+            self.dismissedPermissionKey = nil
+        }
         let suppressed = settings.nativeApprovalsEnabled
+            || FocusInspector.frontmostOwnsNativeApprovalUI()
             || QuietSceneInspector.isActive(settings: settings)
             || (settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: req.cwd))
+            || dismissedPermissionKey == req.requestKey
         island.setPermissionStripSuppressed(suppressed)
         if suppressed {
             clearCompletion()
         } else {
+            // The expanded dropdown sits at popUpMenu level and otherwise covers
+            // the permission strip and the approval UI it points to. A permission
+            // request is the higher-priority action, so let it pre-empt the card.
+            if dropdown.isVisible { collapse() }
             sound.permissionAppeared(sessionId: req.sessionId)
         }
     }
@@ -724,7 +825,8 @@ final class NotchIslandController {
               let latest = newly.max(by: { $0.tsMs < $1.tsMs }) else { return }
         if settings.focusSuppressionEnabled && FocusInspector.suppresses(cwd: latest.cwd) { return }
         island.setCompletion(CompletionReveal(
-            sessionId: latest.sessionId, repoName: latest.repoName, cwd: latest.cwd))
+            sessionId: latest.sessionId, repoName: latest.repoName,
+            title: latest.title, cwd: latest.cwd))
         sound.taskComplete()
         startCompletionDwell()
         installEscMonitor()
@@ -811,6 +913,12 @@ final class NotchIslandController {
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.acceptsMouseMovedEvents = true
         panel.isReleasedWhenClosed = false
+        panel.onPetDragChanged = { [weak self] point, distance in
+            self?.petDragChanged(to: point, downwardDistance: distance)
+        }
+        panel.onPetDragEnded = { [weak self] point, distance in
+            self?.petDragEnded(at: point, downwardDistance: distance)
+        }
         panel.orderFrontRegardless()
         self.panel = panel
         lastDrop = 0
@@ -823,6 +931,7 @@ final class NotchIslandController {
     }
 
     private func teardown() {
+        clearPetDragPreview()
         collapse()
         clearCompletion()
         alertTimer?.invalidate(); alertTimer = nil
@@ -872,6 +981,13 @@ final class NotchIslandController {
         guard let panel, let geo = geometry else { return }
         let frame = paddedFrame(geo, drop: lastDrop)
         if panel.frame != frame { panel.setFrame(frame, display: false) }
+        let lobe = petLobeLayout(geo)
+        panel.petDragHitRect = NSRect(
+            x: IslandMetric.motionPadX + geo.notchWidth,
+            y: frame.height - IslandMetric.motionPadTop - geo.islandHeight,
+            width: lobe.visible,
+            height: geo.islandHeight
+        )
     }
 
     /// Drive the 3s alert poll and hand the auto-hide decision to the SwiftUI layer
@@ -885,10 +1001,18 @@ final class NotchIslandController {
         }
         if poll && !alertActive { probeClamp() }
         alertActive = poll
-        chrome.hidden = !islandShouldBeVisible()
+        let visible = islandShouldBeVisible()
+        chrome.hidden = !visible
+        // A transparent always-on-top NSPanel can still win hit testing in its
+        // frame. Make the yielded island truly absent to clicks as well as sight.
+        panel?.ignoresMouseEvents = !visible
     }
 
     private func islandShouldBeVisible() -> Bool {
+        // Suppression means the user is already looking at the relevant native
+        // approval UI (or explicitly chose native approvals). In that state the
+        // pet/badge duplicates no useful information and can cover the control.
+        if island.pendingPermission != nil && !island.showPermissionStrip { return false }
         if !settings.autoHideWhenNoSessions { return true }
         return agentModel.agents.count > 0 || island.hasActiveAlertState
     }
@@ -951,6 +1075,69 @@ final class NotchIslandController {
 
     private func stopClampProbe() { clampTimer?.invalidate(); clampTimer = nil }
 
+    // MARK: pull pet to desktop
+
+    private func petDragChanged(to point: NSPoint, downwardDistance: CGFloat) {
+        guard downwardDistance >= IslandPetDrag.activationDistance else {
+            clearPetDragPreview()
+            return
+        }
+        if petDragPreviewPanel == nil {
+            collapse()
+            chrome.petBeingDragged = true
+            buildPetDragPreview(at: point)
+        } else {
+            positionPetDragPreview(at: point)
+        }
+    }
+
+    private func petDragEnded(at point: NSPoint, downwardDistance: CGFloat) {
+        let shouldDetach = downwardDistance >= IslandPetDrag.activationDistance
+        clearPetDragPreview()
+        if shouldDetach { onPetDraggedOut?(point) }
+    }
+
+    private func buildPetDragPreview(at point: NSPoint) {
+        let size = FloatingPetController.windowSize
+        let root = IslandPetDragPreview(petModel: petModel)
+        let hosting = NSHostingController(rootView: root)
+        hosting.sizingOptions = []
+        let preview = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        preview.contentViewController = hosting
+        preview.isOpaque = false
+        preview.backgroundColor = .clear
+        preview.hasShadow = false
+        preview.level = .floating
+        preview.hidesOnDeactivate = false
+        preview.ignoresMouseEvents = true
+        preview.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        preview.isReleasedWhenClosed = false
+        petDragPreviewHosting = hosting
+        petDragPreviewPanel = preview
+        positionPetDragPreview(at: point)
+        preview.orderFrontRegardless()
+    }
+
+    private func positionPetDragPreview(at point: NSPoint) {
+        let size = FloatingPetController.windowSize
+        petDragPreviewPanel?.setFrameOrigin(NSPoint(
+            x: point.x - size.width / 2,
+            y: point.y - size.height / 2
+        ))
+    }
+
+    private func clearPetDragPreview() {
+        chrome.petBeingDragged = false
+        petDragPreviewPanel?.orderOut(nil)
+        petDragPreviewPanel = nil
+        petDragPreviewHosting = nil
+    }
+
     // MARK: hover / click
 
     private func islandHover(_ hovering: Bool) {
@@ -974,6 +1161,12 @@ final class NotchIslandController {
     }
 
     private func alertClick(_ req: PermissionRequest) {
+        // Retract before focusing the target so our always-on-top strip cannot
+        // cover the native approval control the user is trying to reach.
+        dismissedPermissionKey = req.requestKey
+        island.setPermissionStripSuppressed(true)
+        sound.permissionCleared()
+        layout(animated: true)
         jumpToSession(req.sessionId, cwd: req.cwd)
     }
 
@@ -983,6 +1176,7 @@ final class NotchIslandController {
     }
 
     private func jumpToSession(_ sessionId: String, cwd: String?) {
+        if SessionJumper.shared.jumpToCodex(sessionId: sessionId) { return }
         let tty = (try? TTYAnchor.stored(db: db, sessionId: sessionId)) ?? nil
         SessionJumper.shared.jump(
             cwd: cwd ?? "", tty: tty,

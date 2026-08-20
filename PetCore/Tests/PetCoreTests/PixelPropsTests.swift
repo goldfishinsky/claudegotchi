@@ -27,6 +27,16 @@ final class PixelPropsTests: XCTestCase {
         XCTAssertLessThanOrEqual(PixelSpeciesCatalog.palette.count, 64)
     }
 
+    func testLaptopIsSeenFromBehind() {
+        let m = PixelProps.matrix(.laptop)
+        func width(_ r: Int) -> Int { m[r].filter { $0 != 0 }.count }
+        XCTAssertLessThan(width(0), width(m.count / 2), "the lid tapers away from the viewer")
+        XCTAssertFalse(m.contains { $0.contains(36) }, "the screen faces the pet, not the audience")
+        XCTAssertTrue(m.contains { $0.contains(2) }, "the shell carries a badge")
+        XCTAssertGreaterThan(width(m.count - 2), width(m.count - 3),
+                             "the deck's side edges clear the lid")
+    }
+
     func testPropsHaveVisiblePixels() {
         for p in PropSprite.allCases {
             let lit = PixelProps.matrix(p).flatMap { $0 }.contains { $0 != 0 }

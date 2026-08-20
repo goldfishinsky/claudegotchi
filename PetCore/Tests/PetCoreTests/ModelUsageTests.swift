@@ -28,4 +28,21 @@ final class ModelUsageTests: XCTestCase {
         let all = try ModelUsageStore.all(in: db)
         XCTAssertEqual(all.map(\.model), ["big", "small"])
     }
+
+    func testSameModelCanBeTrackedSeparatelyByPlatform() throws {
+        try db.write {
+            try ModelUsageStore.bump(
+                platform: ModelPlatform.claudeCode, model: "shared-model",
+                tokensIn: 10, tokensOut: 2, in: $0
+            )
+            try ModelUsageStore.bump(
+                platform: ModelPlatform.codex, model: "shared-model",
+                tokensIn: 30, tokensOut: 4, in: $0
+            )
+        }
+        let all = try ModelUsageStore.all(in: db)
+        XCTAssertEqual(all.count, 2)
+        XCTAssertEqual(all.map(\.platform), [ModelPlatform.codex, ModelPlatform.claudeCode])
+        XCTAssertEqual(all.map(\.model), ["shared-model", "shared-model"])
+    }
 }

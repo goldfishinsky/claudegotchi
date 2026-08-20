@@ -4,7 +4,7 @@ import Foundation
 /// palette. Authored on the same 32-grid as the pet sprites, so a prop pixel is
 /// half a stage cell and no prop rises past ~40% of the pet's height.
 public enum PropSprite: String, Equatable, CaseIterable {
-    case laptop, foodS, foodM, foodL
+    case laptop, laptopLit, foodS, foodM, foodL
 }
 
 public enum PixelProps {
@@ -35,6 +35,7 @@ public enum PixelProps {
     public static func matrix(_ p: PropSprite) -> PixelFrame {
         switch p {
         case .laptop: return laptop
+        case .laptopLit: return laptopLit
         case .foodS: return foodS
         case .foodM: return foodM
         case .foodL: return foodL
@@ -47,18 +48,34 @@ public enum PixelProps {
         return (Double(g.first?.count ?? 0) * cellUnits, Double(g.count) * cellUnits)
     }
 
-    /// Open laptop, 18×10: lit terminal screen, hinge break, keyed deck flaring
-    /// one pixel wider than the lid.
+    /// Laptop from behind, 18×10: the screen faces the pet, so the audience gets
+    /// the slate lid — top ridge catching light, tapering away in perspective, a
+    /// leaf badge, and the deck's side edges peeking out at the bottom.
     public static let laptop = m([
+        "...@@@@@@@@@@@@...",
+        "...@SSSSSSSSSS@...",
+        "..@KKKKKKKKKKKK@..",
+        "..@KKKKKKKKKKKK@..",
+        ".@KKKKKKKWKKKKKK@.",
+        ".@KKKKKKWWKKKKKK@.",
+        ".@KKKKKKKKKKKKKK@.",
         ".@@@@@@@@@@@@@@@@.",
-        ".@GGGGGGGGGGGGWW@.",
-        ".@GTTTTTTTTGGGGW@.",
-        ".@GGGGGGGGGGGGGG@.",
-        ".@GTTTTTGWGGGGGG@.",
-        ".@GGGGGGGGGGGGGG@.",
+        "KKKKKKKKKKKKKKKKKK",
+        "@@@@@@@@@@@@@@@@@@",
+    ])
+
+    /// The same lid on a keystroke: the screen behind it flares and spills a cyan
+    /// line over the top edge.
+    public static let laptopLit = m([
+        "...GGGGGGGGGGGG...",
+        "...@SSSSSSSSSS@...",
+        "..@KKKKKKKKKKKK@..",
+        "..@KKKKKKKKKKKK@..",
+        ".@KKKKKKKWKKKKKK@.",
+        ".@KKKKKKWWKKKKKK@.",
+        ".@KKKKKKKKKKKKKK@.",
         ".@@@@@@@@@@@@@@@@.",
-        "@SKKKKKKKKKKKKKKS@",
-        "@SSSSSSSSSSSSSSSS@",
+        "KKKKKKKKKKKKKKKKKK",
         "@@@@@@@@@@@@@@@@@@",
     ])
 

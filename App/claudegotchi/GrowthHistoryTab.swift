@@ -31,28 +31,28 @@ struct GrowthHistoryTab: View {
         let t = WarmTheme(scheme: scheme)
         if let pet = alive {
             let def = PixelSpeciesCatalog.def(pet.species)
-            let stageId = PixelSpeciesCatalog.stage(id: pet.species, xp: pet.xp)
-            let nextMinXp = def?.stages
-                .first { Int64($0.minXp) > pet.xp }
-                .map { Int64($0.minXp) }
+            let milestone = GrowthJourney.current(xp: pet.xp)
+            let next = GrowthJourney.next(xp: pet.xp)
+            let level = Level.compute(xp: pet.xp)
             SoftCard(fill: t.cardFill, cornerRadius: 16, padding: 14, shadow: t.cardShadow) {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         CandyIcon(symbol: "sparkles", colors: Candy.xp, size: 14)
                         Text(def?.nameZh ?? pet.species).font(WFont.title).foregroundStyle(t.inkStrong)
                             .lineLimit(1).truncationMode(.tail)
-                        Text("· \(stageId)").font(WFont.section).foregroundStyle(t.ink)
+                        Text("· \(milestone.nameZh)").font(WFont.section).foregroundStyle(t.ink)
                             .lineLimit(1).truncationMode(.tail)
                         Spacer()
-                        Text("XP \(TokenFormat.compactXP(pet.xp))")
+                        Text("Lv \(level) · XP \(TokenFormat.compactXP(pet.xp))")
                             .font(WFont.value).monospacedDigit().foregroundStyle(t.ink)
                     }
-                    if let next = nextMinXp, next > pet.xp {
-                        SoftBar(fraction: Double(pet.xp) / Double(next), colors: Candy.xp, track: t.track, height: 8)
-                        Text("距下一阶段 \(TokenFormat.compactXP(next - pet.xp))")
+                    if let next {
+                        SoftBar(fraction: GrowthJourney.progress(xp: pet.xp), colors: Candy.xp, track: t.track, height: 8)
+                        Text("距「\(next.nameZh)」还需 \(TokenFormat.compactXP(next.minXp - pet.xp)) XP")
                             .font(WFont.caption).monospacedDigit().foregroundStyle(t.inkFaint)
                     } else {
-                        Text("已达最终阶段").font(WFont.caption).foregroundStyle(t.inkFaint)
+                        Text("已达终极里程碑，等级仍会继续提升")
+                            .font(WFont.caption).foregroundStyle(t.inkFaint)
                     }
                 }
             }

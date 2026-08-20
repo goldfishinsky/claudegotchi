@@ -177,6 +177,19 @@ final class HooksInstallerTests: XCTestCase {
         XCTAssertEqual(post.count, 2, "our tagged group appended beside the foreign one")
     }
 
+    func testCodexInstallCreatesMissingDirectoryAndSettingsFile() throws {
+        let nested = dir.appendingPathComponent("fresh/.codex/hooks.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: nested.path))
+
+        try HooksInstaller.install(
+            platform: .codex, settingsPath: nested,
+            hookBinaryPath: bin, nowISO: nowISO
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: nested.path))
+        XCTAssertEqual(try HooksInstaller.status(platform: .codex, settingsPath: nested), .installed)
+    }
+
     func testCodexTaggedLeavesCarryTimeoutFiveAndCodexArgs() throws {
         try HooksInstaller.install(platform: .codex, settingsPath: settings, hookBinaryPath: bin, nowISO: nowISO)
         let h = try hooks()

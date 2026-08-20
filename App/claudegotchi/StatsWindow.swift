@@ -19,15 +19,8 @@ struct StatsWindowView: View {
     @ObservedObject var syncDriver: LeaderboardSyncDriver
     @ObservedObject var systemStats: SystemStatsDriver
     let db: DatabaseQueue
-    let config: ConfigYAML
-    let github: GitHubClient
-    let git: GitRunner
     let leaderboard: LeaderboardService
-    let githubClientID: String
-    var onOpenSettings: () -> Void = {}
-
-    @State private var showHooks = false
-    @State private var showLeaderboardSettings = false
+    var onOpenIntegrationSettings: () -> Void = {}
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
@@ -50,25 +43,9 @@ struct StatsWindowView: View {
             // SwiftUI's TabView paints its own opaque background.
             tabContent
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            HStack(spacing: 10) {
-                Spacer()
-                Button("设置") { onOpenSettings() }
-                    .buttonStyle(WarmButtonStyle())
-                Button("排行榜设置") { showLeaderboardSettings = true }
-                    .buttonStyle(WarmButtonStyle())
-                Button("钩子设置") { showHooks = true }
-                    .buttonStyle(WarmButtonStyle())
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
         }
         .frame(minWidth: 680, minHeight: 560)
         .background { t.windowFill.ignoresSafeArea() }
-        .sheet(isPresented: $showHooks) { HooksInstallView() }
-        .sheet(isPresented: $showLeaderboardSettings) {
-            LeaderboardSettingsView(driver: syncDriver, service: leaderboard, githubClientID: githubClientID)
-        }
     }
 
     @ViewBuilder
@@ -78,10 +55,10 @@ struct StatsWindowView: View {
         case .system:   SystemTab(driver: systemStats)
         case .models:   ModelsTab(db: db)
         case .growth:   GrowthHistoryTab(db: db)
-        case .work:     PRWorktableTab(watcher: watcher, coordinator: coordinator, db: db, config: config, github: github, git: git)
+        case .work:     PRWorktableTab(watcher: watcher, coordinator: coordinator, db: db)
         case .leaderboard:
             LeaderboardTab(driver: syncDriver, service: leaderboard,
-                           openSettings: { showLeaderboardSettings = true })
+                           openSettings: onOpenIntegrationSettings)
         }
     }
 }

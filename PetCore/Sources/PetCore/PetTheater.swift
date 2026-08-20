@@ -258,6 +258,7 @@ struct Phase {
     var props: [PropInstance] = []
     var emits: [Emit] = []
     var bubble: String? = nil
+    var action: String? = nil        // action-clocked frames, overriding frameKey/frame
 }
 
 struct Behavior {
@@ -279,6 +280,10 @@ public enum PetTheater {
     public static let attentionIdleSeconds: Double = 240
     public static let attentionNoClickMs: Int64 = 600_000
     public static let tapReactionMs: Int64 = 400
+
+    /// Stage row every prop is planted on, and the line the action layer measures
+    /// prop-relative poses (typing paws) against.
+    public static let stageFloorY: Double = 16.5
 
     public static func selectBehavior(_ s: TheaterSignals) -> TheaterBehavior {
         if s.prCelebration { return .celebrate }
@@ -434,11 +439,17 @@ public enum PetTheater {
         var offX = lerp(phase.fromX, phase.toX, e)
         var offY = lerp(phase.fromY, phase.toY, e)
         var frame = phase.frame
+        var frameKey = phase.frameKey
         if phase.stepping > 0 {
             let s = Double(phase.stepping)
             frame = Int(localT * s) % 2
             offY -= abs(sin(localT * s * .pi)) * 0.5
         }
+        if let action = phase.action, let cadence = BehaviorRhythm.cadence(action) {
+            frameKey = action
+            frame = BehaviorRhythm.frame(cadence, loopPos: loopPos)
+        }
+        if kind == .eat { offY += BehaviorActions.chewDip(loopPos: loopPos) }
         var squash = lerp(phase.squashFrom, phase.squashTo, e)
 
         // personality bounce: scale vertical travel + squash deviation (identity at 1.0)
@@ -489,9 +500,22 @@ public enum PetTheater {
         return SceneFrame(
             behavior: kind, phaseIndex: pIndex,
             petOffsetX: offX, petOffsetY: offY, squash: finalSquash,
-            frameKey: phase.frameKey, frame: frame,
-            props: phase.props, emissions: emissions, bubble: bubble
+            frameKey: frameKey, frame: frame,
+            props: struck(phase.props, kind: kind, loopPos: loopPos),
+            emissions: emissions, bubble: bubble
         )
+    }
+
+    /// Lights the screen on the two typing frames where a paw is down, so the
+    /// keystroke sparks, the paw strike and the terminal line land together.
+    static func struck(_ props: [PropInstance], kind: TheaterBehavior, loopPos: Int64) -> [PropInstance] {
+        guard kind == .work,
+              BehaviorRhythm.frame(BehaviorRhythm.typing, loopPos: loopPos) % 2 == 0
+        else { return props }
+        return props.map {
+            $0.sprite == .laptop
+                ? PropInstance(sprite: .laptopLit, x: $0.x, y: $0.y, front: $0.front) : $0
+        }
     }
 
     // MARK: behaviour catalogue
@@ -602,22 +626,22 @@ public enum PetTheater {
     }
 
     private static func stroll() -> Behavior {
-        Behavior(kind: .stroll, loopMs: 6000, phases: [
+        Behavior(kind: .stroll, loopMs: 5600, phases: [
             Phase(duration: 0.28, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0, toX: 2.6, toY: 0, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 1.0, stepping: 4),
+                  squashFrom: 1.0, squashTo: 1.0, stepping: 4, action: "walk"),
             Phase(duration: 0.16, frameKey: "idle", frame: 0,
                   fromX: 2.6, fromY: 0, toX: 2.6, toY: 0, ease: .easeOut,
                   squashFrom: 1.0, squashTo: 0.94, bubble: "?"),
             Phase(duration: 0.30, frameKey: "idle", frame: 0,
                   fromX: 2.6, fromY: 0, toX: -2.2, toY: 0, ease: .easeInOut,
-                  squashFrom: 0.94, squashTo: 1.0, stepping: 4),
+                  squashFrom: 0.94, squashTo: 1.0, stepping: 4, action: "walk"),
             Phase(duration: 0.12, frameKey: "idle", frame: 0,
                   fromX: -2.2, fromY: 0, toX: -2.2, toY: 0, ease: .easeOut,
                   squashFrom: 1.0, squashTo: 1.0),
             Phase(duration: 0.14, frameKey: "idle", frame: 0,
                   fromX: -2.2, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 1.0, stepping: 2),
+                  squashFrom: 1.0, squashTo: 1.0, stepping: 2, action: "walk"),
         ])
     }
 
@@ -633,26 +657,29 @@ public enum PetTheater {
         let spark = { (seed: UInt64) in
             Emit(kind: .keystrokeSparks, localX: 8, localY: 11, count: 3, seed: seed)
         }
-        return Behavior(kind: .work, loopMs: 3200, phases: [
-            Phase(duration: 0.26, frameKey: "idle", frame: 0,
+        return Behavior(kind: .work, loopMs: 3840, phases: [
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 0.97, props: [laptop], emits: [spark(0xA1)]),
-            Phase(duration: 0.26, frameKey: "idle", frame: 1,
+                  squashFrom: 1.0, squashTo: 0.97, props: [laptop], emits: [spark(0xA1)],
+                  action: "work"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
-                  squashFrom: 0.97, squashTo: 1.0, props: [laptop], emits: [spark(0xB2)]),
-            Phase(duration: 0.26, frameKey: "idle", frame: 0,
+                  squashFrom: 0.97, squashTo: 1.0, props: [laptop], emits: [spark(0xB2)],
+                  action: "work"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 0.97, props: [laptop], emits: [spark(0xC3)]),
-            Phase(duration: 0.22, frameKey: "idle", frame: 0,
+                  squashFrom: 1.0, squashTo: 0.97, props: [laptop], emits: [spark(0xC3)],
+                  action: "work"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
-                  squashFrom: 0.97, squashTo: 1.0, props: [laptop]),
+                  squashFrom: 0.97, squashTo: 1.0, props: [laptop], action: "work"),
         ])
     }
 
     private static func celebrate(boosted: Bool) -> Behavior {
         let m = boosted ? 2 : 1
         let heart = boosted ? "♥♥♥" : "♥"
-        return Behavior(kind: .celebrate, loopMs: 4200, phases: [
+        return Behavior(kind: .celebrate, loopMs: 4160, phases: [
             Phase(duration: 0.14, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeOut,
                   squashFrom: 1.0, squashTo: 1.0, bubble: "!!"),
@@ -663,14 +690,16 @@ public enum PetTheater {
                   fromX: 0, fromY: 0.7, toX: 0, toY: -3.2, ease: .easeOutBack,
                   squashFrom: 0.82, squashTo: 1.18,
                   emits: [Emit(kind: .confettiFall, localX: 8, localY: 0, count: 22 * m, seed: 0xCF),
-                          Emit(kind: .confettiFall, localX: 4, localY: 2, count: 10 * m, seed: 0xC7)]),
+                          Emit(kind: .confettiFall, localX: 4, localY: 2, count: 10 * m, seed: 0xC7)],
+                  action: "cheer"),
             Phase(duration: 0.24, frameKey: "happy", frame: 1,
                   fromX: 0, fromY: -3.2, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 1.18, squashTo: 0.9,
-                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 4 * m, seed: 0x40)]),
+                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 4 * m, seed: 0x40)],
+                  action: "cheer"),
             Phase(duration: 0.26, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 0.9, squashTo: 1.0, stepping: 2, bubble: heart),
+                  squashFrom: 0.9, squashTo: 1.0, stepping: 2, bubble: heart, action: "cheer"),
         ])
     }
 
@@ -683,25 +712,26 @@ public enum PetTheater {
         }
         let crumb1 = Emit(kind: .crumbBurst, localX: 9.6, localY: 13, count: 6, seed: 0xE1)
         let crumb2 = Emit(kind: .crumbBurst, localX: 9.6, localY: 13, count: 6, seed: 0xE2)
-        return Behavior(kind: .eat, loopMs: 4600, phases: [
-            Phase(duration: 0.14, frameKey: "idle", frame: 0,
+        // Every phase edge is a whole number of chews, so each tier drops on the
+        // beat the jaw shuts.
+        return Behavior(kind: .eat, loopMs: 4320, phases: [
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0.3, ease: .easeOut,
-                  squashFrom: 1.0, squashTo: 1.0, props: [food(full)], bubble: "!"),
-            Phase(duration: 0.18, frameKey: "idle", frame: 1,
-                  fromX: 0, fromY: 0.3, toX: 0, toY: 0.9, ease: .easeOut,
-                  squashFrom: 1.0, squashTo: 0.82, props: [food(bite1)], emits: [crumb1]),
-            Phase(duration: 0.14, frameKey: "idle", frame: 0,
-                  fromX: 0, fromY: 0.9, toX: 0, toY: 0.4, ease: .easeInOut,
-                  squashFrom: 0.82, squashTo: 1.0, props: [food(bite1)]),
-            Phase(duration: 0.18, frameKey: "happy", frame: 1,
-                  fromX: 0, fromY: 0.4, toX: 0, toY: 0.9, ease: .easeOut,
-                  squashFrom: 1.0, squashTo: 0.82, props: [food(bite2)], emits: [crumb2], bubble: "♥"),
-            Phase(duration: 0.14, frameKey: "happy", frame: 0,
-                  fromX: 0, fromY: 0.9, toX: 0, toY: 0.3, ease: .easeInOut,
-                  squashFrom: 0.82, squashTo: 1.0),
-            Phase(duration: 0.22, frameKey: "happy", frame: 0,
-                  fromX: 0, fromY: 0.3, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 1.0,
+                  squashFrom: 1.0, squashTo: 1.0, props: [food(full)], bubble: "!", action: "eat"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.3, toX: 0, toY: 0.7, ease: .easeOut,
+                  squashFrom: 1.0, squashTo: 0.88, props: [food(bite1)], emits: [crumb1],
+                  action: "eat"),
+            Phase(duration: 0.125, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.7, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.88, squashTo: 1.0, props: [food(bite1)], action: "eat"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: 0, toY: 0.7, ease: .easeOut,
+                  squashFrom: 1.0, squashTo: 0.88, props: [food(bite2)], emits: [crumb2],
+                  bubble: "♥", action: "eat"),
+            Phase(duration: 0.125, frameKey: "happy", frame: 0,
+                  fromX: 0, fromY: 0.7, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.88, squashTo: 1.0,
                   emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 3, seed: 0xE3)]),
         ])
     }
@@ -709,20 +739,21 @@ public enum PetTheater {
     private static func greet(boosted: Bool) -> Behavior {
         let m = boosted ? 2 : 1
         let heart = boosted ? "♥♥♥" : "♥"
-        return Behavior(kind: .greet, loopMs: 2600, phases: [
+        return Behavior(kind: .greet, loopMs: 2400, phases: [
             Phase(duration: 0.18, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeOut,
-                  squashFrom: 1.0, squashTo: 1.12, bubble: heart),
+                  squashFrom: 1.0, squashTo: 1.12, bubble: heart, action: "wave"),
             Phase(duration: 0.30, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: -2.2, ease: .easeOut,
                   squashFrom: 1.12, squashTo: 0.94,
-                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 3 * m, seed: 0x9A)]),
+                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 3 * m, seed: 0x9A)],
+                  action: "wave"),
             Phase(duration: 0.22, frameKey: "happy", frame: 1,
                   fromX: 0, fromY: -2.2, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 0.94, squashTo: 1.06),
+                  squashFrom: 0.94, squashTo: 1.06, action: "wave"),
             Phase(duration: 0.30, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 1.06, squashTo: 1.0, stepping: 2),
+                  squashFrom: 1.06, squashTo: 1.0, stepping: 2, action: "wave"),
         ])
     }
 
@@ -743,20 +774,25 @@ public enum PetTheater {
         ])
     }
 
+    /// Breathing lives in the art now (one slow rise/fall per 900ms), so the body
+    /// squash stays almost flat and only the Zs keep their own drift.
     private static func nap() -> Behavior {
-        Behavior(kind: .nap, loopMs: 5200, phases: [
+        Behavior(kind: .nap, loopMs: 5400, phases: [
             Phase(duration: 0.40, frameKey: "sleeping", frame: 0,
                   fromX: 0, fromY: 0.3, toX: 0, toY: 0.3, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 0.97,
-                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x21)]),
+                  squashFrom: 1.0, squashTo: 0.99,
+                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x21)],
+                  action: "nap"),
             Phase(duration: 0.30, frameKey: "sleeping", frame: 1,
                   fromX: 0, fromY: 0.3, toX: 0, toY: 0.3, ease: .easeInOut,
-                  squashFrom: 0.97, squashTo: 1.0,
-                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x22)]),
+                  squashFrom: 0.99, squashTo: 1.0,
+                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x22)],
+                  action: "nap"),
             Phase(duration: 0.30, frameKey: "sleeping", frame: 0,
                   fromX: 0, fromY: 0.3, toX: 0, toY: 0.3, ease: .easeInOut,
                   squashFrom: 1.0, squashTo: 1.0,
-                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x23)]),
+                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0x23)],
+                  action: "nap"),
         ])
     }
 
@@ -781,10 +817,10 @@ public enum PetTheater {
     }
 
     private static func beg() -> Behavior {
-        Behavior(kind: .beg, loopMs: 5000, phases: [
+        Behavior(kind: .beg, loopMs: 5040, phases: [
             Phase(duration: 0.24, frameKey: "idle", frame: 0,
                   fromX: 0, fromY: 0, toX: 2.0, toY: 0, ease: .easeInOut,
-                  squashFrom: 1.0, squashTo: 1.0, stepping: 4),
+                  squashFrom: 1.0, squashTo: 1.0, stepping: 4, action: "walk"),
             Phase(duration: 0.16, frameKey: "idle", frame: 0,
                   fromX: 2.0, fromY: 0, toX: 2.0, toY: 0.9, ease: .easeOut,
                   squashFrom: 1.0, squashTo: 0.90, bubble: "food?"),
@@ -796,7 +832,7 @@ public enum PetTheater {
                   squashFrom: 1.0, squashTo: 0.90, bubble: "food?"),
             Phase(duration: 0.30, frameKey: "idle", frame: 0,
                   fromX: 2.0, fromY: 0.9, toX: 0, toY: 0, ease: .easeInOut,
-                  squashFrom: 0.90, squashTo: 1.0, stepping: 4),
+                  squashFrom: 0.90, squashTo: 1.0, stepping: 4, action: "walk"),
         ])
     }
 
@@ -821,31 +857,31 @@ public enum PetTheater {
     }
 
     private static func petting() -> Behavior {
-        Behavior(kind: .petting, loopMs: 2400, phases: [
+        Behavior(kind: .petting, loopMs: 2640, phases: [
             Phase(duration: 0.16, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 1.0, squashTo: 0.99,
-                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 1, seed: 0xB0)]),
+                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 1, seed: 0xB0)], action: "petting"),
             Phase(duration: 0.16, frameKey: "happy", frame: 1,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 0.99, squashTo: 0.97,
-                  emits: [Emit(kind: .heartRise, localX: 6, localY: 1, count: 1, seed: 0xB1)]),
+                  emits: [Emit(kind: .heartRise, localX: 6, localY: 1, count: 1, seed: 0xB1)], action: "petting"),
             Phase(duration: 0.18, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 0.97, squashTo: 0.98,
-                  emits: [Emit(kind: .heartRise, localX: 10, localY: 1, count: 1, seed: 0xB2)]),
+                  emits: [Emit(kind: .heartRise, localX: 10, localY: 1, count: 1, seed: 0xB2)], action: "petting"),
             Phase(duration: 0.16, frameKey: "happy", frame: 1,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 0.98, squashTo: 0.97,
-                  emits: [Emit(kind: .heartRise, localX: 7, localY: 1, count: 1, seed: 0xB3)]),
+                  emits: [Emit(kind: .heartRise, localX: 7, localY: 1, count: 1, seed: 0xB3)], action: "petting"),
             Phase(duration: 0.16, frameKey: "happy", frame: 0,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 0.97, squashTo: 0.99,
-                  emits: [Emit(kind: .heartRise, localX: 9, localY: 1, count: 1, seed: 0xB4)]),
+                  emits: [Emit(kind: .heartRise, localX: 9, localY: 1, count: 1, seed: 0xB4)], action: "petting"),
             Phase(duration: 0.18, frameKey: "happy", frame: 1,
                   fromX: 0, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
                   squashFrom: 0.99, squashTo: 1.0,
-                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 1, seed: 0xB5)]),
+                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 1, seed: 0xB5)], action: "petting"),
         ])
     }
 }

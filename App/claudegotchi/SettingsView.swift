@@ -1,14 +1,16 @@
+import AppKit
 import SwiftUI
 import GRDB
 import PetCore
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, notifications, sound, filters
+    case general, integrations, notifications, sound, filters
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "通用"
+        case .integrations: return "连接与同步"
         case .notifications: return "通知"
         case .sound: return "音效"
         case .filters: return "会话过滤"
@@ -17,6 +19,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
+        case .integrations: return "link.circle.fill"
         case .notifications: return "bell.fill"
         case .sound: return "speaker.wave.2.fill"
         case .filters: return "line.3.horizontal.decrease.circle.fill"
@@ -25,6 +28,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var colors: [Color] {
         switch self {
         case .general: return Candy.violet
+        case .integrations: return Candy.teal
         case .notifications: return Candy.coral
         case .sound: return Candy.lime
         case .filters: return Candy.teal
@@ -32,13 +36,31 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
+final class SettingsSelection: ObservableObject {
+    @Published var tab: SettingsTab
+    init(_ tab: SettingsTab = .general) { self.tab = tab }
+}
+
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var selection: SettingsSelection
+    @ObservedObject var syncDriver: LeaderboardSyncDriver
+    @ObservedObject var watcher: PRWatcher
     let sound: SoundController
     let db: DatabaseQueue
+    let leaderboard: LeaderboardService
+    let config: ConfigYAML
+    let github: GitHubClient
+    let git: GitRunner
     @Environment(\.colorScheme) private var scheme
-    @State private var tab: SettingsTab = .general
+    @StateObject private var hooks = HooksInstallModel()
+    @State private var showHooks = false
+    @State private var showLeaderboard = false
+    @State private var showWatchSettings = false
+    @State private var watchedRepoCount = 0
     @State private var rerolling = false
+
+    private var tab: SettingsTab { selection.tab }
 
     var body: some View {
         let t = WarmTheme(scheme: scheme)
@@ -49,7 +71,23 @@ struct SettingsView: View {
         }
         .frame(width: 640, height: 480)
         .background { t.windowFill.ignoresSafeArea() }
-        .onAppear { store.refreshPreciseJump() }
+        .onAppear {
+            store.refreshPreciseJump()
+            hooks.refresh()
+            reloadWatchedRepoCount()
+        }
+        .sheet(isPresented: $showHooks, onDismiss: { hooks.refresh() }) {
+            HooksInstallView()
+        }
+        .sheet(isPresented: $showLeaderboard) {
+            LeaderboardSettingsView(driver: syncDriver, service: leaderboard)
+        }
+        .sheet(isPresented: $showWatchSettings, onDismiss: {
+            reloadWatchedRepoCount()
+            Task { await watcher.pollOnce() }
+        }) {
+            WatchSettingsView(db: db, github: github, git: git, config: config)
+        }
     }
 
     // MARK: sidebar
@@ -60,6 +98,32 @@ struct SettingsView: View {
                 sidebarRow(t, item)
             }
             Spacer(minLength: 0)
+            Divider().overlay(t.track.opacity(0.7))
+                .padding(.vertical, 6)
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "power")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(t.inkFaint)
+                        .frame(width: 20)
+                    Text("退出应用")
+                        .font(WFont.label.weight(.medium))
+                        .foregroundStyle(t.ink)
+                    Spacer(minLength: 4)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(t.pillActive.opacity(0.45))
+            )
+            .keyboardShortcut("q", modifiers: .command)
+            .help("退出应用，不会删除本地数据")
         }
         .padding(.horizontal, 10)
         .padding(.top, 36)
@@ -69,7 +133,7 @@ struct SettingsView: View {
     }
 
     private func sidebarRow(_ t: WarmTheme, _ item: SettingsTab) -> some View {
-        let active = tab == item
+        let active = selection.tab == item
         return HStack(spacing: 10) {
             CandyIcon(symbol: item.symbol, colors: item.colors, size: 13)
                 .frame(width: 20)
@@ -86,7 +150,7 @@ struct SettingsView: View {
                 .shadow(color: active ? t.pillShadow : .clear, radius: 4, x: 0, y: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture { withAnimation(.easeOut(duration: 0.14)) { tab = item } }
+        .onTapGesture { withAnimation(.easeOut(duration: 0.14)) { selection.tab = item } }
     }
 
     // MARK: content
@@ -97,6 +161,7 @@ struct SettingsView: View {
                 pageHeader(t)
                 switch tab {
                 case .general: generalTab(t)
+                case .integrations: integrationsTab(t)
                 case .notifications: notificationTab(t)
                 case .sound: soundTab(t)
                 case .filters: filterTab(t)
@@ -116,10 +181,122 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: 连接与同步
+
+    private func integrationsTab(_ t: WarmTheme) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            group(t, "Agent 接入") {
+                integrationStatusRow(
+                    t, title: "Claude Code",
+                    subtitle: "通过生命周期钩子统计会话、工具调用与 Token",
+                    status: hooks.statusText,
+                    connected: hooks.status == .installed
+                )
+                Divider().overlay(t.track)
+                integrationStatusRow(
+                    t, title: "OpenAI Codex",
+                    subtitle: "支持 CLI 与桌面端本地任务；安装后需在 Codex 中信任",
+                    status: hooks.codexStatusText,
+                    connected: hooks.codexStatus == .installed
+                )
+                Divider().overlay(t.track)
+                HStack {
+                    Text("Claude 与 Codex 可同时启用，统计会按平台分别记录。")
+                        .font(WFont.caption).foregroundStyle(t.inkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 12)
+                    Button("管理钩子") { showHooks = true }
+                        .buttonStyle(WarmButtonStyle(prominent: true))
+                }
+                .padding(.vertical, 4)
+            }
+
+            group(t, "全球排行榜") {
+                integrationStatusRow(
+                    t, title: "排行榜同步",
+                    subtitle: "仅上传聚合统计与宠物信息，不包含代码或会话内容",
+                    status: syncDriver.snapshot.account == nil
+                        ? "未登录"
+                        : "@\(syncDriver.snapshot.account?.githubLogin ?? "")",
+                    connected: syncDriver.snapshot.account != nil
+                )
+                Divider().overlay(t.track)
+                HStack {
+                    Text("登录 GitHub 后可同步数据并查看自己的全球排名。")
+                        .font(WFont.caption).foregroundStyle(t.inkFaint)
+                    Spacer(minLength: 12)
+                    Button(syncDriver.snapshot.account == nil ? "登录与同步" : "管理同步") {
+                        showLeaderboard = true
+                    }
+                    .buttonStyle(WarmButtonStyle())
+                }
+                .padding(.vertical, 4)
+            }
+
+            group(t, "GitHub 工作台") {
+                integrationStatusRow(
+                    t, title: "PR 监控仓库",
+                    subtitle: "配置要显示在工作台中的仓库、作者与本地路径",
+                    status: watchedRepoCount == 0 ? "未配置" : "\(watchedRepoCount) 个仓库",
+                    connected: watchedRepoCount > 0
+                )
+                Divider().overlay(t.track)
+                HStack {
+                    Text("GitHub 连接、监控范围和本地仓库映射统一在这里管理。")
+                        .font(WFont.caption).foregroundStyle(t.inkFaint)
+                    Spacer(minLength: 12)
+                    Button("管理仓库") { showWatchSettings = true }
+                        .buttonStyle(WarmButtonStyle())
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private func reloadWatchedRepoCount() {
+        watchedRepoCount = ((try? PRStore.watchedRepos(in: db)) ?? []).count
+    }
+
+    private func integrationStatusRow(
+        _ t: WarmTheme, title: String, subtitle: String, status: String, connected: Bool
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Circle()
+                .fill(connected ? t.good : t.inkFaint.opacity(0.35))
+                .frame(width: 8, height: 8)
+            settingLabel(t, title, subtitle)
+            Spacer(minLength: 8)
+            Text(status)
+                .font(WFont.caption)
+                .foregroundStyle(connected ? t.good : t.inkFaint)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 4)
+    }
+
     // MARK: 通用
 
     private func generalTab(_ t: WarmTheme) -> some View {
         VStack(alignment: .leading, spacing: 20) {
+            group(t, "宠物展示") {
+                HStack(alignment: .center, spacing: 12) {
+                    settingLabel(
+                        t, "展示位置",
+                        store.petDisplayMode == .island
+                            ? "宠物停留在 MacBook 凹口旁"
+                            : "宠物悬浮在普通窗口之上，可拖到桌面任意位置")
+                    Spacer(minLength: 8)
+                    Picker("展示位置", selection: $store.petDisplayMode) {
+                        ForEach(PetDisplayMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
+                .padding(.vertical, 4)
+            }
             group(t, "系统") {
                 SettingsToggleRow(
                     t: t, title: "登录时启动", subtitle: "开机后自动运行 claudegotchi",
@@ -136,34 +313,36 @@ struct SettingsView: View {
                     subtitle: "Warp、Ghostty 等只有一个终端标题，Claude 自带的标题会不断覆盖标记；开启后写入 ~/.claude/settings.json（自动备份）以保证这些终端里也能精确跳转",
                     isOn: $store.disableClaudeNativeTitle)
             }
-            group(t, "展开与显示") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        settingLabel(t, "悬停展开延时", "指向灵动岛后延迟多久展开面板")
-                        Spacer(minLength: 8)
-                        Text(String(format: "%.2fs", store.hoverDelay))
-                            .font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+            if store.petDisplayMode == .island {
+                group(t, "灵动岛行为") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            settingLabel(t, "悬停展开延时", "指向灵动岛后延迟多久展开面板")
+                            Spacer(minLength: 8)
+                            Text(String(format: "%.2fs", store.hoverDelay))
+                                .font(WFont.value).monospacedDigit().foregroundStyle(t.inkStrong)
+                        }
+                        Slider(value: $store.hoverDelay, in: 0.1...1.0, step: 0.05).tint(t.accent)
                     }
-                    Slider(value: $store.hoverDelay, in: 0.1...1.0, step: 0.05).tint(t.accent)
+                    .padding(.vertical, 4)
+                    Divider().overlay(t.track)
+                    SettingsToggleRow(
+                        t: t, title: "鼠标移开自动收起", subtitle: "指针离开后自动收起悬停展开的面板",
+                        isOn: $store.autoCollapseOnLeave)
+                    Divider().overlay(t.track)
+                    SettingsToggleRow(
+                        t: t, title: "无活跃会话时隐藏灵动岛", subtitle: "没有会话时淡出灵动岛，宠物仅留在下拉面板",
+                        isOn: $store.autoHideWhenNoSessions)
                 }
-                .padding(.vertical, 4)
-                Divider().overlay(t.track)
-                SettingsToggleRow(
-                    t: t, title: "鼠标移开自动收起", subtitle: "指针离开后自动收起悬停展开的面板",
-                    isOn: $store.autoCollapseOnLeave)
-                Divider().overlay(t.track)
-                SettingsToggleRow(
-                    t: t, title: "无活跃会话时隐藏灵动岛", subtitle: "没有会话时淡出灵动岛，宠物仅留在下拉面板",
-                    isOn: $store.autoHideWhenNoSessions)
-            }
-            group(t, "灵动岛微调") {
-                offsetRow(
-                    t, title: "高度偏移", subtitle: "在系统凹口高度基础上加减，0 为自动",
-                    value: $store.islandHeightOffset, range: SettingsStore.heightOffsetRange, step: 1)
-                Divider().overlay(t.track)
-                offsetRow(
-                    t, title: "宽度偏移", subtitle: "微调左右两侧耳朵的总宽度，0 为自动",
-                    value: $store.islandWidthOffset, range: SettingsStore.widthOffsetRange, step: 2)
+                group(t, "灵动岛微调") {
+                    offsetRow(
+                        t, title: "高度偏移", subtitle: "在系统凹口高度基础上加减，0 为自动",
+                        value: $store.islandHeightOffset, range: SettingsStore.heightOffsetRange, step: 1)
+                    Divider().overlay(t.track)
+                    offsetRow(
+                        t, title: "宽度偏移", subtitle: "微调左右两侧耳朵的总宽度，0 为自动",
+                        value: $store.islandWidthOffset, range: SettingsStore.widthOffsetRange, step: 2)
+                }
             }
             group(t, "订阅用量") {
                 SettingsToggleRow(

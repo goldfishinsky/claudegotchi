@@ -108,9 +108,9 @@ extension PixelSpeciesCatalog {
             "..........###......###..........",
         ]
         return assemble(id: "hedgehog", nameZh: "小刺猬", base4: base4, stages: [
-            ("baby", baby, Feat(mouthRow: 11, mouthCols: [7, 8], cheek: [(9, 4), (9, 11)], z: [(6, 14), (4, 14)], sweat: (6, 14)), nil),
-            ("child", child, Feat(mouthRow: 12, mouthCols: [7, 8], cheek: [(10, 4), (10, 11)], z: [(6, 14), (4, 14)], sweat: (6, 14)), nil),
-            ("adult", adult, Feat(mouthRow: 14, mouthCols: [7, 8], cheek: [(11, 3), (11, 12)], z: [(6, 14), (4, 14)], sweat: (6, 14)), nil),
+            ("baby", baby, Feat(mouthRow: 11, mouthCols: [7, 8], cheek: [(9, 4), (9, 11)], z: [(6, 14), (4, 14)], sweat: (6, 14), pawL: (12, 5), pawR: (12, 10), feetRow: 13), nil),
+            ("child", child, Feat(mouthRow: 12, mouthCols: [7, 8], cheek: [(10, 4), (10, 11)], z: [(6, 14), (4, 14)], sweat: (6, 14), pawL: (13, 5), pawR: (13, 10), feetRow: 14), nil),
+            ("adult", adult, Feat(mouthRow: 14, mouthCols: [7, 8], cheek: [(11, 3), (11, 12)], z: [(6, 14), (4, 14)], sweat: (6, 14), pawL: (12, 5), pawR: (12, 10), feetRow: 15), nil),
         ])
     }
 }

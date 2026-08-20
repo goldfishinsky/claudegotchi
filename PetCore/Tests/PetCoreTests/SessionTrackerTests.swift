@@ -20,12 +20,13 @@ final class SessionTrackerTests: XCTestCase {
 
     private func insertEvent(id: String, type: String, ts: Int64,
                              sessionId: String?, cwd: String?, tool: String? = nil,
-                             backgroundTasks: Int? = nil) throws {
+                             backgroundTasks: Int? = nil, platform: String? = nil) throws {
         var payload: String?
-        if tool != nil || backgroundTasks != nil {
+        if tool != nil || backgroundTasks != nil || platform != nil {
             var obj: [String: Any] = [:]
             if let tool { obj["tool"] = tool }
             if let backgroundTasks { obj["background_tasks"] = backgroundTasks }
+            if let platform { obj["platform"] = platform }
             payload = String(data: try JSONSerialization.data(withJSONObject: obj), encoding: .utf8)
         }
         try db.write { conn in
@@ -52,6 +53,34 @@ final class SessionTrackerTests: XCTestCase {
         XCTAssertEqual(sessions[0].startedAtMs, 1000)
         XCTAssertEqual(sessions[0].lastActivityMs, 2000)
         XCTAssertEqual(sessions[0].lastTool, "Bash")
+        XCTAssertEqual(sessions[0].platform, ModelPlatform.claudeCode)
+    }
+
+    func testPlatformComesFromEventPayload() throws {
+        try insertEvent(
+            id: "e1", type: "session_start", ts: 1000,
+            sessionId: "codex-s1", cwd: "/tmp/repo-a", platform: ModelPlatform.codex
+        )
+        try insertEvent(
+            id: "e2", type: "pre_tool_use", ts: 2000,
+            sessionId: "codex-s1", cwd: "/tmp/repo-a", tool: "Bash",
+            platform: ModelPlatform.codex
+        )
+        let sessions = try SessionTracker.activeSessions(
+            db: db, nowMs: 3000, windowMs: window, repoPaths: []
+        )
+        XCTAssertEqual(sessions.first?.platform, ModelPlatform.codex)
+    }
+
+    func testNamespacedCodexSessionIsBackwardCompatibleWithoutPlatformPayload() throws {
+        try insertEvent(
+            id: "e1", type: "session_start", ts: 1000,
+            sessionId: "codex-s1", cwd: "/tmp/repo-a"
+        )
+        let sessions = try SessionTracker.activeSessions(
+            db: db, nowMs: 1500, windowMs: window, repoPaths: []
+        )
+        XCTAssertEqual(sessions.first?.platform, ModelPlatform.codex)
     }
 
     func testStopClosesSession() throws {

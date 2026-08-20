@@ -159,6 +159,33 @@ public enum Database {
                 try db.execute(sql: "UPDATE pet SET genome = ? WHERE id = ?", arguments: [Genome.pack(seed), id])
             }
         }
+        m.registerMigration("v7_model_usage_platform") { db in
+            try db.execute(sql: "ALTER TABLE model_usage RENAME TO model_usage_v6;")
+            try db.execute(sql: """
+                CREATE TABLE model_usage (
+                  platform TEXT NOT NULL,
+                  model TEXT NOT NULL,
+                  tokens_in INTEGER NOT NULL DEFAULT 0,
+                  tokens_out INTEGER NOT NULL DEFAULT 0,
+                  calls INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (platform, model)
+                ) WITHOUT ROWID;
+                """)
+            try db.execute(sql: """
+                INSERT INTO model_usage (platform, model, tokens_in, tokens_out, calls)
+                SELECT
+                  CASE
+                    WHEN lower(model) LIKE 'gpt-%'
+                      OR lower(model) LIKE 'codex-%'
+                      OR lower(model) GLOB 'o[0-9]*'
+                    THEN 'codex'
+                    ELSE 'claude-code'
+                  END,
+                  model, tokens_in, tokens_out, calls
+                FROM model_usage_v6;
+                """)
+            try db.execute(sql: "DROP TABLE model_usage_v6;")
+        }
         return m
     }
 }

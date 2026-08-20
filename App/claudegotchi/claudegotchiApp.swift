@@ -178,6 +178,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var agentActivityModel: AgentActivityModel?
     private var islandModel: IslandModel?
     private var islandController: NotchIslandController?
+    private var floatingPetController: FloatingPetController?
+    private var activePetDisplayMode: PetDisplayMode?
     private var settings: SettingsStore?
     private var sound: SoundController?
     private var settingsWindow: SettingsWindowController?
@@ -200,9 +202,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentScreenshotHarness(_ mode: String) {
-        guard let services, let petModel = petPanelModel, let agentModel = agentActivityModel,
-              let island = islandModel else { return }
+        guard let services, let petModel = petPanelModel, let agentModel = agentActivityModel else { return }
         services.systemStats.start()
+        if mode == "settings" {
+            settingsWindow?.show(tab: .general)
+            return
+        }
         let statsTabs: [String: StatsTab] = [
             "overview": .overview, "system": .system, "models": .models,
             "growth": .growth, "work": .work, "leaderboard": .leaderboard,
@@ -212,9 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let card = DropdownCard(
-            petModel: petModel, agentModel: agentModel, services: services,
-            driver: services.systemStats, usageDriver: services.claudeUsage, islandModel: island,
-            onOpenStats: {}, onOpenSystemStats: {}, onToggleIsland: { _ in },
+            petModel: petModel, agentModel: agentModel,
+            driver: services.systemStats, usageDriver: services.claudeUsage,
+            onOpenStats: {}, onOpenSystemStats: {},
             onOpenSettings: {}, onJump: { _ in })
         let hosting = NSHostingController(rootView: card)
         hosting.view.layoutSubtreeIfNeeded()
@@ -235,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconTimer?.invalidate()
         if let petChangeObserver { NotificationCenter.default.removeObserver(petChangeObserver) }
         islandController?.stop()
+        floatingPetController?.stop()
         dropdown?.hide()
         services?.terminate()
     }
@@ -253,19 +259,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         petPanelModel = petModel
         let settingsStore = SettingsStore()
         settings = settingsStore
+        let island = IslandModel(db: services.db, notchAvailable: NotchGeometry.builtInNotch() != nil)
+        islandModel = island
         let soundController = SoundController(settings: settingsStore)
         sound = soundController
         petModel.theaterSound = { [weak soundController] scene, nowMs in
             soundController?.theaterScene(scene, nowMs: nowMs)
         }
-        settingsWindow = SettingsWindowController(store: settingsStore, sound: soundController, db: services.db)
+        settingsWindow = SettingsWindowController(
+            store: settingsStore,
+            sound: soundController,
+            db: services.db,
+            syncDriver: services.syncDriver,
+            watcher: services.watcher,
+            leaderboard: services.leaderboard,
+            config: services.config,
+            github: services.github,
+            git: services.git
+        )
 
         let agentModel = AgentActivityModel(db: services.db)
         agentModel.filterProvider = { [weak settingsStore] in settingsStore?.sessionFilter ?? .empty }
         agentActivityModel = agentModel
-
-        let island = IslandModel(db: services.db, notchAvailable: NotchGeometry.builtInNotch() != nil)
-        islandModel = island
 
         services.claudeUsage.isEnabled = { [weak settingsStore] in
             settingsStore?.showSubscriptionUsage ?? false
@@ -275,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 self?.agentActivityModel?.refresh()
                 self?.islandController?.refresh()
+                self?.applyPetDisplayMode()
                 self?.syncUsageDriver()
             }
         }
@@ -290,10 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AnyView(DropdownCard(
                 petModel: petModel,
                 agentModel: agentModel,
-                services: services,
                 driver: statsDriver,
                 usageDriver: usageDriver,
-                islandModel: island,
                 onOpenStats: { [weak self] in
                     self?.dropdown?.hide()
                     self?.openStats(services, select: .overview)
@@ -302,19 +316,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.dropdown?.hide()
                     self?.openStats(services, select: .system)
                 },
-                onToggleIsland: { [weak self] on in
-                    self?.islandController?.setEnabled(on)
-                },
                 onOpenSettings: { [weak self] in
                     self?.dropdown?.hide()
                     self?.settingsWindow?.show()
                 },
                 onJump: { [weak self] agent in
                     self?.dropdown?.hide()
-                    let tty = (try? TTYAnchor.stored(db: services.db, sessionId: agent.sessionId)) ?? nil
-                    SessionJumper.shared.jump(
-                        cwd: agent.cwd ?? "", tty: tty,
-                        markerToken: TitleMarker.token(forSessionId: agent.sessionId))
+                    self?.jumpToAgent(agent, db: services.db)
                 },
                 onHeightChange: { [weak self] h in
                     self?.dropdown?.setContentHeight(h)
@@ -329,8 +337,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             islandController = controller
             controller.onPresenceChange = { [weak self] in self?.syncStatusItemVisibility() }
-            controller.start()
         }
+        let floatingPet = FloatingPetController(
+            petModel: petModel,
+            agentModel: agentModel,
+            onJumpAgent: { [weak self] agent in self?.jumpToAgent(agent, db: services.db) },
+            onReturnToIsland: { [weak settingsStore] in
+                settingsStore?.petDisplayMode = .island
+            },
+            onOpenSettings: { [weak self] in self?.settingsWindow?.show() }
+        )
+        floatingPetController = floatingPet
+        islandController?.onPetDraggedOut = { [weak settingsStore, weak floatingPet] point in
+            floatingPet?.placeCentered(at: point)
+            settingsStore?.petDisplayMode = .floating
+        }
+        applyPetDisplayMode()
         syncStatusItemVisibility()
 
         refreshPanels()
@@ -359,12 +381,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func jumpToAgent(_ agent: AgentActivity, db: DatabaseQueue) {
+        if agent.isCodex, SessionJumper.shared.jumpToCodex(sessionId: agent.sessionId) { return }
+        let tty = (try? TTYAnchor.stored(db: db, sessionId: agent.sessionId)) ?? nil
+        SessionJumper.shared.jump(
+            cwd: agent.cwd ?? "",
+            tty: tty,
+            markerToken: TitleMarker.token(forSessionId: agent.sessionId)
+        )
+    }
+
     /// The status item and the island are mutually exclusive: the menu-bar icon
     /// shows only while the island is absent (no notch, or island disabled). The
     /// island's auto-hide (no sessions) keeps the panel present, so the status
     /// item stays hidden through it.
     private func syncStatusItemVisibility() {
         statusItem?.isVisible = !(islandController?.isPresent ?? false)
+    }
+
+    /// Exactly one pet presentation is active. On Macs without a built-in notch,
+    /// the floating pet is the useful fallback even if an older preference says
+    /// "island".
+    private func applyPetDisplayMode() {
+        guard let settings, let islandModel, let islandController, let floatingPetController else { return }
+        let desired: PetDisplayMode = settings.petDisplayMode == .island && islandModel.notchAvailable
+            ? .island
+            : .floating
+        guard desired != activePetDisplayMode else { return }
+        activePetDisplayMode = desired
+        switch desired {
+        case .island:
+            floatingPetController.stop()
+            islandController.setEnabled(true)
+        case .floating:
+            islandController.setEnabled(false)
+            floatingPetController.start()
+        }
+        syncStatusItemVisibility()
     }
 
     /// Opting out of 「显示订阅用量」 drops the keychain-reading poller and any last
@@ -420,12 +473,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             syncDriver: services.syncDriver,
             systemStats: services.systemStats,
             db: services.db,
-            config: services.config,
-            github: services.github,
-            git: services.git,
             leaderboard: services.leaderboard,
-            githubClientID: services.config.resolvedLeaderboard.githubClientID,
-            onOpenSettings: { [weak self] in self?.settingsWindow?.show() }
+            onOpenIntegrationSettings: { [weak self] in
+                self?.settingsWindow?.show(tab: .integrations)
+            }
         )
         let win = Glass.window(root, size: NSSize(width: 720, height: 600), title: "claudegotchi")
         win.makeKeyAndOrderFront(nil)

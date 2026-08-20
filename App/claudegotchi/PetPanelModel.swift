@@ -14,9 +14,9 @@ final class PetPanelModel: ObservableObject {
     @Published private(set) var level: Int = 0
     @Published private(set) var xpToNext: Int64 = 0
     @Published private(set) var todayTokens: Int64 = 0
-    @Published private(set) var todaySessions: Int = 0
-    @Published private(set) var todayTools: Int = 0
     @Published private(set) var activity: String = "空闲"
+    @Published private(set) var isAgentWorking = false
+    @Published private(set) var activePlatforms: [String] = []
     @Published private(set) var hasPet: Bool = false
 
     // Theater inputs, refreshed alongside the vitals; the theater clock itself
@@ -85,24 +85,27 @@ final class PetPanelModel: ObservableObject {
         let rollup = try? db.read { conn in try DailyRollup.fetch(date: dayKey, from: conn) }
         if let rollup = rollup ?? nil {
             todayTokens = Int64(rollup.tokensIn + rollup.tokensOut)
-            todaySessions = rollup.sessions
-            todayTools = rollup.toolsUsed
         } else {
             todayTokens = 0
-            todaySessions = 0
-            todayTools = 0
         }
 
         let sessions = activeSessions(nowMs: nowMs)
-        let recent = sessions.max(by: { $0.lastActivityMs < $1.lastActivityMs })
+        let workingSessions = sessions.filter {
+            $0.backgroundTasks > 0
+                || $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
+        }
+        let recent = workingSessions.max(by: { $0.lastActivityMs < $1.lastActivityMs })
 
         let tier = WorkPressure.tier((try? PRStore.allPRs(in: db)) ?? [], config: config)
         let base = PetMood.derive(pet: pet, pressure: tier)
 
-        workingCount = sessions.filter {
-            $0.backgroundTasks > 0
-                || $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
-        }.count
+        workingCount = workingSessions.count
+        isAgentWorking = !workingSessions.isEmpty
+        activePlatforms = Array(Set(workingSessions.map(\.platform))).sorted {
+            if $0 == ModelPlatform.claudeCode { return true }
+            if $1 == ModelPlatform.claudeCode { return false }
+            return $0 < $1
+        }
         let tokenStop = try? TheaterQueries.latestTokenStop(db, sinceMs: nowMs - PetTheater.eatWindowMs)
         lastTokenStopMs = (tokenStop ?? nil)?.ts
         lastTokenStopTokens = (tokenStop ?? nil)?.tokens ?? 0
@@ -132,8 +135,14 @@ final class PetPanelModel: ObservableObject {
 
         if pet.hibernationSince != nil {
             activity = "💤 休眠中"
+            isAgentWorking = false
+            activePlatforms = []
         } else if let tool = recent?.lastTool {
-            activity = "Claude 正在 \(tool)…"
+            activity = "正在使用 \(tool)…"
+        } else if !workingSessions.isEmpty {
+            activity = workingSessions.count > 1
+                ? "\(workingSessions.count) 个 Agent 正在工作…"
+                : "Agent 正在工作…"
         } else {
             activity = "空闲"
         }
