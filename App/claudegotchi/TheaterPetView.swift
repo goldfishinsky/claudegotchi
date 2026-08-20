@@ -18,6 +18,9 @@ struct TheaterPetView: View {
     var onPetting: (() -> Void)? = nil
     /// Every rendered frame, for the sound layer to observe emission/behaviour edges.
     var onScene: ((SceneFrame, Int64) -> Void)? = nil
+    /// App-owned stateful selector. Tests and static previews can omit it and use
+    /// PetTheater's legacy pure selection path.
+    var sceneProvider: ((TheaterSignals, Int64) -> SceneFrame)? = nil
 
     private let cols = 30.0
     private let rows = 22.0
@@ -61,7 +64,8 @@ struct TheaterPetView: View {
             if petting { s.pettingActive = true }
             if let comboUntilMs, timeMs < comboUntilMs { s.comboTap = true }
         }
-        let scene = PetTheater.scene(signals: s, timeMs: timeMs, personality: look.personality)
+        let scene = sceneProvider?(s, timeMs)
+            ?? PetTheater.scene(signals: s, timeMs: timeMs, personality: look.personality)
         onScene?(scene, timeMs)
         return ZStack(alignment: .topLeading) {
             Canvas { ctx, canvasSize in draw(scene, in: &ctx, size: canvasSize) }

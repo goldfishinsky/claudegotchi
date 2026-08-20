@@ -29,6 +29,12 @@ public struct TheaterSignals: Equatable {
     public var comboTap: Bool
     public var lastTapAgeMs: Int64?
     public var lastTapCounted: Bool
+    public var tokenEventID: Int64?
+    public var celebrationEventID: Int64?
+    public var clickEventID: Int64?
+    public var activeTool: String?
+    public var workingDurationSeconds: Double
+    public var permissionPending: Bool
 
     public init(
         workingAgentCount: Int = 0,
@@ -45,7 +51,13 @@ public struct TheaterSignals: Equatable {
         pettingActive: Bool = false,
         comboTap: Bool = false,
         lastTapAgeMs: Int64? = nil,
-        lastTapCounted: Bool = false
+        lastTapCounted: Bool = false,
+        tokenEventID: Int64? = nil,
+        celebrationEventID: Int64? = nil,
+        clickEventID: Int64? = nil,
+        activeTool: String? = nil,
+        workingDurationSeconds: Double = 0,
+        permissionPending: Bool = false
     ) {
         self.workingAgentCount = workingAgentCount
         self.recentTokenDrop = recentTokenDrop
@@ -62,6 +74,12 @@ public struct TheaterSignals: Equatable {
         self.comboTap = comboTap
         self.lastTapAgeMs = lastTapAgeMs
         self.lastTapCounted = lastTapCounted
+        self.tokenEventID = tokenEventID
+        self.celebrationEventID = celebrationEventID
+        self.clickEventID = clickEventID
+        self.activeTool = activeTool
+        self.workingDurationSeconds = workingDurationSeconds
+        self.permissionPending = permissionPending
     }
 }
 
@@ -90,9 +108,13 @@ public func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) 
 
 // MARK: - behaviours
 
-public enum TheaterBehavior: String, Equatable, CaseIterable {
+public enum TheaterBehavior: String, Equatable, Hashable, Codable, CaseIterable {
     case celebrate, eat, greet, work, sickDroop, stroll, idle, nap
     case dizzy, beg, attention, petting
+    case lookAround, groom, yawn, doze
+    case cursorWatch, cursorChase, peek, landing, windowWatch
+    case think, read, multitask, workBreak, proud
+    case permissionWait
 }
 
 // MARK: - particles
@@ -410,10 +432,25 @@ public enum PetTheater {
     public static func scene(
         signals: TheaterSignals, timeMs: Int64, personality: TheaterPersonality = .neutral
     ) -> SceneFrame {
-        let clock = scaledClock(timeMs, personality.motionSpeed)
-        let kind = selectBehavior(signals)
+        scene(
+            behavior: selectBehavior(signals), signals: signals,
+            actionTimeMs: timeMs, personality: personality
+        )
+    }
+
+    /// Renders an action chosen by `PetBehaviorBrain`. Its clock is relative to
+    /// the start of that action, so opening another surface cannot jump the pet
+    /// halfway through a performance.
+    public static func scene(
+        behavior kind: TheaterBehavior, signals: TheaterSignals, actionTimeMs: Int64,
+        personality: TheaterPersonality = .neutral, idleVariant: Int = 0
+    ) -> SceneFrame {
+        let clock = scaledClock(actionTimeMs, personality.motionSpeed)
         let b = kind == .idle
-            ? idleFidget(bucket: floorDivInt(clock, fidgetLoopMs), personality: personality)
+            ? idleFidget(
+                bucket: floorDivInt(clock, fidgetLoopMs) + Int64(idleVariant),
+                personality: personality
+            )
             : behavior(kind, signals: signals)
         let loop = b.loopMs
         let loopPos = ((clock % loop) + loop) % loop
@@ -436,7 +473,7 @@ public enum PetTheater {
             ? min(1, max(0, (frac - startFrac) / phase.duration)) : 0
         let e = phase.ease.apply(localT)
 
-        var offX = lerp(phase.fromX, phase.toX, e)
+        let offX = lerp(phase.fromX, phase.toX, e)
         var offY = lerp(phase.fromY, phase.toY, e)
         var frame = phase.frame
         var frameKey = phase.frameKey
@@ -534,7 +571,292 @@ public enum PetTheater {
         case .beg: return beg()
         case .attention: return attention()
         case .petting: return petting()
+        case .lookAround: return lookAround()
+        case .groom: return groom()
+        case .yawn: return yawn()
+        case .doze: return doze()
+        case .cursorWatch: return cursorWatch()
+        case .cursorChase: return cursorChase()
+        case .peek: return peek()
+        case .landing: return landing()
+        case .windowWatch: return windowWatch()
+        case .think: return think()
+        case .read: return read()
+        case .multitask: return multitask()
+        case .workBreak: return workBreak()
+        case .proud: return proud()
+        case .permissionWait: return permissionWait()
         }
+    }
+
+    private static func lookAround() -> Behavior {
+        Behavior(kind: .lookAround, loopMs: 4200, phases: [
+            Phase(duration: 0.22, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: -1.1, toY: 0, ease: .easeOut,
+                  squashFrom: 1, squashTo: 0.98),
+            Phase(duration: 0.26, frameKey: "idle", frame: 1,
+                  fromX: -1.1, fromY: 0, toX: -1.1, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1, bubble: "?"),
+            Phase(duration: 0.28, frameKey: "idle", frame: 0,
+                  fromX: -1.1, fromY: 0, toX: 1.2, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.98),
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 1.2, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1),
+        ])
+    }
+
+    private static func groom() -> Behavior {
+        Behavior(kind: .groom, loopMs: 4800, phases: [
+            Phase(duration: 0.22, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 0.5, toY: 0.5, ease: .easeOut,
+                  squashFrom: 1, squashTo: 0.9, action: "petting"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 1,
+                  fromX: 0.5, fromY: 0.5, toX: -0.4, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.9, squashTo: 0.94, action: "petting"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: -0.4, fromY: 0.4, toX: 0.4, toY: 0.5, ease: .easeInOut,
+                  squashFrom: 0.94, squashTo: 0.9, action: "petting"),
+            Phase(duration: 0.28, frameKey: "happy", frame: 0,
+                  fromX: 0.4, fromY: 0.5, toX: 0, toY: 0, ease: .easeOutBack,
+                  squashFrom: 0.9, squashTo: 1),
+        ])
+    }
+
+    private static func yawn() -> Behavior {
+        Behavior(kind: .yawn, loopMs: 4600, phases: [
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 0, toY: -0.7, ease: .easeOut,
+                  squashFrom: 1, squashTo: 1.1),
+            Phase(duration: 0.25, frameKey: "sleeping", frame: 0,
+                  fromX: 0, fromY: -0.7, toX: 0, toY: -0.7, ease: .easeInOut,
+                  squashFrom: 1.1, squashTo: 1.04, bubble: "…"),
+            Phase(duration: 0.22, frameKey: "sleeping", frame: 1,
+                  fromX: 0, fromY: -0.7, toX: 0, toY: 0.5, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.9),
+            Phase(duration: 0.28, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.5, toX: 0, toY: 0, ease: .easeOutBack,
+                  squashFrom: 0.9, squashTo: 1),
+        ])
+    }
+
+    private static func doze() -> Behavior {
+        Behavior(kind: .doze, loopMs: 6000, phases: [
+            Phase(duration: 0.34, frameKey: "sleeping", frame: 0,
+                  fromX: 0, fromY: 0.3, toX: 0, toY: 0.5, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.98,
+                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0xD01)], action: "nap"),
+            Phase(duration: 0.33, frameKey: "sleeping", frame: 1,
+                  fromX: 0, fromY: 0.5, toX: 0, toY: 0.3, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1,
+                  emits: [Emit(kind: .zDrift, localX: 10, localY: 1, count: 1, seed: 0xD02)], action: "nap"),
+            Phase(duration: 0.33, frameKey: "sleeping", frame: 0,
+                  fromX: 0, fromY: 0.3, toX: 0, toY: 0.3, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, action: "nap"),
+        ])
+    }
+
+    private static func cursorWatch() -> Behavior {
+        Behavior(kind: .cursorWatch, loopMs: 3600, phases: [
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 1, toY: -0.3, ease: .easeOut,
+                  squashFrom: 1, squashTo: 1.04, bubble: "?"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 1,
+                  fromX: 1, fromY: -0.3, toX: 1.3, toY: -0.5, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.96),
+            Phase(duration: 0.24, frameKey: "happy", frame: 0,
+                  fromX: 1.3, fromY: -0.5, toX: 0.7, toY: -0.2, ease: .easeOutBack,
+                  squashFrom: 0.96, squashTo: 1.05, action: "wave"),
+            Phase(duration: 0.28, frameKey: "idle", frame: 0,
+                  fromX: 0.7, fromY: -0.2, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.05, squashTo: 1),
+        ])
+    }
+
+    private static func cursorChase() -> Behavior {
+        Behavior(kind: .cursorChase, loopMs: 5200, phases: [
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 3.2, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, stepping: 5, action: "walk"),
+            Phase(duration: 0.16, frameKey: "happy", frame: 0,
+                  fromX: 3.2, fromY: 0, toX: 3.6, toY: -1.5, ease: .easeOutBack,
+                  squashFrom: 1, squashTo: 1.12, bubble: "!", action: "wave"),
+            Phase(duration: 0.18, frameKey: "happy", frame: 1,
+                  fromX: 3.6, fromY: -1.5, toX: 2.7, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.12, squashTo: 0.9, action: "wave"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 2.7, fromY: 0, toX: -1.2, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.9, squashTo: 1, stepping: 5, action: "walk"),
+            Phase(duration: 0.16, frameKey: "idle", frame: 0,
+                  fromX: -1.2, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, stepping: 2, action: "walk"),
+        ])
+    }
+
+    private static func peek() -> Behavior {
+        Behavior(kind: .peek, loopMs: 5000, phases: [
+            Phase(duration: 0.28, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 4.2, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, stepping: 5, action: "walk"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 1,
+                  fromX: 4.2, fromY: 0, toX: 5.2, toY: 0.3, ease: .easeOut,
+                  squashFrom: 1, squashTo: 0.94, bubble: "?"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 5.2, fromY: 0.3, toX: 4.2, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.94, squashTo: 1),
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 4.2, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, stepping: 5, action: "walk"),
+        ])
+    }
+
+    private static func landing() -> Behavior {
+        Behavior(kind: .landing, loopMs: 2800, phases: [
+            Phase(duration: 0.16, frameKey: "idle", frame: 1,
+                  fromX: 0, fromY: 0, toX: 0, toY: 0.8, ease: .easeOut,
+                  squashFrom: 1, squashTo: 0.78,
+                  emits: [Emit(kind: .tapDust, localX: 8, localY: 16, count: 4, seed: 0x1A)]),
+            Phase(duration: 0.18, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.8, toX: 0.5, toY: -0.4, ease: .easeOutBack,
+                  squashFrom: 0.78, squashTo: 1.12, bubble: "!"),
+            Phase(duration: 0.2, frameKey: "idle", frame: 1,
+                  fromX: 0.5, fromY: -0.4, toX: -0.5, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.12, squashTo: 0.96),
+            Phase(duration: 0.2, frameKey: "idle", frame: 0,
+                  fromX: -0.5, fromY: 0, toX: 0.3, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.96, squashTo: 1.03),
+            Phase(duration: 0.26, frameKey: "happy", frame: 0,
+                  fromX: 0.3, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.03, squashTo: 1),
+        ])
+    }
+
+    private static func windowWatch() -> Behavior {
+        Behavior(kind: .windowWatch, loopMs: 4400, phases: [
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: -2, toY: 0, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, stepping: 3, action: "walk"),
+            Phase(duration: 0.26, frameKey: "idle", frame: 1,
+                  fromX: -2, fromY: 0, toX: -2, toY: -0.4, ease: .easeOut,
+                  squashFrom: 1, squashTo: 1.04, bubble: "?"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: -2, fromY: -0.4, toX: -1.5, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.96),
+            Phase(duration: 0.26, frameKey: "idle", frame: 0,
+                  fromX: -1.5, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.96, squashTo: 1, stepping: 3, action: "walk"),
+        ])
+    }
+
+    private static func think() -> Behavior {
+        let laptop = grounded(.laptop, centerX: 8, baseY: stageFloorY)
+        return Behavior(kind: .think, loopMs: 4200, phases: [
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: -0.5, toY: 0.3, ease: .easeOut,
+                  squashFrom: 0.98, squashTo: 1.02, props: [laptop]),
+            Phase(duration: 0.26, frameKey: "idle", frame: 1,
+                  fromX: -0.5, fromY: 0.3, toX: 0.5, toY: 0.3, ease: .easeInOut,
+                  squashFrom: 1.02, squashTo: 0.98, props: [laptop], bubble: "…"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 0.5, fromY: 0.3, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1.02, props: [laptop], bubble: "!"),
+            Phase(duration: 0.26, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1.02, squashTo: 1, props: [laptop], action: "work"),
+        ])
+    }
+
+    private static func read() -> Behavior {
+        let laptop = grounded(.laptopLit, centerX: 8, baseY: stageFloorY)
+        return Behavior(kind: .read, loopMs: 4800, phases: [
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: -0.35, toY: 0.45, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.98, props: [laptop]),
+            Phase(duration: 0.25, frameKey: "idle", frame: 1,
+                  fromX: -0.35, fromY: 0.45, toX: 0.25, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1, props: [laptop]),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0.25, fromY: 0.4, toX: 0.4, toY: 0.45, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.98, props: [laptop], bubble: "…"),
+            Phase(duration: 0.25, frameKey: "idle", frame: 0,
+                  fromX: 0.4, fromY: 0.45, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.98, squashTo: 1, props: [laptop]),
+        ])
+    }
+
+    private static func multitask() -> Behavior {
+        let left = grounded(.laptop, centerX: 5.2, baseY: stageFloorY)
+        let right = grounded(.laptopLit, centerX: 10.8, baseY: stageFloorY)
+        return Behavior(kind: .multitask, loopMs: 5000, phases: [
+            Phase(duration: 0.2, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: -1.2, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.97, props: [left, right], action: "work"),
+            Phase(duration: 0.2, frameKey: "idle", frame: 1,
+                  fromX: -1.2, fromY: 0.4, toX: 1.2, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.97, squashTo: 1, props: [left, right], bubble: "!"),
+            Phase(duration: 0.2, frameKey: "idle", frame: 0,
+                  fromX: 1.2, fromY: 0.4, toX: -0.8, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 0.97, props: [left, right], action: "work"),
+            Phase(duration: 0.2, frameKey: "idle", frame: 1,
+                  fromX: -0.8, fromY: 0.4, toX: 0.8, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 0.97, squashTo: 1, props: [left, right], action: "work"),
+            Phase(duration: 0.2, frameKey: "idle", frame: 0,
+                  fromX: 0.8, fromY: 0.4, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1, squashTo: 1, props: [left, right]),
+        ])
+    }
+
+    private static func workBreak() -> Behavior {
+        Behavior(kind: .workBreak, loopMs: 4400, phases: [
+            Phase(duration: 0.24, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0, toX: 0, toY: -1.1, ease: .easeOut,
+                  squashFrom: 1, squashTo: 1.12),
+            Phase(duration: 0.26, frameKey: "sleeping", frame: 0,
+                  fromX: 0, fromY: -1.1, toX: 0, toY: -0.8, ease: .easeInOut,
+                  squashFrom: 1.12, squashTo: 1.04, bubble: "…"),
+            Phase(duration: 0.24, frameKey: "idle", frame: 1,
+                  fromX: 0, fromY: -0.8, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.9),
+            Phase(duration: 0.26, frameKey: "happy", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: 0, toY: 0, ease: .easeOutBack,
+                  squashFrom: 0.9, squashTo: 1),
+        ])
+    }
+
+    private static func proud() -> Behavior {
+        Behavior(kind: .proud, loopMs: 3200, phases: [
+            Phase(duration: 0.24, frameKey: "happy", frame: 0,
+                  fromX: 0, fromY: 0, toX: 0, toY: -1.4, ease: .easeOutBack,
+                  squashFrom: 1, squashTo: 1.08, bubble: "!", action: "cheer"),
+            Phase(duration: 0.26, frameKey: "happy", frame: 1,
+                  fromX: 0, fromY: -1.4, toX: 0.7, toY: -0.8, ease: .easeInOut,
+                  squashFrom: 1.08, squashTo: 0.96,
+                  emits: [Emit(kind: .heartRise, localX: 8, localY: 1, count: 2, seed: 0xF01)], action: "wave"),
+            Phase(duration: 0.24, frameKey: "happy", frame: 0,
+                  fromX: 0.7, fromY: -0.8, toX: -0.4, toY: 0, ease: .easeInOut,
+                  squashFrom: 0.96, squashTo: 1.04, action: "wave"),
+            Phase(duration: 0.26, frameKey: "idle", frame: 0,
+                  fromX: -0.4, fromY: 0, toX: 0, toY: 0, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 1),
+        ])
+    }
+
+    private static func permissionWait() -> Behavior {
+        let laptop = grounded(.laptop, centerX: 8, baseY: stageFloorY)
+        return Behavior(kind: .permissionWait, loopMs: 4800, phases: [
+            Phase(duration: 0.22, frameKey: "idle", frame: 0,
+                  fromX: 0, fromY: 0.4, toX: 0, toY: 0.2, ease: .easeOut,
+                  squashFrom: 0.98, squashTo: 1.04, props: [laptop], bubble: "!"),
+            Phase(duration: 0.26, frameKey: "idle", frame: 1,
+                  fromX: 0, fromY: 0.2, toX: 1.1, toY: -0.4, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.96, props: [laptop], action: "wave"),
+            Phase(duration: 0.24, frameKey: "happy", frame: 0,
+                  fromX: 1.1, fromY: -0.4, toX: 0.5, toY: 0, ease: .easeOutBack,
+                  squashFrom: 0.96, squashTo: 1.04, props: [laptop], bubble: "?", action: "wave"),
+            Phase(duration: 0.28, frameKey: "idle", frame: 0,
+                  fromX: 0.5, fromY: 0, toX: 0, toY: 0.4, ease: .easeInOut,
+                  squashFrom: 1.04, squashTo: 0.98, props: [laptop]),
+        ])
     }
 
     private static func fidgetEarScratch() -> Behavior {

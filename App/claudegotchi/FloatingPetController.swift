@@ -61,7 +61,10 @@ private struct FloatingPetView: View {
                     look: petModel.look,
                     onPet: { petModel.handlePetClick() },
                     onPetting: { petModel.handlePetting() },
-                    onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }
+                    onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) },
+                    sceneProvider: { signals, nowMs in
+                        petModel.theaterScene(signals: signals, timeMs: nowMs)
+                    }
                 )
             } else {
                 Text("🥚")
@@ -317,6 +320,12 @@ final class FloatingPetController {
     private var panel: NSPanel?
     private var hosting: NSHostingController<FloatingPetView>?
     private var screenObserver: NSObjectProtocol?
+    private lazy var environmentSensor = DesktopEnvironmentSensor(
+        frameProvider: { [weak self] in self?.panel?.frame },
+        onUpdate: { [weak self] environment in
+            self?.petModel.updateDesktopEnvironment(environment)
+        }
+    )
 
     init(
         petModel: PetPanelModel,
@@ -381,18 +390,21 @@ final class FloatingPetController {
         panel.clampedDragOrigin = { [weak self] origin, size in
             self?.clampedOrigin(origin, size: size) ?? origin
         }
-        panel.onDragEnded = { [weak self] in self?.finishDrag() }
+        panel.onDragEnded = { [weak self] in self?.finishDrag(userInitiated: true) }
         // Assigning a hosting controller can let AppKit rebase a borderless
         // panel by one content height during its first layout pass. Re-assert
         // the screen-space frame now, then clamp once more on the next run loop.
         panel.setFrame(frame, display: true)
         panel.orderFrontRegardless()
+        environmentSensor.start()
         DispatchQueue.main.async { [weak self] in self?.keepOnScreen() }
     }
 
     func stop() {
         agentPanel.hide()
-        finishDrag()
+        environmentSensor.stop()
+        finishDrag(userInitiated: false)
+        petModel.leaveDesktopEnvironment()
         panel?.orderOut(nil)
         panel = nil
         hosting = nil
@@ -417,11 +429,13 @@ final class FloatingPetController {
         let origin = clampedOrigin(proposed, size: size)
         panel?.setFrameOrigin(origin)
         persist(origin)
+        petModel.recordDragLanding()
     }
 
-    private func finishDrag() {
+    private func finishDrag(userInitiated: Bool) {
         guard let origin = panel?.frame.origin else { return }
         persist(origin)
+        if userInitiated { petModel.recordDragLanding() }
     }
 
     private func persist(_ origin: NSPoint) {
@@ -450,7 +464,7 @@ final class FloatingPetController {
     private func keepOnScreen() {
         guard let panel else { return }
         panel.setFrameOrigin(clampedOrigin(panel.frame.origin, size: panel.frame.size))
-        finishDrag()
+        finishDrag(userInitiated: false)
     }
 
     private func clampedOrigin(_ origin: NSPoint, size: NSSize) -> NSPoint {

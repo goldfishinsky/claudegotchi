@@ -65,10 +65,17 @@ public struct TheaterPersonality: Equatable {
     public var chattiness: Double
     public var particleHueShift: Double
     public var fidgetWeights: [Double]
+    public var curiosity: Double
+    public var playfulness: Double
+    public var sociability: Double
+    public var patience: Double
+    public var energy: Double
 
     public init(
         bounceAmplitude: Double = 1, motionSpeed: Double = 1, blinkRate: Double = 1,
-        chattiness: Double = 1, particleHueShift: Double = 0, fidgetWeights: [Double] = []
+        chattiness: Double = 1, particleHueShift: Double = 0, fidgetWeights: [Double] = [],
+        curiosity: Double = 1, playfulness: Double = 1, sociability: Double = 1,
+        patience: Double = 1, energy: Double = 1
     ) {
         self.bounceAmplitude = bounceAmplitude
         self.motionSpeed = motionSpeed
@@ -76,6 +83,11 @@ public struct TheaterPersonality: Equatable {
         self.chattiness = chattiness
         self.particleHueShift = particleHueShift
         self.fidgetWeights = fidgetWeights
+        self.curiosity = curiosity
+        self.playfulness = playfulness
+        self.sociability = sociability
+        self.patience = patience
+        self.energy = energy
     }
 
     public static let neutral = TheaterPersonality()
@@ -87,7 +99,12 @@ public struct TheaterPersonality: Equatable {
             blinkRate: gene.blinkRate,
             chattiness: gene.chattiness,
             particleHueShift: gene.particleHueShift,
-            fidgetWeights: gene.fidgetWeights
+            fidgetWeights: gene.fidgetWeights,
+            curiosity: gene.curiosity,
+            playfulness: gene.playfulness,
+            sociability: gene.sociability,
+            patience: gene.patience,
+            energy: gene.energy
         )
     }
 }

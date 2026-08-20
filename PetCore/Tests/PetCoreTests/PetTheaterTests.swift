@@ -115,8 +115,8 @@ final class PetTheaterTests: XCTestCase {
             let b = PetTheater.behavior(k, signals: TheaterSignals(
                 recentTokenDrop: TokenDrop(tokens: 5000, ageMs: 0)))
             let sig = signalsFor(k)
-            let start = PetTheater.scene(signals: sig, timeMs: 0)
-            let end = PetTheater.scene(signals: sig, timeMs: b.loopMs - 1)
+            let start = PetTheater.scene(behavior: k, signals: sig, actionTimeMs: 0)
+            let end = PetTheater.scene(behavior: k, signals: sig, actionTimeMs: b.loopMs - 1)
             XCTAssertEqual(start.petOffsetX, end.petOffsetX, accuracy: 0.25, "\(k) x loop seam")
             XCTAssertEqual(start.petOffsetY, end.petOffsetY, accuracy: 0.25, "\(k) y loop seam")
             XCTAssertEqual(start.squash, end.squash, accuracy: 0.1, "\(k) squash loop seam")
@@ -141,7 +141,7 @@ final class PetTheaterTests: XCTestCase {
             let b = PetTheater.behavior(k, signals: sig)
             for step in 0..<60 {
                 let t = Int64(step) * (b.loopMs / 60)
-                let scene = PetTheater.scene(signals: sig, timeMs: t)
+                let scene = PetTheater.scene(behavior: k, signals: sig, actionTimeMs: t)
                 XCTAssertLessThanOrEqual(abs(scene.petOffsetX), 6, "\(k) x on-stage")
                 XCTAssertLessThanOrEqual(abs(scene.petOffsetY), 5, "\(k) y on-stage")
                 XCTAssertGreaterThan(scene.squash, 0.5)
@@ -518,6 +518,7 @@ final class PetTheaterTests: XCTestCase {
         case .beg: return TheaterSignals(hungrySinceSeconds: 200)
         case .attention: return TheaterSignals(idleSeconds: 300)
         case .petting: return TheaterSignals(pettingActive: true)
+        default: return TheaterSignals()
         }
     }
 }

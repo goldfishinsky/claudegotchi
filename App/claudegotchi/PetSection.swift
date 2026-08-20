@@ -117,7 +117,10 @@ struct PetSection: View {
                 theme: theme, look: petModel.look,
                 onPet: { petModel.handlePetClick() },
                 onPetting: { petModel.handlePetting() },
-                onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) }
+                onScene: { scene, nowMs in petModel.observeTheater(scene, nowMs: nowMs) },
+                sceneProvider: { signals, nowMs in
+                    petModel.theaterScene(signals: signals, timeMs: nowMs)
+                }
             )
             .frame(width: heroWidth, height: heroHeight)
         } else {

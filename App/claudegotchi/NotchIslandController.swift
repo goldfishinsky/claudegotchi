@@ -360,7 +360,10 @@ struct NotchIslandView: View {
                         signals: petModel.makeSignals(memPressureHigh: false), theme: theme,
                         look: petModel.look,
                         onTap: { onClick() },
-                        onScene: { scene, _ in reactToPet(scene.behavior) }
+                        onScene: { scene, _ in reactToPet(scene.behavior) },
+                        sceneProvider: { signals, nowMs in
+                            petModel.theaterScene(signals: signals, timeMs: nowMs)
+                        }
                     )
                     .frame(width: petRenderWidth, height: height)
                     .offset(x: wobble + (petPeeking ? -petRenderWidth / 2 : 0))
@@ -563,7 +566,10 @@ private struct IslandPetDragPreview: View {
                     species: petModel.species,
                     signals: petModel.makeSignals(memPressureHigh: false),
                     theme: WarmTheme(scheme: scheme),
-                    look: petModel.look
+                    look: petModel.look,
+                    sceneProvider: { signals, nowMs in
+                        petModel.theaterScene(signals: signals, timeMs: nowMs)
+                    }
                 )
             } else {
                 Text("🥚").font(.system(size: 46))

@@ -137,6 +137,11 @@ public struct PersonalityGene: Equatable {
     public let chattiness: Double
     public let particleHueShift: Double
     public let fidgetWeights: [Double]
+    public let curiosity: Double
+    public let playfulness: Double
+    public let sociability: Double
+    public let patience: Double
+    public let energy: Double
 }
 
 public enum Genome {
@@ -204,6 +209,11 @@ public enum Genome {
         var chatRNG = GenomeRNG(seed: seed, stream: "personality.chattiness")
         var hueRNG = GenomeRNG(seed: seed, stream: "personality.particleHueShift")
         var fidgetRNG = GenomeRNG(seed: seed, stream: "personality.fidgetWeights")
+        var curiosityRNG = GenomeRNG(seed: seed, stream: "personality.curiosity")
+        var playRNG = GenomeRNG(seed: seed, stream: "personality.playfulness")
+        var socialRNG = GenomeRNG(seed: seed, stream: "personality.sociability")
+        var patienceRNG = GenomeRNG(seed: seed, stream: "personality.patience")
+        var energyRNG = GenomeRNG(seed: seed, stream: "personality.energy")
 
         let raw = (0..<8).map { _ in Double.random(in: 0.05...1.0, using: &fidgetRNG) }
         let sum = raw.reduce(0, +)
@@ -214,7 +224,12 @@ public enum Genome {
             blinkRate: Double.random(in: 0.6...1.6, using: &blinkRNG),
             chattiness: Double.random(in: 0.5...1.5, using: &chatRNG),
             particleHueShift: Double.random(in: 0..<360, using: &hueRNG),
-            fidgetWeights: raw.map { $0 / sum }
+            fidgetWeights: raw.map { $0 / sum },
+            curiosity: Double.random(in: 0.65...1.4, using: &curiosityRNG),
+            playfulness: Double.random(in: 0.65...1.4, using: &playRNG),
+            sociability: Double.random(in: 0.65...1.4, using: &socialRNG),
+            patience: Double.random(in: 0.7...1.35, using: &patienceRNG),
+            energy: Double.random(in: 0.7...1.35, using: &energyRNG)
         )
     }
 

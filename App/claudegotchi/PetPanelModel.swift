@@ -25,6 +25,8 @@ final class PetPanelModel: ObservableObject {
     private var lastTokenStopMs: Int64?
     private var lastTokenStopTokens: Int64 = 0
     private var lastPrEventMs: Int64?
+    private var lastTaskCompletionMs: Int64?
+    private var completionDetector = CompletionDetector()
     private var lastClickMs: Int64?
     private var lastEventMs: Int64?
     private var hungry = false
@@ -32,6 +34,18 @@ final class PetPanelModel: ObservableObject {
     private var lastPettingAccrualMs: Int64?
     private var isSick = false
     private var isHibernating = false
+    private var recentTool: String?
+    private var workingDurationSeconds: Double = 0
+    private var permissionPending = false
+
+    // One shared brain drives the island, dropdown and floating surfaces. It is
+    // intentionally not @Published: frame rendering reads it, while only actual
+    // pet/model changes invalidate SwiftUI.
+    private var behaviorBrain = PetBehaviorBrain()
+    private var behaviorEnvironment = PetEnvironment()
+    private var behaviorProfile = PetBehaviorProfile()
+    private var behaviorSeed: UInt64 = 0
+    private var behaviorProfileKey: String?
 
     private static let hungryFullness = 30.0
     private static let intimacyHighThreshold = 80.0
@@ -68,6 +82,16 @@ final class PetPanelModel: ObservableObject {
         }
         hasPet = true
         species = pet.species
+        if let petID = pet.id {
+            let key = "claudegotchi.behaviorProfile.\(petID)"
+            if behaviorProfileKey != key {
+                behaviorProfileKey = key
+                behaviorProfile = Self.loadBehaviorProfile(key: key)
+                behaviorBrain.reset()
+            }
+        }
+        behaviorSeed = pet.genome.map(UInt64.init(bitPattern:))
+            ?? GenomeRNG.fnv1a64("\(pet.species):\(pet.id ?? 0)")
         let lookKey = "\(pet.genome.map(String.init) ?? "nil"):\(pet.species)"
         if lookKey != lastLookKey {
             look = PetLook.make(genome: pet.genome, species: pet.species)
@@ -95,6 +119,7 @@ final class PetPanelModel: ObservableObject {
                 || $0.lastActivityMs >= nowMs - AgentActivityTracker.workingWindowMs
         }
         let recent = workingSessions.max(by: { $0.lastActivityMs < $1.lastActivityMs })
+        let longest = sessions.map { Double(max(0, nowMs - $0.startedAtMs)) / 1000 }.max() ?? 0
 
         let tier = WorkPressure.tier((try? PRStore.allPRs(in: db)) ?? [], config: config)
         let base = PetMood.derive(pet: pet, pressure: tier)
@@ -110,8 +135,19 @@ final class PetPanelModel: ObservableObject {
         lastTokenStopMs = (tokenStop ?? nil)?.ts
         lastTokenStopTokens = (tokenStop ?? nil)?.tokens ?? 0
         lastPrEventMs = (try? TheaterQueries.latestPRCelebrationMs(db, sinceMs: nowMs - 120_000)) ?? nil
+        let stops = (try? CompletionWatch.recentCompletions(db: db, nowMs: nowMs)) ?? []
+        if let completed = completionDetector.newlyCompleted(stops).first {
+            lastTaskCompletionMs = completed.tsMs
+        } else if let ts = lastTaskCompletionMs, nowMs - ts > 20_000 {
+            lastTaskCompletionMs = nil
+        }
         lastClickMs = (try? TheaterQueries.latestClickMs(db)) ?? nil
         lastEventMs = (try? TheaterQueries.latestEventMs(db)) ?? nil
+        recentTool = recent?.lastTool
+        workingDurationSeconds = longest
+        permissionPending = !((try? PermissionWatch.pending(
+            db: db, nowMs: nowMs, maxAgeMs: 60_000
+        )) ?? []).isEmpty
         hungry = pet.fullness < Self.hungryFullness
         if hungry {
             if hungrySinceMs == nil { hungrySinceMs = nowMs }
@@ -120,6 +156,12 @@ final class PetPanelModel: ObservableObject {
         }
         isSick = base.animation == .sick
         isHibernating = pet.hibernationSince != nil
+        let hour = Calendar.current.component(.hour, from: Date())
+        behaviorEnvironment.localHour = hour
+        if !workingSessions.isEmpty {
+            let sampleKey = "\(dayKey)-\(hour)"
+            if behaviorProfile.recordWorkHour(hour, sampleKey: sampleKey) { saveBehaviorProfile() }
+        }
         let mem = systemMemPressure?()
         let thermal = systemThermal?()
         if mem != nil || thermal != nil {
@@ -156,7 +198,7 @@ final class PetPanelModel: ObservableObject {
         return TheaterSignals(
             workingAgentCount: workingCount,
             recentTokenDrop: drop,
-            prCelebration: lastPrEventMs != nil,
+            prCelebration: lastPrEventMs != nil || lastTaskCompletionMs != nil,
             idleSeconds: idleSeconds,
             hibernating: isHibernating,
             sick: isSick,
@@ -164,8 +206,50 @@ final class PetPanelModel: ObservableObject {
             memPressureHigh: memPressureHigh,
             recentClickAgeMs: lastClickMs.map { nowMs - $0 },
             hungrySinceSeconds: hungrySince,
-            intimacyHigh: intimacy >= Self.intimacyHighThreshold
+            intimacyHigh: intimacy >= Self.intimacyHighThreshold,
+            tokenEventID: lastTokenStopMs,
+            celebrationEventID: [lastPrEventMs, lastTaskCompletionMs].compactMap { $0 }.max(),
+            clickEventID: lastClickMs,
+            activeTool: recentTool,
+            workingDurationSeconds: workingDurationSeconds,
+            permissionPending: permissionPending
         )
+    }
+
+    /// Selects once at behavior boundaries and renders from an action-relative
+    /// clock. All UI surfaces call this shared path, so the pet cannot be typing
+    /// in the island while sleeping in the dropdown.
+    func theaterScene(signals: TheaterSignals, timeMs: Int64) -> SceneFrame {
+        let decision = behaviorBrain.decide(
+            signals: signals, environment: behaviorEnvironment, nowMs: timeMs,
+            personality: look.personality, genomeSeed: behaviorSeed, profile: behaviorProfile
+        )
+        return PetTheater.scene(
+            behavior: decision.behavior, signals: signals,
+            actionTimeMs: decision.elapsed(at: timeMs), personality: look.personality,
+            idleVariant: decision.variant
+        )
+    }
+
+    func updateDesktopEnvironment(_ environment: PetEnvironment) {
+        var next = environment
+        next.dragEventID = behaviorEnvironment.dragEventID
+        behaviorEnvironment = next
+    }
+
+    func leaveDesktopEnvironment() {
+        behaviorEnvironment.isDesktop = false
+        behaviorEnvironment.cursorDistance = nil
+        behaviorEnvironment.cursorSpeed = 0
+        behaviorEnvironment.nearScreenEdge = false
+        behaviorEnvironment.windowEventID = nil
+    }
+
+    func recordDragLanding() {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        behaviorEnvironment.dragEventID = nowMs
+        behaviorProfile.dragCount += 1
+        saveBehaviorProfile()
     }
 
     /// Forwards each rendered theater frame to the sound layer. No-op unless the
@@ -185,6 +269,7 @@ final class PetPanelModel: ObservableObject {
         guard PetClick.allowed(lastClickMs: last ?? nil, nowMs: nowMs, cooldownSeconds: cooldown) else { return false }
 
         writeIntimacyEvent(eventId: "click:\(petId):\(nowMs)", type: .petClick, nowMs: nowMs)
+        reinforceCurrentBehavior(amount: 0.035)
         return true
     }
 
@@ -196,6 +281,7 @@ final class PetPanelModel: ObservableObject {
         guard let pet = try? Pet.fetchAlive(from: db), let petId = pet.id else { return }
         writeIntimacyEvent(eventId: PetPetting.eventId(petId: petId, nowMs: nowMs), type: .petting, nowMs: nowMs)
         lastPettingAccrualMs = nowMs
+        reinforceCurrentBehavior(amount: 0.06)
     }
 
     private func writeIntimacyEvent(eventId: String, type: Event.EventType, nowMs: Int64) {
@@ -218,5 +304,25 @@ final class PetPanelModel: ObservableObject {
         return (try? SessionTracker.activeSessions(
             db: db, nowMs: nowMs, windowMs: sessionWindowMs, repoPaths: repoPaths
         )) ?? []
+    }
+
+    private func reinforceCurrentBehavior(amount: Double) {
+        guard let current = behaviorBrain.current else { return }
+        behaviorProfile.reinforce(current.behavior, amount: amount)
+        saveBehaviorProfile()
+    }
+
+    private static func loadBehaviorProfile(key: String) -> PetBehaviorProfile {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let profile = try? JSONDecoder().decode(PetBehaviorProfile.self, from: data)
+        else { return PetBehaviorProfile() }
+        return profile
+    }
+
+    private func saveBehaviorProfile() {
+        guard let key = behaviorProfileKey,
+              let data = try? JSONEncoder().encode(behaviorProfile)
+        else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 }
