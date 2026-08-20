@@ -118,10 +118,6 @@ struct SettingsView: View {
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(t.pillActive.opacity(0.45))
-            )
             .keyboardShortcut("q", modifiers: .command)
             .help("退出应用，不会删除本地数据")
         }
