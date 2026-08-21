@@ -18,6 +18,7 @@ struct DropdownCard: View {
     var onOpenSettings: () -> Void
     var onJump: (AgentActivity) -> Void
     var onHeightChange: (CGFloat) -> Void = { _ in }
+    var onPetFrameChange: (NSRect) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -35,7 +36,12 @@ struct DropdownCard: View {
     var body: some View {
         let t = theme
         return VStack(spacing: 12) {
-            PetSection(petModel: petModel, driver: driver, theme: t)
+            PetSection(
+                petModel: petModel,
+                driver: driver,
+                theme: t,
+                onPetFrameChange: onPetFrameChange
+            )
             systemPanel(t)
             agentPanel(t)
             footer(t)

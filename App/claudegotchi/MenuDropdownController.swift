@@ -5,8 +5,38 @@ import PetCore
 // Opts out of the menu-bar clamp so the card's transparent glow margin may
 // overlap the menu bar and the visible card hang flush beneath it.
 private final class DropdownPanel: NSPanel {
+    var petDragHitRect = NSRect.zero
+    var onPetDragChanged: ((NSPoint, CGFloat) -> Void)?
+    var onPetDragEnded: ((NSPoint, CGFloat) -> Void)?
+
+    private var petDragStart: NSPoint?
+
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         frameRect
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        var endedDrag: (point: NSPoint, distance: CGFloat)?
+        switch event.type {
+        case .leftMouseDown:
+            let point = NSEvent.mouseLocation
+            petDragStart = petDragHitRect.contains(event.locationInWindow) ? point : nil
+        case .leftMouseDragged:
+            if let start = petDragStart {
+                let point = NSEvent.mouseLocation
+                onPetDragChanged?(point, DropdownPetDrag.travelDistance(from: start, to: point))
+            }
+        case .leftMouseUp:
+            if let start = petDragStart {
+                let point = NSEvent.mouseLocation
+                endedDrag = (point, DropdownPetDrag.travelDistance(from: start, to: point))
+            }
+            petDragStart = nil
+        default:
+            break
+        }
+        super.sendEvent(event)
+        if let endedDrag { onPetDragEnded?(endedDrag.point, endedDrag.distance) }
     }
 }
 
@@ -40,10 +70,14 @@ private struct DropdownAppear<Content: View>: View {
 final class MenuDropdownController {
     private let driver: SystemStatsDriver
     private let usageDriver: ClaudeUsageDriver
+    private let petModel: PetPanelModel
     private let makeRoot: () -> AnyView
 
-    private var panel: NSPanel?
+    private var panel: DropdownPanel?
     private var appearance: DropdownAppearance?
+    private var petDragPreviewPanel: NSPanel?
+    private var petDragPreviewHosting: NSHostingController<PetDragPreview>?
+    private var latestPetHitRect = NSRect.zero
     // Screen-Y of the card's pinned top edge (panel maxY): the card hangs from
     // the notch, so height changes grow downward from here.
     private var anchorMaxY: CGFloat?
@@ -53,9 +87,13 @@ final class MenuDropdownController {
     // item both dismisses (via the monitor) and re-toggles the panel.
     private var closedAt = Date.distantPast
 
-    init(driver: SystemStatsDriver, usageDriver: ClaudeUsageDriver, root: @escaping () -> AnyView) {
+    var onPetDraggedOut: ((NSPoint) -> Void)?
+
+    init(driver: SystemStatsDriver, usageDriver: ClaudeUsageDriver,
+         petModel: PetPanelModel, root: @escaping () -> AnyView) {
         self.driver = driver
         self.usageDriver = usageDriver
+        self.petModel = petModel
         self.makeRoot = root
     }
 
@@ -112,6 +150,13 @@ final class MenuDropdownController {
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
         panel.isReleasedWhenClosed = false
+        panel.petDragHitRect = latestPetHitRect
+        panel.onPetDragChanged = { [weak self] point, distance in
+            self?.petDragChanged(to: point, distance: distance)
+        }
+        panel.onPetDragEnded = { [weak self] point, distance in
+            self?.petDragEnded(at: point, distance: distance)
+        }
 
         position(panel, anchorRect: rect, screen: screen, size: size)
         panel.makeKeyAndOrderFront(nil)
@@ -133,6 +178,12 @@ final class MenuDropdownController {
         panel.setFrame(frame, display: true)
     }
 
+    /// `rect` is already in the hosting window's AppKit coordinate space.
+    func setPetHitRect(_ rect: NSRect) {
+        latestPetHitRect = rect
+        panel?.petDragHitRect = rect
+    }
+
     func hide() {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
@@ -140,6 +191,7 @@ final class MenuDropdownController {
         localMonitor = nil
         let closing = panel
         let ap = appearance
+        clearPetDragPreview()
         panel = nil
         appearance = nil
         anchorMaxY = nil
@@ -152,6 +204,75 @@ final class MenuDropdownController {
         DispatchQueue.main.asyncAfter(deadline: .now() + (reduce ? 0.15 : 0.42)) {
             closing?.orderOut(nil)
         }
+    }
+
+    // MARK: pull pet to desktop
+
+    private func petDragChanged(to point: NSPoint, distance: CGFloat) {
+        guard distance >= DropdownPetDrag.activationDistance else {
+            clearPetDragPreview()
+            appearance?.shown = true
+            return
+        }
+        if petDragPreviewPanel == nil {
+            // The card fades back into the notch while the pet remains attached
+            // to the cursor, so the transition reads as lifting it out.
+            appearance?.shown = false
+            buildPetDragPreview(at: point)
+        } else {
+            positionPetDragPreview(at: point)
+        }
+    }
+
+    private func petDragEnded(at point: NSPoint, distance: CGFloat) {
+        let shouldDetach = distance >= DropdownPetDrag.activationDistance
+        clearPetDragPreview()
+        guard shouldDetach else {
+            appearance?.shown = true
+            return
+        }
+        hide()
+        onPetDraggedOut?(point)
+    }
+
+    private func buildPetDragPreview(at point: NSPoint) {
+        let size = FloatingPetController.windowSize
+        let root = PetDragPreview(petModel: petModel)
+        let hosting = NSHostingController(rootView: root)
+        hosting.sizingOptions = []
+        let preview = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        preview.contentViewController = hosting
+        preview.isOpaque = false
+        preview.backgroundColor = .clear
+        preview.hasShadow = false
+        preview.level = .popUpMenu
+        preview.hidesOnDeactivate = false
+        preview.ignoresMouseEvents = true
+        preview.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        preview.isReleasedWhenClosed = false
+        petDragPreviewHosting = hosting
+        petDragPreviewPanel = preview
+        positionPetDragPreview(at: point)
+        preview.orderFrontRegardless()
+    }
+
+    private func positionPetDragPreview(at point: NSPoint) {
+        let size = FloatingPetController.windowSize
+        petDragPreviewPanel?.setFrameOrigin(NSPoint(
+            x: point.x - size.width / 2,
+            y: point.y - size.height / 2
+        ))
+    }
+
+    private func clearPetDragPreview() {
+        petDragPreviewPanel?.orderOut(nil)
+        petDragPreviewPanel = nil
+        petDragPreviewHosting = nil
     }
 
     private func position(_ panel: NSPanel, anchorRect: NSRect, screen scr: NSScreen?, size: NSSize) {

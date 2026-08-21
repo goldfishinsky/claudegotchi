@@ -67,6 +67,16 @@ enum IslandPetDrag {
     }
 }
 
+enum DropdownPetDrag {
+    /// A little more travel than a click or petting gesture, but short enough
+    /// that the pet appears to lift out of the card immediately.
+    static let activationDistance: CGFloat = 28
+
+    static func travelDistance(from start: NSPoint, to current: NSPoint) -> CGFloat {
+        hypot(current.x - start.x, current.y - start.y)
+    }
+}
+
 // MARK: - notch shape
 
 // The wrapping-island silhouette: top corners flare concavely into the menu-bar
@@ -554,7 +564,7 @@ private final class IslandPanel: NSPanel {
     }
 }
 
-private struct IslandPetDragPreview: View {
+struct PetDragPreview: View {
     @ObservedObject var petModel: PetPanelModel
     @Environment(\.colorScheme) private var scheme
 
@@ -656,7 +666,7 @@ final class NotchIslandController {
     private var panel: IslandPanel?
     private var hosting: NSHostingController<AnyView>?
     private var petDragPreviewPanel: NSPanel?
-    private var petDragPreviewHosting: NSHostingController<IslandPetDragPreview>?
+    private var petDragPreviewHosting: NSHostingController<PetDragPreview>?
     private var geometry: NotchGeometry?
     private var appliedHeightOffset: CGFloat = .nan
     private var appliedWidthOffset: CGFloat = .nan
@@ -1105,7 +1115,7 @@ final class NotchIslandController {
 
     private func buildPetDragPreview(at point: NSPoint) {
         let size = FloatingPetController.windowSize
-        let root = IslandPetDragPreview(petModel: petModel)
+        let root = PetDragPreview(petModel: petModel)
         let hosting = NSHostingController(rootView: root)
         hosting.sizingOptions = []
         let preview = NSPanel(

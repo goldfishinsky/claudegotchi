@@ -51,3 +51,30 @@ final class IslandPetDragTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(committedPull, IslandPetDrag.activationDistance)
     }
 }
+
+final class DropdownPetDragTests: XCTestCase {
+    func testTravelInAnyDirectionCanDetachPetFromDropdown() {
+        let start = NSPoint(x: 500, y: 500)
+
+        XCTAssertEqual(
+            DropdownPetDrag.travelDistance(from: start, to: NSPoint(x: 528, y: 500)),
+            28,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            DropdownPetDrag.travelDistance(from: start, to: NSPoint(x: 500, y: 472)),
+            28,
+            accuracy: 0.001
+        )
+    }
+
+    func testShortMovementStaysARegularPetInteraction() {
+        let start = NSPoint(x: 500, y: 500)
+        let distance = DropdownPetDrag.travelDistance(
+            from: start,
+            to: NSPoint(x: 510, y: 510)
+        )
+
+        XCTAssertLessThan(distance, DropdownPetDrag.activationDistance)
+    }
+}

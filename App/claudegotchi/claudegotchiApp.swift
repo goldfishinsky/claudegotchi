@@ -302,7 +302,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
 
         let usageDriver = services.claudeUsage
-        dropdown = MenuDropdownController(driver: statsDriver, usageDriver: usageDriver) {
+        dropdown = MenuDropdownController(
+            driver: statsDriver, usageDriver: usageDriver, petModel: petModel
+        ) {
             AnyView(DropdownCard(
                 petModel: petModel,
                 agentModel: agentModel,
@@ -326,6 +328,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onHeightChange: { [weak self] h in
                     self?.dropdown?.setContentHeight(h)
+                },
+                onPetFrameChange: { [weak self] rect in
+                    self?.dropdown?.setPetHitRect(rect)
                 }
             ))
         }
@@ -349,6 +354,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         floatingPetController = floatingPet
         islandController?.onPetDraggedOut = { [weak settingsStore, weak floatingPet] point in
+            floatingPet?.placeCentered(at: point)
+            settingsStore?.petDisplayMode = .floating
+        }
+        dropdown?.onPetDraggedOut = { [weak settingsStore, weak floatingPet] point in
             floatingPet?.placeCentered(at: point)
             settingsStore?.petDisplayMode = .floating
         }

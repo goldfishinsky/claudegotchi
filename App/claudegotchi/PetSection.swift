@@ -9,6 +9,7 @@ struct PetSection: View {
     @ObservedObject var petModel: PetPanelModel
     @ObservedObject var driver: SystemStatsDriver
     let theme: WarmTheme
+    var onPetFrameChange: (NSRect) -> Void = { _ in }
 
     private let heroWidth: CGFloat = 184
     private let heroHeight: CGFloat = 158
@@ -93,6 +94,10 @@ struct PetSection: View {
             theaterStage
         }
         .frame(width: heroWidth, height: heroHeight)
+        // Report the real AppKit window-space bounds. The dropdown panel uses
+        // this exact region to keep receiving the drag after the pointer leaves
+        // SwiftUI and the panel itself.
+        .background(PetDragHitAreaReader(onFrameChange: onPetFrameChange))
     }
 
     private func platformMark(_ platform: String) -> some View {
@@ -170,6 +175,44 @@ struct PetSection: View {
         }
     }
 
+}
+
+/// Bridges the pet's rendered SwiftUI bounds into the hosting window's native
+/// coordinate space without taking part in hit testing.
+private struct PetDragHitAreaReader: NSViewRepresentable {
+    let onFrameChange: (NSRect) -> Void
+
+    func makeNSView(context: Context) -> PetDragHitAreaView {
+        let view = PetDragHitAreaView()
+        view.onFrameChange = onFrameChange
+        return view
+    }
+
+    func updateNSView(_ nsView: PetDragHitAreaView, context: Context) {
+        nsView.onFrameChange = onFrameChange
+        nsView.reportFrame()
+    }
+}
+
+private final class PetDragHitAreaView: NSView {
+    var onFrameChange: ((NSRect) -> Void)?
+
+    override func layout() {
+        super.layout()
+        reportFrame()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        reportFrame()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func reportFrame() {
+        guard window != nil, !bounds.isEmpty else { return }
+        onFrameChange?(convert(bounds, to: nil))
+    }
 }
 
 /// Transparent, high-resolution product marks for the compact status strip.
