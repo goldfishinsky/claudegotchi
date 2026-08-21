@@ -46,7 +46,7 @@ targets:
         CFBundleName: claudegotchi
         CFBundleIconFile: AppIcon
         CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "4"
+        CFBundleVersion: "5"
         CFBundleURLTypes:
           - CFBundleURLName: com.goldfishinsky.claudegotchi.oauth
             CFBundleURLSchemes:

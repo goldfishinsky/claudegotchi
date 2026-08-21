@@ -6,7 +6,7 @@ claudegotchi turns agent activity into a long-running pixel-pet experience. It
 tracks sessions, tools, models, and token usage; the pet grows as you work and
 reacts to active agents, completed tasks, and permission requests.
 
-[Download Preview 4 for Apple Silicon](https://github.com/goldfishinsky/claudegotchi/releases/tag/v0.1.0-preview.4)
+[Download Preview 5 for Apple Silicon](https://github.com/goldfishinsky/claudegotchi/releases/tag/v0.1.0-preview.5)
 
 ## Highlights
 
